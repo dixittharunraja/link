@@ -1,0 +1,65 @@
+{
+  "name": "link-desktop",
+  "version": "0.1.0",
+  "description": "Link desktop app — faithful Electron port of KDE Connect's protocol",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build:main": "tsc -p tsconfig.json",
+    "build:renderer": "vite build --base=./",
+    "build": "npm run build:main && npm run build:renderer && npm run copy-assets",
+    "build:desktop": "npm run build && electron-builder && node scripts/split-installer.js && node scripts/publish-hashes.js",
+    "copy-assets": "node -e \"require('fs').mkdirSync('dist/scripts',{recursive:true});require('fs').copyFileSync('src/scripts/audio-endpoint-volume.ps1','dist/scripts/audio-endpoint-volume.ps1');require('fs').copyFileSync('src/scripts/screensaver-inhibit.ps1','dist/scripts/screensaver-inhibit.ps1');require('fs').copyFileSync('src/scripts/mpris-control.ps1','dist/scripts/mpris-control.ps1');require('fs').copyFileSync('src/scripts/audio-capture.ps1','dist/scripts/audio-capture.ps1')\"",
+    "start": "npm run build && electron dist/main/main.js",
+    "dev:renderer": "vite",
+    "dev": "npm run build:main && npm run copy-assets && concurrently \"vite\" \"electron dist/main/main.js --dev\"",
+    "test": "npm run build && node dist/test/e2e.js"
+  },
+  "build": {
+    "appId": "in.rodix.link",
+    "productName": "Link",
+    "directories": {
+      "output": "dist_electron"
+    },
+    "files": [
+      "dist/**/*",
+      "icon.png",
+      "icon.ico",
+      "call-icon.png",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Link",
+      "include": "build/installer.nsh"
+    }
+  },
+  "license": "GPL-3.0-only",
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^8.2.2",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.8.1",
+    "typescript": "^5.5.0",
+    "vite": "^5.2.12",
+    "ws": "^8.21.0"
+  },
+  "dependencies": {
+    "@evan/opus": "^1.0.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "selfsigned": "^2.4.1"
+  }
+}

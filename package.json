@@ -1,0 +1,17 @@
+{
+  "name": "link",
+  "version": "0.1.0",
+  "description": "Link — faithful Electron + Capacitor port of KDE Connect's protocol",
+  "license": "GPL-3.0-only",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix ../rodix run dev",
+    "dev:desktop": "cd desktop && npm run dev",
+    "build": "cd desktop && npm run build",
+    "build:desktop": "cd desktop && npm run build:desktop",
+    "build:android": "npm run build:mobile-web && cd mobile && npm run build:android",
+    "install:android": "cd mobile && npm run install:android",
+    "ship:web": "npm --prefix ../rodix run ship",
+    "build:mobile-web": "cd desktop && npm run build:renderer && node -e \"const fs=require('fs'); fs.rmSync('../mobile/www', {recursive:true,force:true}); fs.mkdirSync('../mobile/www',{recursive:true}); fs.cpSync('dist/renderer', '../mobile/www', {recursive:true})\""
+  }
+}

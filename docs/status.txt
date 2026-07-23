@@ -1,0 +1,80 @@
+# Topology Status Tracker
+
+This file documents the end-to-end verification status and topology capabilities of every feature in the Link project.
+
+## Trust Model — Trusted Pool (verified on hardware)
+
+Your devices form a **Trusted Pool** of your own devices, all mutually trusted. Trust flows through
+a single shared **owner key** (a per-person Ed25519 root of trust), not peer-to-peer. Pairing any
+one pool member (one PIN — the human gate) enrolls a newcomer: that member hands over the owner key
+and issues an owner-signed **membership certificate** binding the newcomer's TLS identity to the
+pool. Every other member then auto-trusts it by verifying that cert against the owner key it already
+holds — **no second PIN**. Removing a device owner-signs a revocation that gossips across the pool.
+Friends' devices never join the pool; casual sharing (Tools: File Transfer / Audio Relay) is
+isolated and never writes the trust store. Core: `core/pool.ts` + `LinkPool.java` (byte-identical
+signed-message format), wired into the handshake by `device-manager.ts` / `LinkDeviceManager.java`.
+Verified end-to-end on real hardware (desktop <-> Android): pair, enroll-via-any-member auto-mesh,
+and removal all working. Deferred hardening: owner-key encryption-at-rest, full "reset pool" re-key.
+
+## Topology Capabilities & Compatibility Matrix
+
+| Feature / Plugin Name       | M2P | P2M | M2M | P2P | Mesh | Robustness |
+| :-------------------------- | :-: | :-: | :-: | :-: | :--: | :--------: |
+| Connectivity Report         | [x] | N/A | [x] | N/A | [x]  |    8/10    |
+| Battery Status              | [x] | [x] | [x] | [x] | [x]  |    9/10    |
+| Clipboard Sync              | [x] | [x] | [x] | [x] | [x]  |    8/10    |
+| Find My Phone               | [x] | [x] | [x] | [x] | [x]  |    9/10    |
+| Lock Device                 | [x] | [x] | [x] | [x] | [x]  |    8/10    |
+| Run Command                 | [x] | N/A | N/A | [x] | [x]  |    8/10    |
+| Touchpad                    | [x] | N/A | N/A | [ ] | [x]  |   10/10    |
+| Presenter Pointer           | [x] | N/A | N/A | [ ] | [x]  |    9/10    |
+| Digitizer (Drawing Tablet)  | [x] | N/A | N/A | [ ] | [x]  |    8/10    |
+| MPRIS Media Control         | [x] | [x] | [x] | [x] | [x]  |    8/10    |
+| System Volume Control       | [x] | [x] | [x] | [x] | [x]  |    8/10    |
+| Telephony Alerts            | [x] | N/A | N/A | N/A | [x]  |    8/10    |
+| Notification Mirroring      | [x] | N/A | N/A | N/A | [x]  |    8/10    |
+| WSS + WebDAV (file system)  | [x] | [ ] | [ ] | [x] | [x]  |    9/10    |
+| Contacts Sync               | [x] | N/A | N/A | N/A | [x]  |    9/10    |
+| Device Rename               | [x] | [x] | [x] | [x] | [x]  |    8/10    |
+| Screensaver Inhibit         | [x] | N/A | N/A | N/A | [x]  |    8/10    |
+| Flashlight Toggle           | N/A | [x] | [x] | N/A | [x]  |    9/10    |
+| Do Not Disturb (DND)        | N/A | [x] | [x] | N/A | [x]  |    8/10    |
+| Connected Speed Test        | [x] | [x] | [x] | [x] | [x]  |   10/10    |
+| Audio Relay                 | [x] | [x] | [ ] | [ ] | [ ]  |    8/10    |
+
+### Legend
+*   `[x]` Fully verified and operational in real-world LAN testing.
+*   `[ ]` Structurally possible but currently unsupported or requires further implementation.
+*   `[N/A]` Not Applicable (feature is structurally asymmetric or does not make sense for this topology).
+
+---
+
+## Features List by Platform
+
+### Windows (Desktop) Features
+*   **Run Command:** Allows incoming requests from paired devices to execute predefined command scripts locally.
+*   **Touchpad Receiver:** Receives pointer coordinates, clicks, and scrolls from a paired device to control the Windows mouse cursor.
+*   **Presenter Pointer Overlay:** Renders a red laser pointer overlay on screen driven by gyro or touchpad inputs from a paired mobile device.
+*   **Digitizer Receiver:** Receives absolute touch coordinates to act as a drawing tablet input.
+*   **Screensaver Inhibit:** Pauses Windows screensaver timeouts when active presentations or media sessions are running.
+*   **Pause Media on Call:** Automatically pauses local PC media playback when a paired phone reports an incoming call, and resumes when the call ends (a desktop-side reaction to Telephony events, not an independent topology feature).
+*   **WSS + WebDAV Mount:** Mounts the remote Android file system as a local Windows network drive (Z:) via a local WebDAV server and rclone.
+
+### Android (Mobile) Features
+*   **Connectivity Report:** Pushes cellular signal strength and carrier/connection type updates.
+*   **Telephony Alerts:** Broadcasts incoming call and missed call events.
+*   **Notification Mirroring:** Forwards incoming status bar notifications to paired devices.
+*   **Contacts Sync:** Provides the contacts database (on-demand / delta-synced) to paired devices.
+*   **Flashlight Toggle:** Allows turning the camera flash on and off remotely.
+*   **Do Not Disturb (DND):** Toggles interrupt priorities and priority filters remotely.
+
+### Common (Shared / Symmetric) Features
+*   **Battery Status:** Broadcasts current battery level and charging state to all paired devices.
+*   **Clipboard Sync:** Automatically synchronizes clipboard text and files between all connected peers.
+*   **Find My 0Phone:** Triggers a loud, repeating audio alarm to locate the misplaced device.
+*   **Lock Device:** Initiates a remote system lock on the target device.
+*   **MPRIS Media Control:** Displays currently playing media metadata and sends play, pause, seek, next, and previous actions.
+*   **System Volume Control:** Allows viewing, muting, and adjusting audio volume levels on target devices.
+*   **Device Rename:** Renaming a device propagates the new name to every connected peer across the mesh, so the change is reflected everywhere without re-pairing (same broadcast-to-all pattern as Battery/Clipboard). Symmetric — either platform can rename itself and receive others' renames.
+*   **Connected Speed Test:** Performs latency (ping), upload speed, and download speed tests using 20MB raw binary payloads over dedicated ephemeral TLS payload channels — the same mechanism used for real file transfers. Results directly reflect actual file transfer throughput.
+*   **Audio Relay (Tools -> Audio Relay):** Streams a host's system audio live to any number of listening devices, each hearing it through their own earphones, over a dedicated TLS WebSocket relay (isolated from the paired-device trust store — guest sessions never write to it). Two ways in: a one-tap join for already-paired devices, or manual IP + a PIN both sides compute independently from TLS certs for an unpaired friend. Raw PCM, not compressed, to keep encode/decode latency out of the pipeline entirely. Desktop hosts via WASAPI loopback capture; Android hosts via AudioPlaybackCapture under a per-session MediaProjection consent grant (apps that set ALLOW_CAPTURE_BY_NONE, e.g. Spotify/Netflix/YouTube, can't be captured this way — local video/games/most other apps work fine). Both Desktop-to-Mobile and Mobile-to-PC directions are fully verified and working end-to-end on real hardware, including a native low-latency buffer tuning pass on Android (confirmed via logcat: ~3ms buffer vs. an ~80ms generic fallback).

@@ -1,0 +1,19 @@
+{
+  "name": "link-mobile",
+  "version": "0.1.0",
+  "description": "Link mobile app — faithful Capacitor/Android port of KDE Connect's protocol",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "build:android": "npx cap copy android && powershell -Command \"$env:JAVA_HOME='C:\\Program Files\\Android\\Android Studio\\jbr'; $env:Path+=';C:\\Program Files\\Android\\Android Studio\\jbr\\bin'; cd android; .\\gradlew.bat clean assembleRelease; cd ..; New-Item -ItemType Directory -Force ..\\..\\rodix\\public\\installers; Copy-Item -Path android\\app\\build\\outputs\\apk\\release\\app-release.apk -Destination ..\\..\\rodix\\public\\installers\\link.apk -Force\"",
+    "install:android": "powershell -Command \"$env:Path += ';C:\\Users\\dixit\\AppData\\Local\\Android\\Sdk\\platform-tools'; adb install -r android/app/build/outputs/apk/release/app-release.apk\"",
+    "ship:android": "npm run build:android && npm run install:android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/core": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0",
+    "typescript": "^6.0.3"
+  }
+}

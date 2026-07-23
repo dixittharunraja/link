@@ -1,0 +1,242 @@
+LINK — FEATURE CHECKLIST
+========================
+Full plugin catalog, ported from KDE Connect (see docs/PROTOCOL.md §8 for wire-level detail).
+Mark each [x] as you verify it working end-to-end (desktop <-> real Android device).
+Markers: [x] proven end-to-end · [ ] not started/blocked (reason noted inline) ·
+[-] deliberately out of scope for this platform pairing (reason noted inline, not a fidelity gap).
+
+CORE (foundation — required before any feature works)
+------------------------------------------------------
+[x] Device identity (persistent, one per device, desktop + Android)
+[x] TLS transport (self-signed certs, desktop + Android)
+[x] Trust-on-first-use pairing (verification key, both directions)
+[x] Cert pinning + mismatch detection
+[x] Multi-Device Mesh Networking (N-to-N concurrent connections, socket deduplication using lexical device ID comparison, and subnet broadcast calculation for reliable LAN discovery)
+[x] Trusted Pool auto-mesh (owner-key engine, core/pool.ts + LinkPool.java). A per-person Ed25519
+    owner key is the shared root of trust; pairing any one pool device enrolls a newcomer (hands
+    over the owner key + issues an owner-signed membership cert), and every other member then
+    auto-trusts it with no second PIN. Removal = owner-signed revocation gossiped pool-wide.
+    Cross-platform sign/verify interop and the full A-pairs-B, C-via-B, C-auto-meshes-with-A flow
+    verified end-to-end on real hardware (desktop <-> Android).
+[x] Ping — first feature packet, proven cross-platform (Node <-> real Android device)
+[x] Payload transfer (ephemeral one-shot TLS upload server + cert-pinned download client) —
+    core mechanism used by share/link.clipboard.file. Proven with real bytes both directions
+    over an actual LAN connection (not adb tunneling — see note below).
+    Optimized: upload now uses a 64KB chunked write loop with drain-backpressure (vs. single
+    socket.end() call); download uses a 128KB BufferedInputStream on Android (vs. 4KB). This
+    closed a 3x gap between raw TCP throughput (~220 Mbps) and app-level file transfer speed
+    (~80 Mbps before, matching raw speed after). Speed test was migrated to use this same
+    binary channel with 20MB payloads so its results directly reflect real transfer performance.
+
+NOTE on testing methodology: everything up through runcommand was originally verified via `adb
+forward`/`adb reverse` port tunnels (phone has no WiFi in that testing session). Payload transfer
+specifically CANNOT be proven that way — the sender announces its own IP in the packet, and the
+receiver dials back to that announced address on a brand-new ephemeral port that isn't part of
+the pre-configured tunnel. Tried it: the phone attempted to connect to 127.0.0.1 (its own
+loopback, an artifact of the tunnel) and got ECONNREFUSED. Confirms the tunnel-based tests only
+ever validated the single tunneled connection, not general reachability — worth re-verifying
+ping/clipboard/battery/findmyphone/runcommand over a real LAN too, which was then done
+(all reconfirmed working directly over WiFi, no tunnel, once the phone joined the same network).
+
+FEATURES (KDE Connect plugin catalog)
+------------------------------------------------------
+[x] battery              — proven cross-platform: real phone battery (100% charging=true) received
+                           by desktop automatically on pairing, no manual action needed. Desktop
+                           side polls via PowerShell/WMI (Win32_Battery) since Node has no native
+                           battery API; Android uses ACTION_BATTERY_CHANGED/_LOW/_OKAY receivers
+                           matching upstream exactly, including the platform-specific difference
+                           where Android's low-battery threshold comes from the OS signal while
+                           desktop KDE Connect hardcodes a 15%-and-discharging check (both sides
+                           faithfully match their own upstream counterpart, not each other).
+[x] clipboard            — proven cross-platform: fully bidirectional text, image, and file reference copy/paste sync in real-time. Also syncs clipboard state immediately upon fresh device pairing. Files and images are transmitted via the link.clipboard.file binary payload channel.
+[x] connectivity-report  — proven cross-platform: phone automatically pushes multi-SIM network types (e.g. LTE) and signal strength levels (0-4) to peers on pairing and whenever they change (e.g. signal level drops). Supported on both desktop UI and mobile peer lists (M2M). Tested and verified end-to-end.
+[x] contacts             — proven cross-platform: tapped "Sync Contacts" on the phone; desktop
+                           sent request_all_uids_timestamps, phone replied with real UIDs (via
+                           ContactsContract.Contacts LOOKUP_KEY) + timestamps, desktop requested
+                           vCards for all of them, phone replied with real vCard text (via
+                           CONTENT_VCARD_URI/ContentResolver), desktop parsed FN/TEL and rendered
+                           real names + phone numbers in a new Contacts panel. SCOPED DOWN from
+                           upstream: (1) always a full resync — every UID's vCard is re-requested
+                           every time, no local timestamp cache/diffing to fetch only changed
+                           contacts; (2) desktop only parses/displays FN (name) + first TEL
+                           (phone number) from each vCard, not full vCard fidelity (photos, multi-
+                           number/email, org, etc. are received but unused); (3) no
+                           X-KDECONNECT-ID-DEV-<id>/REV headers injected into the vCard text like
+                           upstream does for its own delta-sync bookkeeping, since this doesn't do
+                           that bookkeeping. Wire packet types/directions and field shapes
+                           (uids[], per-uid timestamp/vcard fields) match upstream exactly —
+                           the deviations are all about how much of the synced data is actually
+                           used/cached, not the protocol itself. Desktop-initiated, phone-only-
+                           responds — no mobile UI needed at all, matches upstream's asymmetric
+                           design (only the desktop's Kirigami/People-style client ever asks).
+[x] digitizer            — pen/stylus input forwarding. Verified against real source: absolute positioning
+                           (x, y, pressure 0.0-1.0) via session lifecycle (start/end actions). Mobile canvas
+                           sends absolute touch positions mapped to the landscape screen orientation.
+                           Desktop maps coordinates to screen percentages and injects absolute mouse cursor
+                           positioning and touch states using the dynamic C# mouse-helper.
+                           Fixed: finger-lift previously sent no x/y, causing the cursor to snap to (0,0)
+                           (top-left corner) on every pen-up. Now caches the last known position and
+                           re-sends it on touchend so the cursor stays put.
+[x] findmyphone / findthisdevice — proven cross-platform: desktop sent link.findmyphone.request,
+                           phone's real MediaPlayer/AudioManager rang audibly (confirmed via
+                           logcat, no errors). SCOPED DOWN from upstream on purpose: real
+                           kdeconnect-android loops a ringtone at max ALARM volume + flashlight +
+                           full-screen notification that only stops when the user taps it (no
+                           "stop" packet exists in the protocol at all). We implemented the core
+                           "make noise" behavior with a fixed 10s auto-stop instead of tap-to-
+                           dismiss, since we don't have the notification/activity UI stack built.
+                           Desktop's "ring this PC" direction (loops Alarm01.wav via PowerShell)
+                           implemented but not yet live-tested phone->desktop.
+[x] lockdevice           — fully symmetric. Peers can lock target desktops or mobile devices. Desktop lock triggers screensavers/system locks. Mobile locking is implemented using Android Device Administrator APIs to programmatically lock the phone screen. Status checks query current Keyguard lock states.
+[x] touchpad / remotecontrol / remotekeyboard — proven cross-platform: cursor movement, clicks,
+                           scroll, and the double-tap-then-hold-then-drag gesture all confirmed
+                           working via native Win32 mouse_event/keybd_event injection from the
+                           phone's touchpad surface. Full touchpad experience now matches upstream.
+[x] mpriscontrol / mprisremote — proven cross-platform: phone control buttons (Play/Pause, Prev, Next) render on phone UI and control desktop active media sessions. Bidirectional status syncs on connections and actions.
+[x] telephony            — proven cross-platform: phone monitors call states (ringing, talking, cancelled, missedCall) using READ_PHONE_STATE/READ_CALL_LOG, and desktop displays native OS notifications with contact names or numbers.
+[x] notifications / sendnotifications — proven cross-platform: phone notifications (WhatsApp, Telegram, etc) mirror to desktop as native OS notifications. Auto-dismisses when cleared on phone.
+[x] presenter            — proven cross-platform: touch-drag on phone's presenter surface moved a
+                           red dot overlay on the desktop in real time over the real LAN
+                           connection. Fully supports slide navigation controls (Next, Prev,
+                           Fullscreen, Exit Present) by injecting native Windows keyboard events
+                           (PageUp, PageDown, F5, Esc). The desktop presenter overlay window level is
+                           elevated to 'screen-saver' so it is drawn cleanly on top of exclusive
+                           fullscreen slideshows (PowerPoint/Google Slides).
+                           Gyroscope tilt-to-move — real upstream's actual input method — is now
+                           ALSO implemented and proven, as a second input mode alongside touch-drag
+                           (both available, switchable via a mode-toggle button in the mobile UI,
+                           not a replacement of either). Reads real device rotation-rate
+                           (window.devicemotion's rotationRate.beta/gamma) in the mobile web
+                           harness and feeds it into the exact same link.presenter dx/dy packet and
+                           sendPresenterMove call touch-drag already used — no desktop-side changes
+                           were needed at all, confirming this was purely an input-source swap, not
+                           a second feature. Confirmed on the real device: toggling to Tilt mode and
+                           gently tilting the phone moves the desktop dot with no screen touch
+                           required. FULLY ALIGNED with upstream now — both input methods present.
+[x] runcommand           — proven cross-platform, fully end-to-end: phone requested command list,
+                           received it (confirmed exact JSON match via logcat), rendered buttons,
+                           tapped "Open Notepad", desktop executed the whitelisted command —
+                           notepad.exe was verified actually running via tasklist. Phone never
+                           executes anything locally or sends an arbitrary command string, matching
+                           upstream's actual asymmetric design (desktop-only execution).
+                           Found and fixed a real bug along the way: LinkPairingHandler's 30s
+                           timeout ran on Android's main thread and tried a blocking socket write,
+                           throwing NetworkOnMainThreadException and silently killing the
+                           connection. Fixed by serializing all LinkTransport sends through a
+                           background executor, safe to call from any thread now.
+[x] sftp / file system   — Fully implemented and verified end-to-end. Utilizes a high-performance
+                           WebSocket-over-TLS (wss://) protocol (LinkFsClient) communicating directly
+                           with the phone, bridged locally in Electron via a lightweight native HTTP
+                           WebDAV server. Mounted onto Windows Explorer (drive letter Z:) using a bundled,
+                           headless `rclone.exe` instance run in connection-string mode. Reports accurate
+                           phone storage capacities using standard WebDAV quota properties
+                           (quota-available-bytes/quota-used-bytes), preventing Windows/Explorer
+                           crashes by mounting in network redirector mode. Cache performance is managed
+                           via rclone's VFS writes cache mode. Tested and verified working.
+[x] share (single file)  — proven cross-platform, both directions, over a real LAN connection with
+                           exact byte-for-byte content match. SCOPED DOWN from upstream: single
+                           file only (no multi-file composite jobs), no configurable download
+                           directory, no MIME-based "open received file" action, no URL/text
+                           share variants. This proves the underlying payload-transfer mechanism
+                           end-to-end — sftp and link.clipboard.file can now be built as thin
+                           wrappers on top of the same core.
+[x] systemvolume         — fully symmetric, bidirectional volume control:
+                           (1) Changing desktop volume -> VolumeWatcher detects change -> pushes to phone ->
+                           phone volume sliders update. Toggling phone slider -> sets desktop audio endpoint.
+                           (2) Dragging desktop sliders -> sends systemvolume.request to phone -> sets
+                           phone Media, Notification, or Alarm audio streams. Phone hardware volume buttons
+                           changes are captured via a BroadcastReceiver and sent to sync desktop sliders.
+[x] flashlight           — remote flashlight control from PC or another Mobile device. UI allows toggling
+                           paired phone's camera torch mode. Status updates are pushed to all paired peers.
+[x] dnd                  — remote Do Not Disturb control from PC or another Mobile device. UI shows DND status
+                           and toggles phone priority filters. Requires notification policy permission on Android.
+[-] virtualmonitor       — OUT OF SCOPE for this Windows+Android build, deliberately not ported.
+                           Researched against the real source: this isn't actually a
+                           screen-mirroring feature KDE Connect implements itself — it's a thin
+                           credential/URL broker. Desktop spawns KDE's own `krdpserver` binary
+                           (creates a virtual monitor via KWin's Wayland-only virtual-output APIs,
+                           then runs a full RDP server), and just tells the phone to open an
+                           `rdp://user:pass@host:port` URL with whatever generic RDP client happens
+                           to be installed. Confirmed: kdeconnect-android has NO virtualmonitor
+                           plugin at all — the "phone side" is just any third-party RDP app, not
+                           anything KDE Connect built. Windows has no krdpserver-equivalent
+                           (virtual display driver + bundled RDP server); building one would mean
+                           writing unrelated infrastructure from scratch, not porting KDE Connect's
+                           actual protocol. Revisit if/when a Linux build of Link exists (Wayland +
+                           krdpserver would make this genuinely portable there) — tracked as a
+                           deliberate future scope item, not a gap in current fidelity. Same
+                           treatment as `mmtelephony` (Linux-specific, may not apply here).
+
+LOCAL-ONLY (no wire packet of their own — port the behavior, not a new message type)
+------------------------------------------------------
+[x] pausemusic           — proven cross-platform: started media playing on desktop, tapped
+                           "Simulate Call" on phone -> desktop media instantly flipped to Paused;
+                           tapped "End Call" -> flipped back to Playing. Log evidence: "[2:52:00
+                           pm] Media status ... (Playing)" -> "[2:52:31 pm] Simulating incoming
+                           call (ringing)..." -> "[2:52:31 pm] Media status ... (Paused)" -> "[2:58:
+                           07 pm] Media status ... (Playing)". LOCAL-ONLY: no new wire packet —
+                           reuses the already-proven `telephony` packet as trigger and the same
+                           WinRT/global-media-key path `mpris` already drives. Faithful port of
+                           upstream's pausemusicplugin-win.cpp; SCOPED DOWN: no config toggles
+                           (conditionTalking/actionPause/actionMute/actionResume all upstream
+                           options) — this always pauses on ringing/talking and always resumes
+                           only what it paused, no mute-instead-of-pause alternative.
+                           Testing note: a real incoming call couldn't be triggered for this test
+                           — the real android.intent.action.PHONE_STATE broadcast that upstream's
+                           receiver listens for is a system-protected broadcast (confirmed:
+                           `adb shell am broadcast -a android.intent.action.PHONE_STATE ...`
+                           throws SecurityException, not sendable by a shell/adb uid). Added two
+                           manual test-only Capacitor methods (simulateCallRinging/simulateCallEnd
+                           in LinkPlugin.java, "Simulate Call"/"End Call" buttons in the mobile dev
+                           harness) that construct and send the exact same LinkTelephony packets
+                           the real broadcast receiver would — this is a fair test of pausemusic's
+                           new code specifically, since telephony's real call-detection path was
+                           already proven separately.
+[ ] mmtelephony          — modem-manager telephony integration (Linux-specific, may not apply)
+[x] remotecommands       — proven cross-platform, both directions, on the real device: added a
+                           test command ("test" / calc.exe) via the new desktop settings panel —
+                           it persisted to link-config/runcommand.json and a matching button
+                           appeared live on the already-paired phone with no reconnect needed;
+                           tapping it actually launched Calculator on the desktop. Removing it via
+                           the desktop's "Remove" button also broadcast live — the phone's button
+                           disappeared immediately. LOCAL-ONLY-ish: no new wire packet type (reuses
+                           the already-proven runcommand/runcommand.request packets), this is
+                           purely upgrading the whitelist from a hardcoded object
+                           (desktop/src/core/plugins/runcommand.ts) to a persistent, desktop-owned,
+                           editable one (RunCommandManager, JSON in configDir) — matching upstream's
+                           actual design where only the desktop's own settings UI can add/edit/
+                           remove entries; the phone can only ever select by key, never supply or
+                           modify a command string (unchanged hard security boundary).
+[x] screensaver-inhibit  — proven cross-platform (desktop-only — no wire packet, matches upstream
+                           exactly): confirmed via Get-CimInstance that a persistent
+                           SetThreadExecutionState(ES_CONTINUOUS|ES_DISPLAY_REQUIRED) PowerShell
+                           helper process spawns the instant a trusted device connects, and gets
+                           killed the instant the last one disconnects. Faithful port of upstream's
+                           screensaverinhibitplugin-win.cpp (constructor/destructor calling the
+                           same Win32 API) — activation condition (any trusted device connected)
+                           matches upstream's plugin lifecycle 1:1.
+                           Found and fixed a real bug along the way: device-manager.ts's `conn.on
+                           ('close', ...)` emitted 'deviceDisconnected' BEFORE deleting the peer
+                           from the internal map, so any listener calling
+                           trustedConnectedDeviceIds() synchronously inside its own
+                           deviceDisconnected handler saw stale state (the disconnecting device
+                           still counted as connected) — this silently broke the "stop inhibiting
+                           when the last device disconnects" condition, the helper process would
+                           spawn but never die. Fixed by deleting from the peers map before
+                           emitting the event, symmetric with deviceConnected already setting the
+                           peer into the map before its emit.
+[-] shareinputdevices / shareinputdevicesremote — OUT OF SCOPE, corrected from an earlier
+                           unverified guess ("plumbing for touchpad"). Verified against real
+                           source: this is desktop-to-desktop KVM/Synergy-style screen-edge mouse
+                           handoff (kdeconnect.shareinputdevices.request edge-crossing delta,
+                           kdeconnect.shareinputdevices releaseDelta handback) — both plugins are
+                           DESKTOP-ONLY with NO Android-side component anywhere in
+                           kdeconnect-android, and their actual injection is just generating
+                           standard kdeconnect.mousepad.request packets under the hood. Not a
+                           phone<->desktop feature at all, so it doesn't apply to what this
+                           project does (phone-as-remote, not desktop-to-desktop KVM switching).
+
+PLANNED TWEAKS (deliberately deferred until the faithful port + full feature set is proven)
+------------------------------------------------------
+[ ] TV casting / media streaming integration
+[ ] Mouse Without Borders plugin (Desktop-to-Desktop screen-edge KVM input switching / coordination)

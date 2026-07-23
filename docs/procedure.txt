@@ -1,0 +1,130 @@
+LINK — DEVELOPMENT PROCEDURE
+============================
+How this project actually gets built, feature by feature. Read this before picking up work here.
+Written for another AI agent (or a human) picking up where a session left off — it captures the
+working method, not just the current state (see features.txt for that, PROTOCOL.md for the wire
+format).
+
+THE CORE DEAL
+------------------------------------------------------
+This is a faithful PORT of KDE Connect's protocol and plugin behavior, built from scratch in
+TypeScript/Electron (desktop) and Java/Capacitor (Android) — NOT a reuse of KDE Connect's actual
+C++/Qt or Kotlin source. "Faithful" means: same wire packet types (renamed kdeconnect.* ->
+link.*), same field names/shapes, same directional behavior, same feature semantics. It does NOT
+mean bit-for-bit reimplementation of upstream's internal architecture — use whatever's idiomatic
+on this stack (Node child_process instead of Qt, PowerShell instead of D-Bus, etc).
+
+Reference source lives locally at /reference/kdeconnect-kde and /reference/kdeconnect-android.
+READ THE ACTUAL PLUGIN SOURCE before implementing anything — packet field names, direction of
+each packet type, which side owns which behavior. Don't guess from the plugin's name or from
+general KDE Connect knowledge; the real source has settled every ambiguity already. When a
+question comes up about whether current work matches upstream (it will — the user checks this
+periodically), answer it by re-reading the source, not from memory of what you implemented earlier.
+
+ORDERING: EASY TO HARD, ALWAYS
+------------------------------------------------------
+Build the highest-risk, most-foundational piece first: identity, TLS, pairing, cert pinning,
+payload-transfer. Everything else is a plugin built on top. When picking "what's next," rank
+candidates by ACTUAL implementation cost, verified against the real reference source — not by
+gut feel or by the feature's name. Concretely, before recommending a next feature:
+  - Read the real plugin source on both sides.
+  - Check whether it needs a runtime-dangerous Android permission (READ_PHONE_STATE, contacts, etc)
+    — now that the permission-prompt flow is built, these are unblocked; ensure to request the
+    necessary permission alias via checkPermissions/requestPermissions before feature execution.
+  - Check whether it needs real OS input injection (synthetic keyboard/mouse events, media
+    session control) — this is a much bigger lift than a plain data packet plugin and should be
+    flagged as such, not undersold as "easy."
+  - When genuinely unsure which of two candidates is cheaper, spend one Explore/subagent call
+    comparing them against the real source before committing — cheap insurance against building
+    the harder thing first by accident.
+Present the recommendation with the real tradeoff in 2-4 sentences and wait for a go-ahead before
+building. Once the user says "proceed" / "do that," build the whole vertical slice without
+re-asking for each sub-step.
+
+SCOPE REDUCTIONS ARE ALLOWED — BUT MUST BE DISCLOSED, NEVER SILENT
+------------------------------------------------------
+Upstream plugins are sometimes bigger than this project needs (multi-sink audio enumeration,
+multi-file share jobs, tap-to-dismiss notifications with full Activity UI). Scoping down is fine.
+The rule: every deviation gets written down twice —
+  1. A code comment at the top of the new file, naming the exact upstream file/behavior being
+     narrowed and why (platform API doesn't support it, no permission flow yet, etc).
+  2. An entry in docs/features.txt under that feature's checklist line, same content, so the
+     project's overall fidelity can be audited without reading every source file.
+Never quietly narrow scope and only mention it if asked. The user has explicitly asked "is that
+met" (fidelity to the from-scratch-port agreement) more than once — the answer needs to be
+immediately checkable from docs/features.txt, not reconstructed from memory.
+
+VERIFY THE RISKY PIECE STANDALONE BEFORE WIRING IT INTO THE FULL PLUGIN
+------------------------------------------------------
+When a feature needs a shaky platform API (COM interop via PowerShell, a native Windows dialog,
+an Android permission flow), prove that ONE piece works in isolation first — a throwaway test
+script, not the real plugin file. Example: before writing desktop/src/core/plugins/
+systemvolume.ts, a standalone .ps1 was written and run manually to confirm IAudioEndpointVolume
+COM calls actually work from PowerShell (they don't work via naive method calls — PowerShell only
+does IDispatch late-binding on COM objects, so vtable-only interfaces need every real call to
+happen inside compiled C#, with PowerShell only invoking primitive-returning static methods).
+Finding that out against a 5-line test script costs a minute; finding it out after wiring a full
+plugin, packet handlers, and an Android UI on top costs a full debugging session.
+
+BUILD BOTH SIDES, THEN PROVE IT ON A REAL DEVICE — NOT "LOOKS RIGHT IN CODE"
+------------------------------------------------------
+A feature isn't done when it compiles. The proof bar is: build desktop, build+install the Android
+APK, pair for real, exercise the feature from actual UI (tapping buttons, dragging sliders,
+touch-dragging surfaces) via `adb shell input` + `adb shell screencap` (screenshot-driven manual
+QA when no test harness exists), and confirm the OTHER side's real state changed — not just that
+a log line printed. For systemvolume that meant literally reading Windows' actual master volume
+via the COM script before and after a phone-side slider drag and diffing the numbers, not just
+trusting that the request handler ran.
+
+Prefer testing over the real LAN (phone joined to actual WiFi, or a Windows Mobile Hotspot with
+the PC as gateway) over adb port-tunnels. Tunnels validate exactly one pre-configured connection;
+features that negotiate their own ephemeral ports/addresses (payload transfer, anything spawning
+a fresh socket) will pass through a tunnel and then fail in the real world. If a feature was only
+ever tunnel-tested, say so plainly and re-test the others once real networking is available —
+don't assume a tunnel pass generalizes.
+
+WHEN SOMETHING IS FLAKY, FIND THE ROOT CAUSE — DON'T PAPER OVER IT
+------------------------------------------------------
+If a manual test intermittently fails (a GUI confirm() dialog not responding to automated input,
+a pairing handshake timing out under load), that is a signal something is actually broken, not
+just an automation nuisance to route around. Add temporary diagnostics (console-message forwarding,
+did-finish-load counters, error-catching on promise chains) directly in the code, reproduce with
+the diagnostics on, and read the actual error. This project's desktop GUI was completely dead
+(silent SyntaxError on every load: a top-level `const link` collided with contextBridge's
+non-configurable `window.link` global) for an unknown number of sessions, and the workaround —
+switching to an auto-accepting headless test script — successfully masked the symptom instead of
+finding the cause. Don't repeat that: when the workaround itself starts feeling unreliable, that's
+the moment to stop and read the actual devtools console / main-process stderr instead of retrying
+the workaround harder. Once found, fix the real bug AND leave a note in features.txt or a comment
+explaining what broke and why, so the next debugging session doesn't start from zero.
+
+LIVING DOCUMENTS — UPDATE THEM AS PART OF THE FEATURE, NOT AFTERWARD
+------------------------------------------------------
+- docs/PROTOCOL.md is ground truth for the wire format. If an implemented feature's real
+  behavior differs from what's written there, fix the doc — it must never describe the plan
+  instead of reality.
+- docs/features.txt is the audit checklist. Mark [x] only once real-device round-trip proof
+  exists (see above), with a note describing exactly what was tested, what was scoped down and
+  why, and any real bug found along the way. Leave [ ] and a one-line reason for anything blocked
+  (missing permission flow, needs input-injection infra not yet built, etc) so the next session
+  doesn't have to rediscover why it was skipped.
+- This file (procedure.txt) has been updated: the runtime-permission-prompt flow is now fully
+  built and active. The "systemically avoid permission features" rule is obsolete.
+- File system mounting guidelines:
+  - The mount system uses a local WebDAV HTTP server in Electron bridging to a Secure WebSocket (wss://) protocol.
+  - Windows mounting is delegated to a bundled, headless `rclone.exe` running in `--network-mode`.
+  - Windows requires quota properties (`quota-available-bytes` and `quota-used-bytes`) inside WebDAV PROPFIND responses to report correct disk capacity/free space.
+  - The `--volname` argument sets the UNC network share name for Windows Explorer.
+
+WORKING STYLE / COMMUNICATION
+------------------------------------------------------
+- Give a short recommendation (2-4 sentences, one clear tradeoff) for open-ended "what next"
+  questions; don't implement until the user confirms. Once confirmed, execute the full slice
+  end-to-end without re-confirming each sub-step.
+- Keep a todo list for any multi-step feature (plugin core -> platform wiring -> UI -> build ->
+  install -> live verify -> docs update) and mark items done immediately, not batched at the end.
+- Clean up scratch artifacts created during manual verification (screenshots, UI dumps, throwaway
+  test scripts) once they've served their purpose — don't leave them littering the repo.
+- Default to no code comments; the ones that do exist in this codebase almost all explain a
+  deliberate deviation from upstream or a non-obvious platform workaround — that's the bar for
+  when a comment earns its place here.
