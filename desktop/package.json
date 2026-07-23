@@ -60,6 +60,6 @@
     "@evan/opus": "^1.0.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "selfsigned": "^2.4.1"
+    "selfsigned": "^5.5.0"
   }
 }
