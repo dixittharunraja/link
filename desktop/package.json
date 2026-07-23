@@ -52,7 +52,7 @@
     "concurrently": "^8.2.2",
     "electron": "^43.0.0",
     "electron-builder": "^26.8.1",
-    "typescript": "^5.5.0",
+    "typescript": "^7.0.2",
     "vite": "^5.2.12",
     "ws": "^8.21.0"
   },
