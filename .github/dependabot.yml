@@ -1,0 +1,48 @@
+# Dependabot — free automated dependency-security monitoring (GitHub-native).
+# Opens PRs when a dependency has a known vulnerability or a newer version, across every
+# dependency manifest in this repo. Security-critical updates are raised immediately regardless of
+# the weekly schedule below. This is the main mitigation for the npm/Gradle supply-chain surface
+# (see docs security notes): it doesn't stop a malicious package, but it means known-bad versions
+# surface fast instead of silently lingering.
+#
+# Updates are grouped (one PR per ecosystem for minor/patch bumps) to keep noise low; major
+# version bumps come as separate PRs so a breaking change is reviewed on its own.
+version: 2
+updates:
+  # ---- npm ecosystems ----
+  - package-ecosystem: "npm"
+    directory: "/desktop"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      desktop-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/mobile"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      mobile-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      root-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # ---- Android / Gradle ----
+  - package-ecosystem: "gradle"
+    directory: "/mobile/android/app"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      android-minor-patch:
+        update-types: ["minor", "patch"]

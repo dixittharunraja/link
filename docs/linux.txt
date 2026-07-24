@@ -1,0 +1,179 @@
+lLINK — LINUX SUPPORT ONBOARDING
+================================
+For: Dharaneesh (Linux support). Read this before touching any code — it maps out exactly
+what's Windows-specific today, where it lives, and the pattern to follow so Linux support lands
+as a clean addition, not a parallel fork of the codebase.
+
+COMMANDS
+--------
+- `npm run dev:desktop` (from repo root) — launches the dev instance (Vite renderer + Electron
+  main, hot reload). This is what you'll run constantly while working. Under the hood it's
+  `cd desktop && npm run dev`.
+- `npm run build:linux` (from repo root) — builds and bundles the .deb package. Under the hood:
+  `cd desktop && npm run build:linux`, which runs `tsc` + `vite build`, then
+  `electron-builder --linux deb`, then copies the resulting .deb into the sibling `rodix` repo's
+  `public/installers/` if that repo exists locally (skips gracefully with a warning if not — don't
+  worry about having `rodix` checked out, it's optional).
+- The electron-builder Linux target is ALREADY configured in `desktop/package.json`'s `build`
+  block (`"linux": {"target": ["deb"], "icon": "icon.png", "category": "Utility"}` +  a `deb`
+  section listing `libnotify4`/`libxtst6`/`libnss3` as runtime deps). You should not need to touch
+  packaging config unless a new feature needs a new native dependency declared there.
+
+THE ONE RULE THAT MATTERS: ZERO REDUNDANCY
+---------------------------------------------
+Before anything else: this repo should end up with ONE implementation of every feature's
+protocol/business logic, with OS-specific code confined to the smallest possible seam inside
+that same file. Never create a second file (`*.linux.ts`, a duplicated class, a copy-pasted
+plugin) to hold "the Linux version" of something that already exists for Windows. If you find
+yourself about to copy a file to make a platform-specific variant, stop — branch inside the
+original file instead (see `core/plugins/lockdevice.ts:47-65` for the exact shape: one function,
+an if/else on `process.platform` picking which OS command to run, everything else in the file
+untouched and shared). This matters because the wire protocol between desktop and Android must
+stay byte-identical regardless of which desktop OS is running it — a forked file is a place for
+that protocol to silently drift when only one of the two copies gets updated later.
+
+REPO LAYOUT (what you need to know)
+------------------------------------
+- `desktop/src/main/` — Electron main process. `main.ts` is the entry point (window/tray
+  lifecycle, IPC handlers). Also: `preload.ts` (renderer bridge), `audio-relay-server.ts` /
+  `audio-relay-client.ts` (Audio Relay + Remote Mic, host/listen), `fs-mount-service.ts` +
+  `fs-client.ts`/`fs-helper.ts`/`fs-socket-client.ts` (WebDAV file-system mount feature).
+- `desktop/src/core/plugins/` — one file per KDE-Connect-style feature (battery.ts, mpris.ts,
+  systemvolume.ts, lockdevice.ts, screensaver-inhibit.ts, touchpad.ts, findmyphone.ts, etc.).
+  This is where almost all of the Windows-only code you need to replace actually lives.
+- `desktop/src/scripts/` — PowerShell helper scripts the main process spawns for anything Node
+  has no cross-platform API for (audio capture, volume, media-session control, screensaver
+  inhibit). These get copied into `dist/scripts/` at build time (see the `build`/`dev` npm
+  scripts in `desktop/package.json` — note the copy step is currently hardcoded per-file; you'll
+  likely want to make that copy step platform-aware, or add your own Linux scripts dir alongside
+  it, same copy pattern).
+- `desktop/vendor/rclone/` — currently only vendors `rclone.exe` (Windows), pinned by SHA-256
+  (`fs-mount-service.ts`, `RCLONE_PINNED_SHA256`). You'll need to vendor a Linux `rclone` binary
+  here too if you take on the file-system mount feature.
+- `mobile/` — Android/Capacitor app. Not in scope for you; nothing here needs Linux changes.
+
+EVERYTHING CURRENTLY WINDOWS-ONLY (needs a Linux path)
+--------------------------------------------------------
+All of this works by spawning `powershell.exe` / `reg` / `net` / `rundll32` / an inline-compiled
+C# helper — there are NO Windows-only npm packages involved (no node-window-manager, no regedit,
+etc.), so nothing here requires ripping out a native dependency. It's all shell-out code, which
+is actually good news: the same "spawn an OS process, parse its output" pattern works on Linux,
+you're just swapping *what* gets spawned.
+
+1. `audio-capture.ps1` — WASAPI loopback capture (system audio), used by Audio Relay hosting.
+   Spawned from `audio-relay-server.ts`. Linux equivalent: PipeWire/PulseAudio monitor-source
+   capture (e.g. `pw-record`/`parec` piping raw PCM to stdout in the same JSON-header-then-PCM
+   framing the current script uses, so the Node side needs zero changes).
+2. `audio-endpoint-volume.ps1` — get/set/mute system volume. Spawned from
+   `core/plugins/systemvolume.ts` as a persistent stdin-driven process. Linux equivalent:
+   `pactl`/`wpctl` (PipeWire) commands, same one-shot-or-REPL shape.
+3. `mpris-control.ps1` — media session control (WinRT SMTC). Spawned from `core/plugins/mpris.ts`.
+   Linux equivalent is almost comedic: MPRIS is a Linux/D-Bus standard to begin with (that's
+   literally where the name in this codebase comes from) — `playerctl` or raw D-Bus calls to
+   `org.mpris.MediaPlayer2.*` give you this natively, likely simpler than the Windows path was.
+4. `screensaver-inhibit.ps1` — calls `SetThreadExecutionState` via P/Invoke. Spawned from
+   `core/plugins/screensaver-inhibit.ts`. Linux equivalent: `systemd-inhibit` (spawn it as a
+   long-lived child the same way, kill it to release) or a D-Bus call to
+   `org.freedesktop.ScreenSaver.Inhibit`.
+5. `core/plugins/touchpad.ts` — compiles a C# helper on the fly via `csc.exe` for mouse/keyboard
+   injection (pointer move, clicks, media keys). Linux equivalent: `xdotool` (X11) is the
+   pragmatic first target; Wayland has no universal input-injection API (varies by compositor) —
+   flag this as a real scoping decision, not just a port, when you get to it.
+6. `fs-mount-service.ts` — see the dedicated FILE SYSTEM MOUNTING ON LINUX section below; the
+   short version is that most of this file is ALREADY cross-platform and only a small part of
+   it needs a Linux branch.
+7. `core/plugins/lockdevice.ts:49` — ALREADY has an explicit Linux stub: it no-ops with a console
+   warning on any non-`win32` platform instead of crashing. This is the best template in the repo
+   for "how do I add a Linux branch without breaking Windows" — read this file first as your
+   reference pattern before touching anything else.
+8. `core/plugins/findmyphone.ts` — hardcodes `C:\Windows\Media\Alarm01.wav` via PowerShell.
+   Linux equivalent: `paplay`/`pw-play` with a bundled/system sound file.
+9. `core/plugins/battery.ts` — PowerShell `Get-CimInstance Win32_Battery`. Linux equivalent:
+   read `/sys/class/power_supply/*/capacity` and `/status` directly — no shell-out even needed.
+10. `desktop/build/installer.nsh` — NSIS installer script, runs `netsh advfirewall` firewall
+    rules on install/uninstall. This is Windows-installer-only; it has no Linux counterpart to
+    port because .deb packaging doesn't work this way at all (see below).
+
+FILE SYSTEM MOUNTING ON LINUX (mounts the phone as a local filesystem — WebDAV+rclone feature)
+--------------------------------------------------------------------------------------------------
+Read `fs-mount-service.ts` in full before touching it — its architecture is better news than it
+first looks. It runs a local Node HTTP server that speaks WebDAV (all of `handleRequest`,
+`translatePath`, and the PROPFIND/GET/PUT/DELETE/MOVE method handlers — several hundred lines),
+and spawns `rclone mount :webdav:` pointed at that local server. rclone exists as a bridge here
+because it has no way to speak Link's own custom phone-filesystem protocol (`LinkFsClient`, over
+WSS) directly — WebDAV is just the local lingua franca between this app's Node code and rclone.
+**That entire WebDAV bridge is already 100% cross-platform Node code and needs ZERO Linux-specific
+changes.** Do not touch `handleRequest`/`translatePath`/the HTTP method handlers at all.
+
+What's genuinely Windows-only in this one file, and needs a Linux branch (same
+branch-inside-the-file rule as everywhere else — do not fork this file):
+- `driveLetter: string = 'Z:'` — Linux has no drive-letter concept. Replace with a real mount
+  path (e.g. `~/Link` or an XDG runtime dir like `/run/user/<uid>/link`), branched by platform,
+  everything downstream (`this.driveLetter` is really "mount target" already used generically
+  through the rest of the class) stays the same shape.
+- `setDriveRegistry`/`clearDriveRegistry` — Windows Explorer drive-label registry calls. No
+  Linux equivalent needed at all (file managers pick up the volume label from rclone's
+  `--volname` flag, which is already OS-agnostic and already in the args list).
+- `cleanup()`'s `net use <letter> /delete /y` — Windows-only forced-unmount fallback. Linux
+  equivalent: `fusermount -u <mountpoint>` (or just trust rclone's own clean shutdown on
+  `SIGTERM`, which is generally more reliable on Linux than Windows drive-letter cleanup is).
+- The vendored binary: `desktop/vendor/rclone/rclone.exe`, path + pinned SHA-256
+  (`RCLONE_PINNED_SHA256`) in `spawnRclone()`. You'll vendor a Linux `rclone` binary at
+  `desktop/vendor/rclone/rclone` (no extension) with its own pinned hash, and branch the binary
+  path/hash constant by platform — same integrity-check pattern, just a second known-good hash
+  for a second binary.
+
+Speed expectation: this should feel snappier for browsing/small-file operations on Linux, because
+rclone's `mount` is FUSE-native there (its primary, first-class target), whereas the Windows path
+needs the WinFsp compatibility driver — the existing Windows implementation had to mount "in
+network redirector mode" specifically to stop Explorer from crashing (see the mount-args comments
+in `fs-mount-service.ts` and the feature writeup in `docs/status.txt`), which is overhead Linux's
+native FUSE path won't need. That said, don't oversell it: big-file transfer speed is bottlenecked
+by the WSS channel to the phone (the pipelined, 6-way-concurrent 1MB-chunk reads in
+`handleRequest`) — that code is 100% shared and unchanged, so it caps throughput identically on
+both platforms. The win is real but it's in responsiveness/small-file/metadata operations, not a
+free multiplier on raw transfer speed.
+
+WHERE process.platform IS ALREADY BRANCHED (don't need new work, just know these exist)
+------------------------------------------------------------------------------------------
+- `main.ts` picks `.ico` vs `.png` for the app icon, skips the win32-only tray balloon and
+  `setAppUserModelId` call on other platforms, and already uses `!== 'darwin'` (not
+  `=== 'win32'`) for the quit-on-all-windows-closed behavior — that one's already correct for
+  Linux as-is.
+
+PRACTICAL NOTES FOR APPLYING THE ZERO-REDUNDANCY RULE ABOVE
+----------------------------------------------------------------
+- For the PowerShell-script-backed features (audio, volume, mpris, screensaver), the cleanest
+  split is: keep `desktop/src/scripts/*.ps1` as-is (Windows), add a parallel
+  `desktop/src/scripts/*.sh` (or a single `.js`/`.ts` helper using the Linux CLI tools listed
+  above — genuinely simpler than PowerShell for most of these), and have the *calling* plugin
+  file (`systemvolume.ts`, `mpris.ts`, etc.) pick which helper to spawn based on
+  `process.platform`, same spawn/parse code shape either way. Don't rewrite the calling
+  plugin's IPC/packet logic — only the "which script do I spawn and what do I expect back"
+  seam changes.
+- For anything that's a genuinely different *model*, not just a different command (drive
+  letters vs. FUSE mountpoints being the clearest example), don't force it into the existing
+  Windows shape. Redesign that one seam properly, keep the wire protocol identical, and note the
+  new Linux-side config surface in `docs/status.txt`/`docs/features.txt` once it's working —
+  those two files are the project's living source of truth for "what's actually verified on real
+  hardware," not just what compiles.
+- Update `desktop/package.json`'s `build`/`dev` npm scripts' inline copy step (currently a long
+  `node -e "..."` one-liner copying each `.ps1` into `dist/scripts/`) to also copy any new Linux
+  helper scripts you add, keeping the existing pattern rather than introducing a separate build
+  tool.
+- Test manually against real hardware/a real Linux desktop session — there is deliberately no
+  `desktop/src/test/` directory anymore (it held a handful of ad-hoc historical e2e scripts that
+  were never part of the shipped app and were removed as dead weight); don't reintroduce
+  standalone test scripts living in `src/`. If you want repeatable verification for the Linux
+  work specifically, that's worth a real discussion with the rest of the team on where automated
+  tests should live going forward, not a solo ad-hoc file.
+
+WHAT'S ALREADY DONE FOR YOU
+------------------------------
+- `electron-builder`'s `.deb` target and the `build:linux` npm script both already exist and
+  work end-to-end today (they just produce a .deb with an unmodified Windows-only app inside it
+  right now — the packaging plumbing is not what's missing, the platform-specific *behavior*
+  inside the app is).
+- The wire protocol / packet format for every feature is already fully cross-platform and
+  proven (desktop <-> Android) — you are never changing what gets sent over the network, only
+  how the Linux side of the desktop app produces/consumes it locally.

@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:enableOnBackInvokedCallback="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <activity
+            android:name=".SendClipboardActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleInstance"
+            android:exported="false" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+        <service android:name="in.rodix.link.LinkForegroundService"
+                 android:foregroundServiceType="connectedDevice|mediaProjection|microphone"
+                 android:stopWithTask="false"
+                 android:exported="false" />
+        <service android:name="in.rodix.link.LinkNotificationReceiver"
+                 android:label="Link Notification Sync"
+                 android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+                 android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <receiver android:name="in.rodix.link.LinkDeviceAdminReceiver"
+            android:label="Link Device Administrator"
+            android:description="@string/device_admin_description"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data android:name="android.app.device_admin"
+                android:resource="@xml/device_admin_rules" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Held (WIFI_MODE_FULL_HIGH_PERF WifiLock + PARTIAL_WAKE_LOCK) only while a file-system
+         client is actively connected — see LinkFsServer. Keeps the Wi-Fi radio out of power-save
+         and the CPU awake during transfers, eliminating the latency spikes/stalls that made the
+         mounted drive freeze on hotspot/2.4GHz links. Both are normal (no runtime prompt). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- Since Android 10 (API 29), ACTION_PHONE_STATE_CHANGED omits EXTRA_INCOMING_NUMBER
+         entirely for apps that aren't the default dialer unless they also hold READ_CALL_LOG —
+         without it the number is null and every caller shows as "Unknown Caller". -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Android 14+ requires the connectedDevice FGS type to be paired with at least one of a
+         specific set of companion permissions (Bluetooth/Wi-Fi/NFC/etc.) or startForeground()
+         throws a SecurityException. CHANGE_WIFI_STATE is a normal (no runtime prompt) permission
+         and is genuinely applicable — this app does manage LAN/Wi-Fi device connections. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <!-- Needed to hold a WifiManager.MulticastLock while the discovery UDP receiver is running —
+         see LinkDiscovery.Watcher.start() for why broadcast reception needs it on some chipsets. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- AudioPlaybackCapture (Audio Relay, Android-as-host) rides on the same MediaProjection
+         consent+lifecycle as screen capture, even though only audio is used — the OS requires
+         it to run inside a foreground service declaring the mediaProjection type, and (API 34+)
+         requires this permission before startForeground() can include that type in its bitmask. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Required alongside the MediaProjection grant for AudioPlaybackCaptureConfiguration +
+         AudioRecord — see LinkAudioCapture.java. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Remote Mic (LinkRemoteMicCapture) reads the phone's own microphone via plain AudioRecord,
+         no MediaProjection involved. Since Android 9, mic input from a backgrounded app (no
+         visible Activity — screen off counts) is silenced/blocked unless the capture runs inside
+         a foreground service declaring the microphone type; API 34+ additionally requires this
+         permission before startForeground() can include that type in its bitmask. Without this,
+         Remote Mic hosting goes silent the moment the screen turns off even though the app's
+         process itself stays alive (LinkForegroundService already handles that part). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+</manifest>

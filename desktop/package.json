@@ -1,0 +1,75 @@
+{
+  "name": "link-desktop",
+  "version": "0.1.0",
+  "description": "Link desktop app — faithful Electron port of KDE Connect's protocol",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && vite build --base=./ && node -e \"require('fs').mkdirSync('dist/scripts',{recursive:true});require('fs').copyFileSync('src/scripts/audio-endpoint-volume.ps1','dist/scripts/audio-endpoint-volume.ps1');require('fs').copyFileSync('src/scripts/screensaver-inhibit.ps1','dist/scripts/screensaver-inhibit.ps1');require('fs').copyFileSync('src/scripts/mpris-control.ps1','dist/scripts/mpris-control.ps1');require('fs').copyFileSync('src/scripts/audio-capture.ps1','dist/scripts/audio-capture.ps1')\"",
+    "build:windows": "npm run build && electron-builder --win && node scripts/split-installer.js && node scripts/publish-hashes.js",
+    "build:linux": "npm run build && electron-builder --linux deb && node -e \"const fs=require('fs'); const path=require('path'); const rodixPublic=path.resolve('../rodix/public/installers'); if (fs.existsSync(path.resolve('../rodix'))) { fs.mkdirSync(rodixPublic, {recursive:true}); const files=fs.readdirSync('dist_electron'); const debFile=files.find(f => f.endsWith('.deb')); if (debFile) { fs.copyFileSync(path.join('dist_electron', debFile), path.join(rodixPublic, 'link.deb')); console.log('✅ Copied Linux installer to rodix project'); } } else { console.warn('⚠️  Skipping Linux installer copy: rodix sibling directory not found.'); }\"",
+    "dev": "tsc -p tsconfig.json && node -e \"require('fs').mkdirSync('dist/scripts',{recursive:true});require('fs').copyFileSync('src/scripts/audio-endpoint-volume.ps1','dist/scripts/audio-endpoint-volume.ps1');require('fs').copyFileSync('src/scripts/screensaver-inhibit.ps1','dist/scripts/screensaver-inhibit.ps1');require('fs').copyFileSync('src/scripts/mpris-control.ps1','dist/scripts/mpris-control.ps1');require('fs').copyFileSync('src/scripts/audio-capture.ps1','dist/scripts/audio-capture.ps1')\" && concurrently \"vite\" \"electron dist/main/main.js --dev\""
+  },
+  "build": {
+    "appId": "in.rodix.link",
+    "productName": "Link",
+    "directories": {
+      "output": "dist_electron"
+    },
+    "files": [
+      "dist/**/*",
+      "icon.png",
+      "icon.ico",
+      "call-icon.png",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Link",
+      "include": "build/installer.nsh"
+    },
+    "linux": {
+      "target": [
+        "deb"
+      ],
+      "icon": "icon.png",
+      "category": "Utility"
+    },
+    "deb": {
+      "priority": "optional",
+      "depends": [
+        "libnotify4",
+        "libxtst6",
+        "libnss3"
+      ]
+    }
+  },
+  "license": "GPL-3.0-only",
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^8.2.2",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.8.1",
+    "typescript": "^5.5.0",
+    "vite": "^5.2.12",
+    "ws": "^8.21.0"
+  },
+  "dependencies": {
+    "@evan/opus": "^1.0.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "selfsigned": "^2.4.1"
+  }
+}
