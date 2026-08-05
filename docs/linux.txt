@@ -26,7 +26,7 @@ protocol/business logic, with OS-specific code confined to the smallest possible
 that same file. Never create a second file (`*.linux.ts`, a duplicated class, a copy-pasted
 plugin) to hold "the Linux version" of something that already exists for Windows. If you find
 yourself about to copy a file to make a platform-specific variant, stop — branch inside the
-original file instead (see `core/plugins/lockdevice.ts:47-65` for the exact shape: one function,
+original file instead (see `core/plugins/lock.ts:47-65` for the exact shape: one function,
 an if/else on `process.platform` picking which OS command to run, everything else in the file
 untouched and shared). This matters because the wire protocol between desktop and Android must
 stay byte-identical regardless of which desktop OS is running it — a forked file is a place for
@@ -39,7 +39,7 @@ REPO LAYOUT (what you need to know)
   `audio-relay-client.ts` (Audio Relay + Remote Mic, host/listen), `fs-mount-service.ts` +
   `fs-client.ts`/`fs-helper.ts`/`fs-socket-client.ts` (WebDAV file-system mount feature).
 - `desktop/src/core/plugins/` — one file per KDE-Connect-style feature (battery.ts, mpris.ts,
-  systemvolume.ts, lockdevice.ts, screensaver-inhibit.ts, touchpad.ts, findmyphone.ts, etc.).
+  systemvolume.ts, lock.ts, screensaver-inhibit.ts, touchpad.ts, findmydevice.ts, etc.).
   This is where almost all of the Windows-only code you need to replace actually lives.
 - `desktop/src/scripts/` — PowerShell helper scripts the main process spawns for anything Node
   has no cross-platform API for (audio capture, volume, media-session control, screensaver
@@ -82,11 +82,11 @@ you're just swapping *what* gets spawned.
 6. `fs-mount-service.ts` — see the dedicated FILE SYSTEM MOUNTING ON LINUX section below; the
    short version is that most of this file is ALREADY cross-platform and only a small part of
    it needs a Linux branch.
-7. `core/plugins/lockdevice.ts:49` — ALREADY has an explicit Linux stub: it no-ops with a console
+7. `core/plugins/lock.ts:49` — ALREADY has an explicit Linux stub: it no-ops with a console
    warning on any non-`win32` platform instead of crashing. This is the best template in the repo
    for "how do I add a Linux branch without breaking Windows" — read this file first as your
    reference pattern before touching anything else.
-8. `core/plugins/findmyphone.ts` — hardcodes `C:\Windows\Media\Alarm01.wav` via PowerShell.
+8. `core/plugins/findmydevice.ts` — hardcodes `C:\Windows\Media\Alarm01.wav` via PowerShell.
    Linux equivalent: `paplay`/`pw-play` with a bundled/system sound file.
 9. `core/plugins/battery.ts` — PowerShell `Get-CimInstance Win32_Battery`. Linux equivalent:
    read `/sys/class/power_supply/*/capacity` and `/status` directly — no shell-out even needed.

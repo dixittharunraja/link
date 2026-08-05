@@ -1,4 +1,4 @@
-// Notification plugin — faithful port of kdeconnect-kde's plugins/notifications/notificationsplugin.cpp.
+// Notification plugin.
 // Receives app notifications and displays them on the desktop.
 
 import { LinkPacket } from '../packet';
@@ -17,6 +17,8 @@ export interface NotificationBody {
   /** Base64-encoded PNG of the originating app's own icon (e.g. WhatsApp's icon), if resolved
    * on the sending device. Falls back to the Link app icon when absent. */
   iconBase64?: string;
+  /** Source device name (for mesh-wide notifications) */
+  sourceDeviceName?: string;
 }
 
 export function isNotificationPacket(packet: LinkPacket): boolean {

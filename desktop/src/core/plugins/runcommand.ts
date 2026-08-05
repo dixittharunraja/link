@@ -1,7 +1,7 @@
-// Run Command plugin — faithful port of kdeconnect-kde's plugins/runcommand/runcommandplugin.cpp.
+// Run Command plugin.
 // Desktop holds and executes a whitelist of commands; the phone only ever displays and triggers
 // by key — it never sends an arbitrary command string, and the desktop never accepts one. This
-// is a hard security boundary, not just a design choice (see docs/PROTOCOL.md's runcommand note).
+// is a hard security boundary, not just a design choice.
 //
 // The whitelist itself is desktop-owned config (matches upstream — only the desktop's own
 // settings UI edits it, the phone can never add/remove/modify entries, only select by key).

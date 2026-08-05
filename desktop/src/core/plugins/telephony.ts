@@ -1,4 +1,4 @@
-// Telephony plugin — faithful port of kdeconnect-kde's plugins/telephony/telephonyplugin.cpp.
+// Telephony plugin.
 // Receives call events (ringing, talking, cancelled, missedCall) and notifies the user.
 
 import { LinkPacket } from '../packet';

@@ -14,8 +14,7 @@ package in.rodix.link;
 // This service intentionally holds no networking logic of its own — LinkPlugin's existing
 // DeviceManager, sockets, and packet handling are untouched. Its only job is to hold a
 // startForeground() notification so Android treats this process as doing active foreground work
-// and does not kill it just because the task was swiped away. This is the same architecture
-// kdeconnect-android itself uses for the identical reason.
+// and does not kill it just because the task was swiped away.
 public class LinkForegroundService extends android.app.Service {
 
     // Since Android 13 (API 33), the OS lets users swipe away a foreground service's notification
@@ -65,10 +64,22 @@ public class LinkForegroundService extends android.app.Service {
     private void startForegroundCompat() {
         android.app.Notification n = LinkPlugin.buildActiveNotification(getApplicationContext());
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            startForeground(LinkPlugin.NOTIFICATION_ID, n,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+            try {
+                startForeground(LinkPlugin.NOTIFICATION_ID, n,
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                    | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                    | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+            } catch (Exception e) {
+                // On Android 14+ (API 34+), declaring MEDIA_PROJECTION or MICROPHONE foreground service types
+                // without an active projection token or microphone grant throws SecurityException during initial boot.
+                // Fallback to CONNECTED_DEVICE type so background persistent notification runs cleanly immediately.
+                try {
+                    startForeground(LinkPlugin.NOTIFICATION_ID, n,
+                        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+                } catch (Exception ex) {
+                    startForeground(LinkPlugin.NOTIFICATION_ID, n);
+                }
+            }
         } else {
             startForeground(LinkPlugin.NOTIFICATION_ID, n);
         }

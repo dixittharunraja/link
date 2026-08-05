@@ -55,4 +55,15 @@ public class LinkDND {
             throw new RuntimeException(e);
         }
     }
+
+    public static LinkPacket createCommandPacket(boolean enabled) {
+        try {
+            JSONObject body = new JSONObject();
+            body.put("enabled", enabled);
+            body.put("isCommand", true);
+            return new LinkPacket(PACKET_TYPE_DND, body);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 }

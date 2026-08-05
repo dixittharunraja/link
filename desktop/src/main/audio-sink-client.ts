@@ -1,11 +1,16 @@
-// Audio Relay — listener side, when THIS desktop is listening to another host (not hosting
-// itself). Mirrors audio-relay-server.ts's protocol exactly: connects with the device's own
-// long-lived TLS identity (the host needs to see it to compute the PIN, or to match a token),
-// announces intent as the first message, then either waits for a human PIN-confirm (guest path)
-// or is admitted immediately (paired-token path) — same one-relay-server, two-admission-paths
-// design as the host side.
+// Audio Sink / Remote Mic — listener side (this class is shared by both: same PCM-relay protocol,
+// different port, see main.ts's wireAudioSinkClientEvents vs wireRemoteMicClientEvents). Connects
+// with the device's own long-lived TLS identity, announces intent as the first message.
 //
-// PCM audio arrives over a separate UDP socket, not this WS connection — see audio-relay-
+// The two hosts this connects to are NOT symmetric on the accept step, which is why the PIN
+// machinery below has to stay even though Audio Sink itself doesn't need it: Audio Sink's own
+// host (audio-sink-server.ts, and LinkAudioSinkServer.java on Android) admits a guest join
+// immediately, no human confirmation. Remote Mic's host (LinkRemoteMicServer.java — Android only,
+// since desktop never hosts Remote Mic) still gates a guest join on a human PIN accept/reject.
+// wireAudioSinkClientEvents simply never forwards 'pinComputed' to the renderer, since Audio
+// Sink's own UI has nothing to do with it; wireRemoteMicClientEvents does forward it.
+//
+// PCM audio arrives over a separate UDP socket, not this WS connection — see audio-sink-
 // server.ts's header comment for the full reasoning (TCP head-of-line blocking vs. real-time
 // audio). This WS connection keeps carrying every control message unchanged. The 'admitted'
 // message now also carries our connId and a per-session AES-256-GCM key; we open a UDP socket,
@@ -24,7 +29,7 @@ import WebSocket from 'ws';
 import type { Decoder as OpusDecoderClass } from '@evan/opus';
 import { computeVerificationCode } from '../core/pairing';
 
-// Same guarded-load pattern as audio-relay-server.ts's OpusEncoderCtor — see that file's comment
+// Same guarded-load pattern as audio-sink-server.ts's OpusEncoderCtor — see that file's comment
 // for why this is a defensive fallback, not an expected common case.
 let OpusDecoderCtor: typeof OpusDecoderClass | null = null;
 try {
@@ -54,29 +59,33 @@ export interface AudioFormat {
 
 export type JoinMode = { kind: 'guest' } | { kind: 'token'; token: string };
 
-export interface AudioRelayClientEvents {
-  /** Fired once, right after connecting, only for the guest path — UI should show this PIN and
-   *  wait for the host to accept/reject; nothing further happens until 'admitted' or 'closed'. */
+export interface AudioSinkClientEvents {
+  /** Fired once, right after connecting, only for the guest path. Audio Sink's own host admits
+   *  immediately regardless (see this file's header comment), so Audio Sink's own event wiring
+   *  never forwards this to the renderer; Remote Mic's host genuinely still gates on it. */
   pinComputed: (pin: string) => void;
-  admitted: () => void;
+  admitted: (hostName: string) => void;
   format: (format: AudioFormat) => void;
   /** Raw PCM bytes for one chunk (codec-tag byte already stripped) — hand straight to Web Audio. */
   audioChunk: (pcm: Buffer) => void;
   hostMuted: (muted: boolean) => void;
-  ended: () => void;
+  /** `reason` is set when this close came from the host kicking just this listener (server sends
+   *  no {type:'ended'} message first, only a plain 1000 close with a reason) — undefined for a
+   *  graceful whole-session end. See audio-sink-client.ts's onWsClose for the full distinction. */
+  ended: (reason?: string) => void;
   closed: (reason: string) => void;
   error: (err: Error) => void;
 }
 
-export declare interface AudioRelayClient {
-  on<E extends keyof AudioRelayClientEvents>(event: E, listener: AudioRelayClientEvents[E]): this;
-  emit<E extends keyof AudioRelayClientEvents>(event: E, ...args: Parameters<AudioRelayClientEvents[E]>): boolean;
+export declare interface AudioSinkClient {
+  on<E extends keyof AudioSinkClientEvents>(event: E, listener: AudioSinkClientEvents[E]): this;
+  emit<E extends keyof AudioSinkClientEvents>(event: E, ...args: Parameters<AudioSinkClientEvents[E]>): boolean;
 }
 
 const CODEC_TAG_PCM = 0x00;
 const CODEC_TAG_OPUS = 0x01;
 
-export class AudioRelayClient extends EventEmitter {
+export class AudioSinkClient extends EventEmitter {
   private ws: WebSocket | null = null;
   private pinComputedLocally = false;
   private udpSocket: dgram.Socket | null = null;
@@ -91,90 +100,166 @@ export class AudioRelayClient extends EventEmitter {
     private host: string,
     private port: number,
     private clientCert: string,
-    private clientKey: string
+    private clientKey: string,
+    private localDeviceName: string
   ) {
     super();
   }
 
   connect(mode: JoinMode): void {
-    const url = `wss://${this.host}:${this.port}`;
+    const hosts = this.host.split(',').map((h) => h.trim()).filter(Boolean);
+    
+    if (hosts.length <= 1) {
+      this.connectSingle(this.host, mode);
+      return;
+    }
+
+    let resolved = false;
+    const clients: WebSocket[] = [];
+
+    const cleanupOthers = (successfulWs: WebSocket) => {
+      resolved = true;
+      for (const client of clients) {
+        if (client !== successfulWs) {
+          try {
+            client.removeAllListeners();
+            client.close();
+          } catch {}
+        }
+      }
+    };
+
+    for (const host of hosts) {
+      const url = `wss://${host}:${this.port}`;
+      const ws = new WebSocket(url, {
+        rejectUnauthorized: false, // self-signed peer, verified at the app layer (PIN/token) not here
+        handshakeTimeout: 10000,
+        cert: this.clientCert,
+        key: this.clientKey,
+      });
+      clients.push(ws);
+
+      ws.on('open', () => {
+        if (resolved) {
+          try { ws.close(); } catch {}
+          return;
+        }
+        cleanupOthers(ws);
+        this.ws = ws;
+        this.onWsOpen(ws, mode);
+      });
+
+      ws.on('message', (data: WebSocket.RawData) => {
+        if (this.ws === ws) {
+          this.onWsMessage(data);
+        }
+      });
+
+      ws.on('close', (code, reason) => {
+        if (this.ws === ws) {
+          this.onWsClose(code, reason);
+        }
+      });
+
+      ws.on('error', (err) => {
+        if (this.ws === ws) {
+          this.onWsError(err);
+        } else if (!resolved && clients.every(c => c.readyState === WebSocket.CLOSED || c.readyState === WebSocket.CLOSING)) {
+          this.emit('error', err);
+        }
+      });
+    }
+  }
+
+  private connectSingle(host: string, mode: JoinMode): void {
+    const url = `wss://${host}:${this.port}`;
     this.ws = new WebSocket(url, {
-      rejectUnauthorized: false, // self-signed peer, verified at the app layer (PIN/token) not here
+      rejectUnauthorized: false,
       handshakeTimeout: 15000,
       cert: this.clientCert,
       key: this.clientKey,
     });
 
-    this.ws.on('open', () => {
-      const socket = (this.ws as any)._socket;
-      if (socket && typeof socket.setNoDelay === 'function') socket.setNoDelay(true);
+    this.ws.on('open', () => this.onWsOpen(this.ws!, mode));
+    this.ws.on('message', (data: WebSocket.RawData) => this.onWsMessage(data));
+    this.ws.on('close', (code, reason) => this.onWsClose(code, reason));
+    this.ws.on('error', (err) => this.onWsError(err));
+  }
 
-      if (mode.kind === 'token') {
-        this.ws!.send(JSON.stringify({ type: 'join-token', token: mode.token }));
-      } else {
-        // Compute our own PIN independently from what THIS side saw during the handshake —
-        // preferred over trusting a value the server tells us, so a genuine MITM (relaying/
-        // proxying the connection) would produce a mismatch a human would notice, preserving the
-        // same tamper-evidence property normal pairing's PIN already has. Falls back to the
-        // server's own 'pin' control message (see the message handler below) only if this fails
-        // — kept as a fallback rather than the primary path since it's weaker (see
-        // audio-relay-server.ts's join-guest branch for the full reasoning).
-        this.pinComputedLocally = false;
-        const peerCert = (this.ws as any)._socket?.getPeerCertificate?.();
-        if (peerCert && peerCert.raw) {
-          try {
-            const peerPublicKeyDer = new crypto.X509Certificate(peerCert.raw).publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
-            const myPublicKeyDer = new crypto.X509Certificate(this.clientCert).publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
-            const pin = computeVerificationCode(myPublicKeyDer, peerPublicKeyDer);
-            this.pinComputedLocally = true;
-            this.emit('pinComputed', pin);
-          } catch (e: any) {
-            this.emit('error', new Error('Failed to compute PIN: ' + e.message));
-          }
+  private onWsOpen(ws: WebSocket, mode: JoinMode): void {
+    const socket = (ws as any)._socket;
+    if (socket && typeof socket.setNoDelay === 'function') socket.setNoDelay(true);
+
+    if (mode.kind === 'token') {
+      ws.send(JSON.stringify({ type: 'join-token', token: mode.token }));
+    } else {
+      // Compute our own PIN independently from what THIS side saw during the handshake —
+      // preferred over trusting a value the server tells us, so a genuine MITM (relaying/
+      // proxying the connection) would produce a mismatch a human would notice. Only Remote
+      // Mic's host actually gates admission on this (Audio Sink's own host ignores it entirely
+      // and admits immediately — see this file's header comment), but this class can't tell
+      // which feature it's being used for, so it always computes and offers the PIN; whichever
+      // side's event wiring in main.ts chooses to forward it decides whether it's shown.
+      this.pinComputedLocally = false;
+      const peerCert = (ws as any)._socket?.getPeerCertificate?.();
+      if (peerCert && peerCert.raw) {
+        try {
+          const peerPublicKeyDer = new crypto.X509Certificate(peerCert.raw).publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+          const myPublicKeyDer = new crypto.X509Certificate(this.clientCert).publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+          const pin = computeVerificationCode(myPublicKeyDer, peerPublicKeyDer);
+          this.pinComputedLocally = true;
+          this.emit('pinComputed', pin);
+        } catch (e: any) {
+          this.emit('error', new Error('Failed to compute PIN: ' + e.message));
         }
-        this.ws!.send(JSON.stringify({ type: 'join-guest' }));
       }
-    });
+      ws.send(JSON.stringify({ type: 'join-guest', deviceName: this.localDeviceName }));
+    }
+  }
 
-    this.ws.on('message', (data: WebSocket.RawData) => {
-      // Audio no longer arrives over this connection at all (see this file's header comment) —
-      // every message here is a JSON control message now.
-      let msg: any;
-      try {
-        msg = JSON.parse(data.toString());
-      } catch {
-        return;
-      }
-      if (msg.type === 'admitted') {
-        this.setupUdp(msg.connId, msg.udpKey);
-        this.emit('admitted');
-      }
-      else if (msg.type === 'format') this.handleFormatMessage(msg);
-      else if (msg.type === 'hostMuted') this.emit('hostMuted', !!msg.muted);
-      else if (msg.type === 'ended') this.emit('ended');
-      else if (msg.type === 'pin' && !this.pinComputedLocally) this.emit('pinComputed', msg.code);
-    });
+  private onWsMessage(data: WebSocket.RawData): void {
+    // Audio no longer arrives over this connection at all (see this file's header comment) —
+    // every message here is a JSON control message now.
+    let msg: any;
+    try {
+      msg = JSON.parse(data.toString());
+    } catch {
+      return;
+    }
+    if (msg.type === 'admitted') {
+      this.setupUdp(msg.connId, msg.udpKey);
+      this.emit('admitted', msg.hostName || '');
+    }
+    else if (msg.type === 'format') this.handleFormatMessage(msg);
+    else if (msg.type === 'hostMuted') this.emit('hostMuted', !!msg.muted);
+    else if (msg.type === 'ended') this.emit('ended');
+    else if (msg.type === 'pin' && !this.pinComputedLocally) this.emit('pinComputed', msg.code);
+  }
 
-    this.ws.on('close', (code, reason) => {
-      // 1000 (normal closure) and 1001 (going away) are the codes a graceful host-initiated
-      // ending produces — the host's stop() broadcasts {type:'ended'} then closes with exactly
-      // code 1000, but there's a real race between that message being delivered/processed and
-      // this socket-level close event firing (network delivery isn't instant, and closing right
-      // after sending doesn't guarantee the message was flushed first) — so this event can arrive
-      // instead of, or before, that message ever gets handled. Treating these codes as a graceful
-      // 'ended' rather than surfacing "code 1000"/"code 1001" as a scary raw error is what makes
-      // that race harmless instead of leaving the UI stuck showing a confusing error for what's
-      // actually just the host ending the session normally.
-      if (code === 1000 || code === 1001) {
-        this.emit('ended');
-      } else {
-        this.emit('closed', reason?.toString() || `code ${code}`);
-      }
-    });
+  private onWsClose(code: number, reason: any): void {
+    // 1000 (normal closure) and 1001 (going away) are the codes a graceful host-initiated
+    // ending produces — the host's stop() broadcasts {type:'ended'} then closes with exactly
+    // code 1000, but there's a real race between that message being delivered/processed and
+    // this socket-level close event firing (network delivery isn't instant, and closing right
+    // after sending doesn't guarantee the message was flushed first) — so this event can arrive
+    // instead of, or before, that message ever gets handled. Treating these codes as a graceful
+    // 'ended' rather than surfacing "code 1000"/"code 1001" as a scary raw error is what makes
+    // that race harmless instead of leaving the UI stuck showing a confusing error for what's
+    // actually just the host ending the session normally.
+    if (code === 1000 || code === 1001) {
+      // Passing the reason through lets callers tell a graceful whole-session end (server sends
+      // 'session ended', or no reason at all if the {type:'ended'} message already handled it)
+      // apart from the host kicking just this one listener (server sends 'removed by host' with
+      // no prior {type:'ended'} message) — both close with the same normal-closure code, so the
+      // reason string is the only signal that distinguishes them.
+      this.emit('ended', reason?.toString());
+    } else {
+      this.emit('closed', reason?.toString() || `code ${code}`);
+    }
+  }
 
-    this.ws.on('error', (err) => {
-      this.emit('error', err);
-    });
+  private onWsError(err: Error): void {
+    this.emit('error', err);
   }
 
   /** Builds (or tears down) the Opus decoder for this session before forwarding the format info
@@ -199,7 +284,7 @@ export class AudioRelayClient extends EventEmitter {
   }
 
   /** Opens the UDP socket for this session and sends the one "hello" datagram that lets the host
-   *  learn our (address, port) — see audio-relay-server.ts's header comment for the full protocol. */
+   *  learn our (address, port) — see audio-sink-server.ts's header comment for the full protocol. */
   private setupUdp(connId: string, udpKeyBase64: string) {
     if (typeof connId !== 'string' || typeof udpKeyBase64 !== 'string') return;
     this.sessionKey = Buffer.from(udpKeyBase64, 'base64');
@@ -219,12 +304,12 @@ export class AudioRelayClient extends EventEmitter {
       // buffer (this was 1MB) causes once anything downstream runs even slightly behind on
       // average: a queue that can grow huge just delays the reckoning instead of preventing it.
       try { this.udpSocket!.setRecvBufferSize(1 << 17); } catch {} // 128KB
-      // Derived from the WS control port, not the hardcoded AUDIO_RELAY_UDP_PORT constant — this
-      // client class is shared between Audio Relay and Remote Mic (see main.ts's
+      // Derived from the WS control port, not the hardcoded AUDIO_SINK_UDP_PORT constant — this
+      // client class is shared between Audio Sink and Remote Mic (see main.ts's
       // join-remote-mic-paired, which constructs this same class against a different WS port).
-      // Remote Mic's host listens for UDP audio on AUDIO_RELAY_UDP_PORT + 2 while its WS control
-      // port is AUDIO_RELAY_PORT + 2 — the same "+1 from the WS port" relationship Audio Relay
-      // itself uses (AUDIO_RELAY_PORT -> AUDIO_RELAY_UDP_PORT). Hardcoding the Audio-Relay-specific
+      // Remote Mic's host listens for UDP audio on AUDIO_SINK_UDP_PORT + 2 while its WS control
+      // port is AUDIO_SINK_PORT + 2 — the same "+1 from the WS port" relationship Audio Sink
+      // itself uses (AUDIO_SINK_PORT -> AUDIO_SINK_UDP_PORT). Hardcoding the Audio-Sink-specific
       // constant here meant Remote Mic's hello went to the wrong port entirely — the host's
       // sendFrame() never learns this listener's address, so it never sends a single audio packet,
       // regardless of anything else being correct. Confirmed via reading both servers' actual

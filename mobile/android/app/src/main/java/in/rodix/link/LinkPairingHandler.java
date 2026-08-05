@@ -1,7 +1,6 @@
 package in.rodix.link;
 
-// Pairing state machine — Java port of desktop/src/core/pairing.ts, itself a faithful port of
-// kdeconnect-kde's core/backends/pairinghandler.cpp. Trust-on-first-use: no PIN, no shared-secret
+// Pairing state machine. Trust-on-first-use: no PIN, no shared-secret
 // proof. See docs/PROTOCOL.md §6 for why this is intentional for this pass.
 
 import org.json.JSONObject;
@@ -156,7 +155,7 @@ public class LinkPairingHandler {
                 case REQUESTED:
                 case REQUESTED_BY_PEER:
                     state = PairState.NOT_PAIRED;
-                    listener.onPairingFailed("Cancelled by other peer");
+                    listener.onPairingFailed("Rejected by other peer");
                     break;
                 case PAIRED:
                     state = PairState.NOT_PAIRED;

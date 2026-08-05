@@ -61,7 +61,20 @@ export function checkDevicePermission(deviceId: string, permKey: string): boolea
   } catch (err) {
     console.error('[Link] Failed to check device permission:', err);
   }
-  return true; // default allowed
+  return false; // default to false (denied/off)
+}
+
+export function deletePermissionsForDevice(deviceId: string) {
+  try {
+    const allPermissions = getAllPermissions();
+    if (allPermissions[deviceId]) {
+      delete allPermissions[deviceId];
+      writeAllPermissions(allPermissions);
+      console.log(`[Link] Deleted all stored permissions for device ${deviceId.slice(0, 8)}`);
+    }
+  } catch (err) {
+    console.error('[Link] Failed to delete permissions for device:', err);
+  }
 }
 
 // Every per-device-gated permission key that exists anywhere in the app (both platforms combined)
@@ -71,8 +84,8 @@ export function checkDevicePermission(deviceId: string, permKey: string): boolea
 // retroactively lock out anyone who already granted things — this only affects devices paired
 // from this point forward.
 export const ALL_PERMISSION_KEYS = [
-  'fileaccess', 'lock', 'runcommand', 'presenter', 'flashlight', 'touchpad', 'digitizer',
-  'systemvolume', 'mpris', 'telephony', 'notification', 'dnd', 'clipboard',
+  'fileaccess', 'lock', 'runcommand', 'presenter', 'flashlight', 'digitizer',
+  'systemvolume', 'mpris', 'telephony', 'notification', 'dnd', 'clipboard', 'remoteinput',
 ];
 
 // Called once, right when a NEW pairing completes (not on ordinary reconnects of an already-
@@ -99,7 +112,7 @@ export function initializeDeniedPermissionsForNewDevice(deviceId: string) {
 // 'lock' is included since both platforms execute it (unlike presenter/touchpad/digitizer).
 // 'runcommand' is desktop-only (only desktop has a whitelist/executor), same as
 // presenter/touchpad/digitizer.
-export const GATED_CAPABILITY_KEYS = ['presenter', 'touchpad', 'digitizer', 'systemvolume', 'mpris', 'lock', 'runcommand'];
+export const GATED_CAPABILITY_KEYS = ['presenter', 'digitizer', 'systemvolume', 'mpris', 'lock', 'runcommand', 'remoteinput', 'fileaccess'];
 
 export function computeEffectiveCapabilities(deviceId: string): string[] {
   return GATED_CAPABILITY_KEYS.filter((key) => checkDevicePermission(deviceId, key));

@@ -1,10 +1,15 @@
 import React, { useState } from 'react';
-import DevicePopupPanel from './DevicePopupPanel';
+import DeviceControlPanel from './DeviceControlPanel';
 import DevicePermissionsModal from './DevicePermissionsModal';
+import ConfirmDialog from './ConfirmDialog';
+import RemoteKeyboardOverlay from './RemoteKeyboardOverlay';
+import { IpScanField, ScannerModal } from './ModalDialog';
+import QRCode from 'qrcode';
 
 interface PeerDevice {
   deviceId: string;
   name: string;
+  ipAddress?: string;
   deviceType?: string;
   incomingCapabilities?: string[];
   outgoingCapabilities?: string[];
@@ -17,6 +22,7 @@ interface PeerDevice {
   dnd?: { enabled: boolean; granted: boolean };
   connected?: boolean;
   allowedCapabilities?: string[];
+  mprisState?: MprisState;
 }
 
 interface VolumeSink {
@@ -43,8 +49,6 @@ interface ConnectionsTabProps {
   peers: Map<string, PeerDevice>;
   localDeviceType?: string;
   volumeSinks: Map<string, VolumeSink[]>;
-  mprisState: MprisState | null;
-  activeMprisDeviceId: string | null;
   onPair: (id: string) => void;
   onToggleRing: (id: string) => void;
   onLock: (id: string) => void;
@@ -56,27 +60,26 @@ interface ConnectionsTabProps {
   onUnpair: (id: string) => void;
   onSetVolume: (id: string, sinkName: string, vol: number) => void;
   onToggleMute: (id: string, sinkName: string) => void;
-  onMprisPrev: () => void;
-  onMprisPlay: () => void;
-  onMprisNext: () => void;
   onShowPresenter?: (id: string) => void;
   onShowTouchpad?: (id: string) => void;
   onShowDigitizer?: (id: string) => void;
   devicePermissions?: Record<string, Record<string, boolean | string>>;
   onSetPermission?: (deviceId: string, permKey: string, allowed: boolean | string) => void;
   onRenameTrustedDevice?: (deviceId: string, newName: string) => void;
+  onShowFileExplorer?: (deviceId: string) => void;
   activeSpeedTestDeviceId?: string | null;
+  discoveredPeers?: Map<string, any>;
   visibilityEnabled?: boolean;
   onVisibilityToggle?: (enabled: boolean) => void;
   onConnect?: (host: string) => void;
+  showAddDevice?: boolean;
+  onSetShowAddDevice?: (show: boolean) => void;
 }
 
 const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
   peers,
   localDeviceType,
   volumeSinks,
-  mprisState,
-  activeMprisDeviceId,
   onPair,
   onToggleRing,
   onLock,
@@ -88,26 +91,57 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
   onUnpair,
   onSetVolume,
   onToggleMute,
-  onMprisPrev,
-  onMprisPlay,
-  onMprisNext,
   onShowPresenter,
   onShowTouchpad,
   onShowDigitizer,
   devicePermissions = {},
   onSetPermission,
   onRenameTrustedDevice,
+  onShowFileExplorer,
   activeSpeedTestDeviceId,
+  discoveredPeers,
   visibilityEnabled = true,
   onVisibilityToggle,
   onConnect,
+  showAddDevice,
+  onSetShowAddDevice,
 }) => {
   const peerList = Array.from(peers.entries()).filter(([, info]) => info.trusted);
-  const [activePopupDeviceId, setActivePopupDeviceId] = useState<string | null>(null);
+  const [activeControlPanelDeviceId, setActiveControlPanelDeviceId] = useState<string | null>(null);
   const [activeSettingsDeviceId, setActiveSettingsDeviceId] = useState<string | null>(null);
+  const [activeRemoteKeyboardDeviceId, setActiveRemoteKeyboardDeviceId] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<
+    { type: 'remove-device'; deviceId: string; name: string } | null
+  >(null);
 
-  const selectedDevice = activePopupDeviceId ? peers.get(activePopupDeviceId) : null;
+  const selectedDevice = activeControlPanelDeviceId ? peers.get(activeControlPanelDeviceId) : null;
   const selectedSettingsDevice = activeSettingsDeviceId ? peers.get(activeSettingsDeviceId) : null;
+  const selectedKeyboardDevice = activeRemoteKeyboardDeviceId ? peers.get(activeRemoteKeyboardDeviceId) : null;
+
+  // Media control handlers — defined here so they have access to activeControlPanelDeviceId and peers
+  const handleMprisPrev = () => {
+    if (activeControlPanelDeviceId && (window as any).link?.sendMprisAction) {
+      const device = peers.get(activeControlPanelDeviceId);
+      const playerName = device?.mprisState?.player || '';
+      (window as any).link.sendMprisAction(activeControlPanelDeviceId, playerName, 'Previous');
+    }
+  };
+
+  const handleMprisPlay = () => {
+    if (activeControlPanelDeviceId && (window as any).link?.sendMprisAction) {
+      const device = peers.get(activeControlPanelDeviceId);
+      const playerName = device?.mprisState?.player || '';
+      (window as any).link.sendMprisAction(activeControlPanelDeviceId, playerName, 'PlayPause');
+    }
+  };
+
+  const handleMprisNext = () => {
+    if (activeControlPanelDeviceId && (window as any).link?.sendMprisAction) {
+      const device = peers.get(activeControlPanelDeviceId);
+      const playerName = device?.mprisState?.player || '';
+      (window as any).link.sendMprisAction(activeControlPanelDeviceId, playerName, 'Next');
+    }
+  };
 
   const getPermission = (devId: string, permKey: string): boolean => {
     const devPerms = devicePermissions[devId];
@@ -130,13 +164,61 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
     }
   };
 
-  const [showAddDevice, setShowAddDevice] = useState(false);
+  const [localShowAddDevice, setLocalShowAddDevice] = useState(false);
+  const isAddDeviceVisible = showAddDevice !== undefined ? showAddDevice : localShowAddDevice;
+  const setIsAddDeviceVisible = onSetShowAddDevice || setLocalShowAddDevice;
   const [ipInput, setIpInput] = useState('');
 
-  const selectedSinks = activePopupDeviceId ? (volumeSinks.get(activePopupDeviceId) || []) : [];
-  const isMediaActive = !!(selectedDevice && activeMprisDeviceId === activePopupDeviceId && mprisState);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [showScannerModal, setShowScannerModal] = useState(false);
+
+  React.useEffect(() => {
+    const generateLocalQr = async () => {
+      const api = (window as any).link;
+      if (!api) return;
+      try {
+        const id = await api.getIdentity();
+        const ip = (id.ipAddresses && id.ipAddresses.length > 0)
+          ? id.ipAddresses.join(',')
+          : (id.ipAddress || '127.0.0.1');
+        const qrText = `link:${ip}:1716`;
+        const url = await QRCode.toDataURL(qrText, {
+          width: 160,
+          margin: 1,
+          color: {
+            dark: '#000000',
+            light: '#ffffff',
+          }
+        });
+        setQrDataUrl(url);
+      } catch (err) {
+        console.error('Failed to generate QR Code:', err);
+      }
+    };
+    generateLocalQr();
+  }, []);
+
+  const handleDecodedHost = (host: string) => {
+    setShowScannerModal(false);
+    setIpInput(host);
+    if (onConnect) onConnect(host);
+  };
+
+  const selectedSinks = activeControlPanelDeviceId ? (volumeSinks.get(activeControlPanelDeviceId) || []) : [];
+  // Get this device's media state (not global) to prevent leak where other device's media shows
+  const selectedMprisState = selectedDevice?.mprisState || null;
+  const isMediaActive = !!(selectedDevice && selectedMprisState);
   
-  const nearbyList = Array.from(peers.entries()).filter(([, info]) => !info.trusted);
+  // nearbyList comes from UDP discovery (unpaired discovered peers)
+  const rawDiscovered = discoveredPeers ? Array.from(discoveredPeers.entries()) : [];
+  const nearbyList = rawDiscovered
+    .filter(([id]) => !peers.has(id) || !peers.get(id)?.trusted)
+    .map(([id, info]) => [id, {
+      name: info.deviceName || id.slice(0, 8),
+      deviceType: info.deviceType || 'phone',
+      ipAddress: info.ipAddress,
+      trusted: false,
+    }] as [string, any]);
 
   const handleConnect = () => {
     const trimmed = ipInput.trim();
@@ -146,151 +228,9 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
 
   return (
     <div id="tab-devices" className="tab-content active">
-      {/* Inline Discovery and Manual Add Panel */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
-        <button
-          onClick={() => setShowAddDevice(!showAddDevice)}
-          style={{
-            padding: '8px 16px',
-            fontSize: '13px',
-            fontWeight: 600,
-            background: showAddDevice ? 'transparent' : 'var(--accent-gradient)',
-            border: showAddDevice ? '1px solid var(--border-color)' : 'none',
-            color: showAddDevice ? 'var(--text-color)' : '#000000',
-            borderRadius: '6px',
-            cursor: 'pointer',
-            transition: 'all 0.15s ease'
-          }}
-        >
-          {showAddDevice ? 'Hide Add Device Panel' : '+ Add Device'}
-        </button>
-      </div>
-
-      {showAddDevice && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '18px', marginBottom: '24px' }}>
-          {/* Discovery Visibility switch */}
-          {onVisibilityToggle && (
-            <div className="card" style={{ margin: 0 }}>
-              <div className="card-title">Discovery Settings</div>
-              <label className="switch-container">
-                <span className="switch">
-                  <input
-                    type="checkbox"
-                    checked={visibilityEnabled}
-                    onChange={(e) => onVisibilityToggle(e.target.checked)}
-                  />
-                  <span className="slider"></span>
-                </span>
-                Visible to LAN (Auto-Discovery Broadcast)
-              </label>
-            </div>
-          )}
-
-          {/* Manual Connection Input */}
-          <div className="card" style={{ margin: 0 }}>
-            <div className="card-title">Add Device Manually</div>
-            <div className="flex-row">
-              <input
-                type="text"
-                placeholder="Enter target IP address"
-                value={ipInput}
-                onChange={(e) => setIpInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleConnect();
-                }}
-                style={{ flex: 1 }}
-              />
-              <button onClick={handleConnect}>Connect</button>
-            </div>
-          </div>
-
-          {/* Discovered Nearby Unpaired list */}
-          <div className="card" style={{ margin: 0, gridColumn: '1 / -1' }}>
-            <div className="card-title">Nearby Discovered Devices</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {nearbyList.length === 0 ? (
-                <div style={{ color: 'var(--text-muted)', fontSize: '13px', fontStyle: 'italic', padding: '10px 0' }}>
-                  No nearby devices discovered yet. Ensure devices are on the same Wi-Fi/LAN.
-                </div>
-              ) : (
-                nearbyList.map(([id, info]) => {
-                  const isPhone = info.deviceType === 'phone' || info.deviceType === 'tablet';
-                  return (
-                    <div
-                      key={id}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        padding: '12px 16px',
-                        borderRadius: '8px',
-                        border: '1px solid var(--border-color)',
-                        background: 'rgba(255, 255, 255, 0.01)',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <span style={{ color: 'var(--accent-color)' }}>
-                          {isPhone ? (
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
-                              <line x1="12" y1="18" x2="12.01" y2="18" />
-                            </svg>
-                          ) : (
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-                              <line x1="8" y1="21" x2="16" y2="21" />
-                              <line x1="12" y1="17" x2="12" y2="21" />
-                            </svg>
-                          )}
-                        </span>
-                        <div>
-                          <div style={{ fontSize: '13.5px', fontWeight: 600 }}>{info.name}</div>
-                          <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{isPhone ? 'Mobile Device' : 'Desktop PC'}</div>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => onPair(id)}
-                        style={{ padding: '5px 12px', fontSize: '11.5px' }}
-                      >
-                        Pair
-                      </button>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="card">
         <div className="card-title">
           <span>Trusted Devices</span>
-          {peerList.length > 0 && (
-            <button
-              onClick={() => {
-                // Wave 2: leave the pool — a single owner-signed "I'm leaving" that drops us from
-                // every member. Falls back to unpairing each device on an older backend that
-                // doesn't expose exitPool yet.
-                if (window.confirm(`Exit this connection? This device will leave the pool and be removed from all ${peerList.length} device(s).`)) {
-                  const api = (window as any).link;
-                  if (api?.exitPool) api.exitPool();
-                  else for (const [deviceId] of peerList) onUnpair(deviceId);
-                }
-              }}
-              style={{
-                padding: '5px 12px',
-                fontSize: '11.5px',
-                borderColor: '#ef4444',
-                color: '#ef4444',
-                background: 'transparent',
-                borderRadius: '6px',
-                cursor: 'pointer',
-              }}
-            >
-              Exit Connection
-            </button>
-          )}
         </div>
         <div id="peers">
           {peerList.length === 0 ? (
@@ -299,7 +239,7 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
             </div>
           ) : (
             peerList.map(([deviceId, info]) => {
-              const isActive = !!info.connected;
+              const isActive = !!(info.trusted && info.connected);
               const battery = info.battery;
               const hasBattery = battery !== undefined;
 
@@ -315,7 +255,7 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
                   {/* Clean List Item Row (Clickable if online) */}
                   <div
                     className="peer-row"
-                    onClick={() => isActive && setActivePopupDeviceId(deviceId)}
+                    onClick={() => isActive && setActiveControlPanelDeviceId(deviceId)}
                     style={{
                       cursor: isActive ? 'pointer' : 'default',
                       display: 'flex',
@@ -334,8 +274,7 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
                       <div className={`status-dot ${isActive ? 'status-active' : 'status-inactive'}`}></div>
                       <div>
                         {(() => {
-                          const isMobile = info.deviceType === 'phone' ||
-                                           info.deviceType === 'tablet';
+                          const isMobile = info.deviceType === 'phone';
 
                           const deviceTypeIcon = isMobile ? (
                             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-muted)' }}>
@@ -358,7 +297,7 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
                           );
                         })()}
                         <span style={{ color: 'var(--text-muted)', fontSize: '11px', marginLeft: '6px' }}>
-                          ({deviceId.slice(0, 8)})
+                          ({info.ipAddress || discoveredPeers?.get(deviceId)?.ipAddress || 'Offline'})
                         </span>
                         <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                           {hasBattery && (
@@ -397,17 +336,22 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
                           }}
                           onMouseEnter={(e) => {
                             e.currentTarget.style.color = 'var(--text-color)';
-                            e.currentTarget.style.transform = 'rotate(30deg)';
                           }}
                           onMouseLeave={(e) => {
                             e.currentTarget.style.color = 'var(--text-muted)';
-                            e.currentTarget.style.transform = 'rotate(0deg)';
                           }}
                           title="Device Permissions"
                         >
-                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="12" cy="12" r="3" />
-                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="4" y1="21" x2="4" y2="14" />
+                            <line x1="4" y1="10" x2="4" y2="3" />
+                            <line x1="12" y1="21" x2="12" y2="12" />
+                            <line x1="12" y1="8" x2="12" y2="3" />
+                            <line x1="20" y1="21" x2="20" y2="16" />
+                            <line x1="20" y1="12" x2="20" y2="3" />
+                            <line x1="1" y1="14" x2="7" y2="14" />
+                            <line x1="9" y1="8" x2="15" y2="8" />
+                            <line x1="17" y1="16" x2="23" y2="16" />
                           </svg>
                         </button>
                       )}
@@ -416,11 +360,7 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            // Wave 2: removing a device owner-signs + gossips a revocation so it's
-                            // dropped pool-wide. Falls back to a plain unpair on an older backend.
-                            const api = (window as any).link;
-                            if (api?.removeFromPool) api.removeFromPool(deviceId);
-                            else onUnpair(deviceId);
+                            setConfirmAction({ type: 'remove-device', deviceId, name: info.name });
                           }}
                           style={{
                             padding: '6px 12px',
@@ -462,16 +402,228 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
         </div>
       </div>
 
-      {activePopupDeviceId && selectedDevice && (
-        <DevicePopupPanel
-          deviceId={activePopupDeviceId}
+      <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '16px', marginBottom: '16px' }}>
+        <button
+          onClick={() => setIsAddDeviceVisible(!isAddDeviceVisible)}
+          style={{
+            padding: '8px 16px',
+            fontSize: '13px',
+            fontWeight: 600,
+            background: isAddDeviceVisible ? 'transparent' : 'var(--accent-gradient)',
+            border: isAddDeviceVisible ? '1px solid var(--border-color)' : 'none',
+            // Was hardcoded black — a leftover from the old neon-cyan palette, where black was
+            // the only readable choice. --btn-primary-text is white now (see index.css), matching
+            // every other accent-filled button in the app.
+            color: isAddDeviceVisible ? 'var(--text-color)' : 'var(--btn-primary-text)',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            transition: 'all 0.15s ease'
+          }}
+        >
+          {isAddDeviceVisible ? 'Hide Add Device Panel' : '+ Add Device'}
+        </button>
+        {peerList.length > 0 && (
+          <button
+            onClick={() => {
+              setConfirmAction({ type: 'exit-pool' as any, deviceId: '', name: '' });
+            }}
+            style={{
+              padding: '8px 16px',
+              fontSize: '13px',
+              fontWeight: 600,
+              background: 'transparent',
+              border: '1px solid #ef4444',
+              color: '#ef4444',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              marginLeft: '12px',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            Exit Pool
+          </button>
+        )}
+      </div>
+
+      {isAddDeviceVisible && (
+        <div
+          className="card"
+          style={{
+            width: '100%',
+            background: 'var(--card-bg)',
+            border: '1px solid var(--border-color)',
+            boxShadow: '0 8px 32px var(--modal-shadow, rgba(0, 0, 0, 0.2))',
+            borderRadius: '14px',
+            padding: '24px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '20px',
+            marginTop: '16px',
+            marginBottom: '20px',
+            animation: 'fadeIn 0.2s ease-out',
+          }}
+        >
+          {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-color)' }}>Add Device</div>
+              <button
+                onClick={() => setIsAddDeviceVisible(false)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  fontSize: '18px',
+                  cursor: 'pointer',
+                  padding: '4px',
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Two-Column Grid: Left: Connection Input & Vis, Right: QR Code */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
+              {/* Left Side: Manual Connection & Discovery visibility */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {/* Manual Connection Input */}
+                <div>
+                  <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-color)' }}>Add Device Manually</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <IpScanField
+                      value={ipInput}
+                      onChange={setIpInput}
+                      onScanClick={() => setShowScannerModal(true)}
+                      onEnter={() => {
+                        handleConnect();
+                        setIsAddDeviceVisible(false);
+                      }}
+                      placeholder="Enter target IP address"
+                    />
+                    <button
+                      onClick={() => {
+                        handleConnect();
+                        setIsAddDeviceVisible(false);
+                      }}
+                      style={{ padding: '8px 16px', width: '100%', boxSizing: 'border-box' }}
+                    >
+                      Connect
+                    </button>
+                  </div>
+                </div>
+
+                {/* Discovery Settings */}
+                {onVisibilityToggle && (
+                  <div style={{ padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'rgba(255,255,255,0.02)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div>
+                        <div style={{ fontSize: '13px', fontWeight: 600 }}>Visible to LAN</div>
+                        <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Allow discovery broadcasts</div>
+                      </div>
+                      <label className="switch-container" style={{ margin: 0 }}>
+                        <span className="switch">
+                          <input
+                            type="checkbox"
+                            checked={visibilityEnabled}
+                            onChange={(e) => onVisibilityToggle(e.target.checked)}
+                          />
+                          <span className="slider"></span>
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Right Side: QR Code always visible */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', borderLeft: '1px solid var(--border-color)', paddingLeft: '20px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-color)', textAlign: 'center' }}>Show My QR</div>
+                {qrDataUrl ? (
+                  <div style={{ background: '#fff', padding: '10px', borderRadius: '10px', display: 'inline-block', boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
+                    <img src={qrDataUrl} alt="Device QR Code" style={{ width: '130px', height: '130px', display: 'block' }} />
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontStyle: 'italic' }}>Generating QR...</div>
+                )}
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px', textAlign: 'center', maxWidth: '180px' }}>
+                  Scan from your other device to connect instantly
+                </div>
+              </div>
+            </div>
+
+            {/* Nearby Devices Section (full width below the columns) */}
+            <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+              <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-color)' }}>Nearby Devices</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '200px', overflowY: 'auto' }}>
+                {nearbyList.length === 0 ? (
+                  <div style={{ color: 'var(--text-muted)', fontSize: '12px', fontStyle: 'italic', padding: '6px 0' }}>
+                    Searching LAN for nearby devices...
+                  </div>
+                ) : (
+                  nearbyList.map(([id, info]) => {
+                    const isPhone = info.deviceType === 'phone';
+                    return (
+                      <div
+                        key={id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '10px 14px',
+                          borderRadius: '8px',
+                          border: '1px solid var(--border-color)',
+                          background: 'rgba(255, 255, 255, 0.02)',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <span style={{ color: 'var(--accent-color)' }}>
+                            {isPhone ? (
+                              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
+                                <line x1="12" y1="18" x2="12.01" y2="18" />
+                              </svg>
+                            ) : (
+                              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+                                <line x1="8" y1="21" x2="16" y2="21" />
+                                <line x1="12" y1="17" x2="12" y2="21" />
+                              </svg>
+                            )}
+                          </span>
+                          <div>
+                            <div style={{ fontSize: '13px', fontWeight: 600 }}>{info.name}</div>
+                            <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                              {isPhone ? 'Mobile Device' : 'Desktop PC'}{info.ipAddress ? ` • ${info.ipAddress}` : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => {
+                            onPair(id);
+                            setIsAddDeviceVisible(false);
+                          }}
+                          style={{ padding: '4px 10px', fontSize: '11px' }}
+                        >
+                          Pair
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+      )}
+
+      {activeControlPanelDeviceId && selectedDevice && (
+        <DeviceControlPanel
+          deviceId={activeControlPanelDeviceId}
           device={selectedDevice}
           selectedSinks={selectedSinks}
           isMediaActive={isMediaActive}
-          mprisState={mprisState}
-          peerCommands={peerCommandLists.get(activePopupDeviceId) || {}}
+          mprisState={selectedMprisState}
+          peerCommands={peerCommandLists.get(activeControlPanelDeviceId) || {}}
           activeSpeedTestDeviceId={activeSpeedTestDeviceId}
-          onClose={() => setActivePopupDeviceId(null)}
+          onClose={() => setActiveControlPanelDeviceId(null)}
           onPair={onPair}
           onToggleRing={onToggleRing}
           onLock={onLock}
@@ -481,13 +633,15 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
           onShowPresenter={onShowPresenter}
           onShowTouchpad={onShowTouchpad}
           onShowDigitizer={onShowDigitizer}
+          onShowRemoteInput={(id) => setActiveRemoteKeyboardDeviceId(id)}
           onRunCommandTrigger={onRunCommandTrigger}
           onSetVolume={onSetVolume}
           onToggleMute={onToggleMute}
-          onMprisPrev={onMprisPrev}
-          onMprisPlay={onMprisPlay}
-          onMprisNext={onMprisNext}
+          onMprisPrev={handleMprisPrev}
+          onMprisPlay={handleMprisPlay}
+          onMprisNext={handleMprisNext}
           onRenameTrustedDevice={onRenameTrustedDevice}
+          onShowFileExplorer={onShowFileExplorer}
         />
       )}
 
@@ -500,6 +654,55 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
           onClose={() => setActiveSettingsDeviceId(null)}
         />
       )}
+
+      {activeRemoteKeyboardDeviceId && selectedKeyboardDevice && (
+        <RemoteKeyboardOverlay
+          deviceId={activeRemoteKeyboardDeviceId}
+          deviceName={selectedKeyboardDevice.name}
+          isTv={selectedKeyboardDevice.deviceType === 'tv'}
+          onClose={() => setActiveRemoteKeyboardDeviceId(null)}
+        />
+      )}
+
+
+
+      {confirmAction?.type === 'remove-device' && (
+        <ConfirmDialog
+          title="Remove Device"
+          message={`Remove "${confirmAction.name}"? It will need to be paired again to reconnect.`}
+          confirmLabel="Remove"
+          onCancel={() => setConfirmAction(null)}
+          onConfirm={() => {
+            const targetId = confirmAction.deviceId;
+            setConfirmAction(null);
+            onUnpair(targetId);
+          }}
+        />
+      )}
+
+      {confirmAction?.type === 'exit-pool' as any && (
+        <ConfirmDialog
+          title="Exit Pool"
+          message="Are you sure you want to exit the pool? This will unpair all other devices on this device."
+          confirmLabel="Exit Pool"
+          onCancel={() => setConfirmAction(null)}
+          onConfirm={() => {
+            setConfirmAction(null);
+            (window as any).link?.exitPool()?.then(() => {
+              window.location.reload();
+            });
+          }}
+        />
+      )}
+
+
+
+      <ScannerModal
+        open={showScannerModal}
+        onClose={() => setShowScannerModal(false)}
+        onDecoded={handleDecodedHost}
+        title="Scan Connection QR Code"
+      />
     </div>
   );
 };

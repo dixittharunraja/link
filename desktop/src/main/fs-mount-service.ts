@@ -30,6 +30,14 @@ export class LinkFsMountService {
     return this.driveLetter;
   }
 
+  public getPort(): number {
+    return this.port;
+  }
+
+  public getRoots(): FsRoot[] {
+    return this.roots;
+  }
+
   public async mount(): Promise<void> {
     // A listRoots() failure here previously got silently masked by substituting a hardcoded
     // fake root (an Android-shaped path even when the peer was a desktop) and mounting anyway —
@@ -417,24 +425,62 @@ export class LinkFsMountService {
           return;
         }
 
-        // Collect PUT buffer
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk) => chunks.push(chunk));
-        req.on('end', async () => {
-          try {
-            const data = Buffer.concat(chunks);
-            const ok = await this.client.write(realPath, 0, data);
-            if (ok) {
-              res.writeHead(201, 'Created');
-            } else {
-              res.writeHead(500);
-            }
-            res.end();
-          } catch (err: any) {
-            res.writeHead(500);
-            res.end(err.message);
+        // Upload in 1MB chunks, PIPELINED — mirrors the GET handler's read-side concurrency
+        // exactly (see that handler's comment for the full reasoning). The old version buffered
+        // the entire request body in memory, then issued exactly one write() covering the whole
+        // file: a large upload paid zero pipelining benefit and, worse, meant the phone received
+        // one giant write request instead of a steady stream of them. Chunks target independent
+        // byte offsets — LinkFsServer.java's handleWrite does a real seek()+write() per call using
+        // a fresh RandomAccessFile handle each time — so arrival/completion order across the
+        // socket pool doesn't matter for correctness, only the byte range each one targets does.
+        // handleRequest() is itself async, so thrown errors here propagate straight to this
+        // method's own outer catch (see below) — no separate try/catch needed for this block.
+        const CHUNK_SIZE = 1 * 1024 * 1024;
+        const CONCURRENCY = 6;
+
+        let offset = 0;
+        let leftover: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+        const inFlight: Promise<void>[] = [];
+        let firstError: Error | null = null;
+
+        // FIFO wait (oldest in-flight write, not necessarily first-to-finish) — same tolerance
+        // the GET handler's own strictly-ordered `await inFlight[i]` already accepts; simplicity
+        // over exactness, and it still keeps at most CONCURRENCY writes outstanding at once.
+        const waitForRoom = async () => {
+          while (inFlight.length >= CONCURRENCY) {
+            await inFlight[0];
+            inFlight.shift();
           }
-        });
+        };
+
+        const issueWrite = (chunkOffset: number, data: Buffer<ArrayBufferLike>) => {
+          const p = this.client.write(realPath, chunkOffset, data).then((ok) => {
+            if (!ok && !firstError) firstError = new Error('Write rejected by device');
+          }).catch((err) => {
+            if (!firstError) firstError = err;
+          });
+          inFlight.push(p);
+        };
+
+        for await (const chunk of req) {
+          leftover = leftover.length ? Buffer.concat([leftover, chunk as Buffer]) : (chunk as Buffer);
+          while (leftover.length >= CHUNK_SIZE) {
+            if (firstError) throw firstError;
+            await waitForRoom();
+            issueWrite(offset, leftover.subarray(0, CHUNK_SIZE));
+            offset += CHUNK_SIZE;
+            leftover = leftover.subarray(CHUNK_SIZE);
+          }
+        }
+        if (leftover.length > 0) {
+          await waitForRoom();
+          issueWrite(offset, leftover);
+        }
+        await Promise.all(inFlight);
+        if (firstError) throw firstError;
+
+        res.writeHead(201, 'Created');
+        res.end();
         return;
       }
 

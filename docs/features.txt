@@ -50,25 +50,6 @@ FEATURES (KDE Connect plugin catalog)
                            faithfully match their own upstream counterpart, not each other).
 [x] clipboard            — proven cross-platform: fully bidirectional text, image, and file reference copy/paste sync in real-time. Also syncs clipboard state immediately upon fresh device pairing. Files and images are transmitted via the link.clipboard.file binary payload channel.
 [x] connectivity-report  — proven cross-platform: phone automatically pushes multi-SIM network types (e.g. LTE) and signal strength levels (0-4) to peers on pairing and whenever they change (e.g. signal level drops). Supported on both desktop UI and mobile peer lists (M2M). Tested and verified end-to-end.
-[x] contacts             — proven cross-platform: tapped "Sync Contacts" on the phone; desktop
-                           sent request_all_uids_timestamps, phone replied with real UIDs (via
-                           ContactsContract.Contacts LOOKUP_KEY) + timestamps, desktop requested
-                           vCards for all of them, phone replied with real vCard text (via
-                           CONTENT_VCARD_URI/ContentResolver), desktop parsed FN/TEL and rendered
-                           real names + phone numbers in a new Contacts panel. SCOPED DOWN from
-                           upstream: (1) always a full resync — every UID's vCard is re-requested
-                           every time, no local timestamp cache/diffing to fetch only changed
-                           contacts; (2) desktop only parses/displays FN (name) + first TEL
-                           (phone number) from each vCard, not full vCard fidelity (photos, multi-
-                           number/email, org, etc. are received but unused); (3) no
-                           X-KDECONNECT-ID-DEV-<id>/REV headers injected into the vCard text like
-                           upstream does for its own delta-sync bookkeeping, since this doesn't do
-                           that bookkeeping. Wire packet types/directions and field shapes
-                           (uids[], per-uid timestamp/vcard fields) match upstream exactly —
-                           the deviations are all about how much of the synced data is actually
-                           used/cached, not the protocol itself. Desktop-initiated, phone-only-
-                           responds — no mobile UI needed at all, matches upstream's asymmetric
-                           design (only the desktop's Kirigami/People-style client ever asks).
 [x] digitizer            — pen/stylus input forwarding. Verified against real source: absolute positioning
                            (x, y, pressure 0.0-1.0) via session lifecycle (start/end actions). Mobile canvas
                            sends absolute touch positions mapped to the landscape screen orientation.
@@ -102,17 +83,6 @@ FEATURES (KDE Connect plugin catalog)
                            (PageUp, PageDown, F5, Esc). The desktop presenter overlay window level is
                            elevated to 'screen-saver' so it is drawn cleanly on top of exclusive
                            fullscreen slideshows (PowerPoint/Google Slides).
-                           Gyroscope tilt-to-move — real upstream's actual input method — is now
-                           ALSO implemented and proven, as a second input mode alongside touch-drag
-                           (both available, switchable via a mode-toggle button in the mobile UI,
-                           not a replacement of either). Reads real device rotation-rate
-                           (window.devicemotion's rotationRate.beta/gamma) in the mobile web
-                           harness and feeds it into the exact same link.presenter dx/dy packet and
-                           sendPresenterMove call touch-drag already used — no desktop-side changes
-                           were needed at all, confirming this was purely an input-source swap, not
-                           a second feature. Confirmed on the real device: toggling to Tilt mode and
-                           gently tilting the phone moves the desktop dot with no screen touch
-                           required. FULLY ALIGNED with upstream now — both input methods present.
 [x] runcommand           — proven cross-platform, fully end-to-end: phone requested command list,
                            received it (confirmed exact JSON match via logcat), rendered buttons,
                            tapped "Open Notepad", desktop executed the whitelisted command —
@@ -165,6 +135,19 @@ FEATURES (KDE Connect plugin catalog)
                            storing blocked Device IDs and IP addresses in blocklist.json. Blocks discovery,
                            TCP handshakes, pairing requests, and UDP relays from blocked targets at the transport
                            layer. Handled via interactive Accept/Reject/Block options directly in UI modal prompts.
+[~] portal / file-transfer — Link-original, built on BOTH platforms now. One-time file transfer to
+                           an untrusted/unpaired device — same ephemeral guest-session pattern as
+                           audiorelay/remotemic (own dedicated TLS+WS port, PIN computed
+                           independently by both sides from their TLS certs, nothing written to the
+                           trust store). Once the receiver accepts the PIN, the file streams over
+                           the same connection as binary WS frames straight to disk — desktop saves
+                           to Downloads/Link/, Android to getExternalFilesDir(DIRECTORY_DOWNLOADS)/
+                           Link (zero runtime permissions needed on either platform). No separate
+                           payload-transfer sub-connection needed either way. Android's file picker
+                           (ACTION_OPEN_DOCUMENT) hands back a content:// Uri rather than a real
+                           path — hidden behind bridge.ts so the shared PortalTab.tsx UI doesn't
+                           need to care which platform it's on. Any real-hardware verification is
+                           still outstanding on both platforms — see docs/backlog.txt.
                            Configurable blocklist manager built into settings page allows live unblocking.
 [-] virtualmonitor       — OUT OF SCOPE for this Windows+Android build, deliberately not ported.
                            Researched against the real source: this isn't actually a
@@ -191,9 +174,8 @@ LOCAL-ONLY (no wire packet of their own — port the behavior, not a new message
                            pm] Media status ... (Playing)" -> "[2:52:31 pm] Simulating incoming
                            call (ringing)..." -> "[2:52:31 pm] Media status ... (Paused)" -> "[2:58:
                            07 pm] Media status ... (Playing)". LOCAL-ONLY: no new wire packet —
-                           reuses the already-proven `telephony` packet as trigger and the same
-                           WinRT/global-media-key path `mpris` already drives. Faithful port of
-                           upstream's pausemusicplugin-win.cpp; SCOPED DOWN: no config toggles
+                           WinRT/global-media-key path `mpris` already drives. Implementation of
+                           upstream's pausemusicplugin-win.cpp behavior; SCOPED DOWN: no config toggles
                            (conditionTalking/actionPause/actionMute/actionResume all upstream
                            options) — this always pauses on ringing/talking and always resumes
                            only what it paused, no mute-instead-of-pause alternative.
@@ -227,10 +209,10 @@ LOCAL-ONLY (no wire packet of their own — port the behavior, not a new message
                            exactly): confirmed via Get-CimInstance that a persistent
                            SetThreadExecutionState(ES_CONTINUOUS|ES_DISPLAY_REQUIRED) PowerShell
                            helper process spawns the instant a trusted device connects, and gets
-                           killed the instant the last one disconnects. Faithful port of upstream's
-                           screensaverinhibitplugin-win.cpp (constructor/destructor calling the
-                           same Win32 API) — activation condition (any trusted device connected)
-                           matches upstream's plugin lifecycle 1:1.
+                           killed the instant the last one disconnects. Port of upstream's
+                           screensaverinhibitplugin-win.cpp behavior (calling the
+                           same Win32 API via PowerShell) — activation condition (any trusted device connected)
+                           matches the plugin lifecycle 1:1.
                            Found and fixed a real bug along the way: device-manager.ts's `conn.on
                            ('close', ...)` emitted 'deviceDisconnected' BEFORE deleting the peer
                            from the internal map, so any listener calling
@@ -252,7 +234,22 @@ LOCAL-ONLY (no wire packet of their own — port the behavior, not a new message
                            phone<->desktop feature at all, so it doesn't apply to what this
                            project does (phone-as-remote, not desktop-to-desktop KVM switching).
 
-PLANNED TWEAKS (deliberately deferred until the faithful port + full feature set is proven)
+PLANNED TWEAKS
 ------------------------------------------------------
 [ ] TV casting / media streaming integration
 [ ] Mouse Without Borders plugin (Desktop-to-Desktop screen-edge KVM input switching / coordination)
+[ ] DJ Controller — mobile DJ mixing surface with crossfader and deck controls
+[x] joystick / gamepad           — Link-original. Phone acts as a wireless virtual gamepad controller
+                           targeting a Desktop (Windows) or TV (V2 backlog). Desktop host uses
+                           ViGEmBus driver to expose a virtual Xbox controller to the OS; phone
+                           connects via untrusted QR/IP flow (same guest-session pattern as
+                           audiorelay/portal), then streams D-pad, thumbstick, triggers, and
+                           face-button events over UDP. Desktop UI shows a hosting panel with QR
+                           code and connected controller roster; active indicator driven by
+                           `controllers.length > 0` (not just session open). TV correctly renders
+                           in Host/Target mode (shows QR + controller list) — but native gamepad
+                           input injection into Android TV apps requires OS-level virtual input
+                           APIs not yet implemented (tracked as V2: see backlog.txt). Phone side
+                           offers Classic and Driving layout variants, plus Xbox/PS skin toggle,
+                           all persisted to localStorage. Two-thumb stick mode via JoystickOverlay
+                           component with full analog axis + digital button coverage.

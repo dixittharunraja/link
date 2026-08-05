@@ -114,11 +114,15 @@ public class LinkSystemVolume {
 
             for (int i = 0; i < streams.length; i++) {
                 int stream = streams[i];
+                int currentVolume = audio.getStreamVolume(stream);
+                int maxVolume = audio.getStreamMaxVolume(stream);
+                // Normalize current volume to 0-100 percentage for consistency across devices
+                int volumePercent = (currentVolume * 100) / maxVolume;
                 JSONObject sink = new JSONObject();
                 sink.put("name", names[i]);
                 sink.put("description", descriptions[i]);
-                sink.put("volume", audio.getStreamVolume(stream));
-                sink.put("maxVolume", audio.getStreamMaxVolume(stream));
+                sink.put("volume", volumePercent);
+                sink.put("maxVolume", 100); // Report maxVolume as always 100 since we normalize
                 boolean isMuted = false;
                 if (android.os.Build.VERSION.SDK_INT >= 23) {
                     isMuted = audio.isStreamMute(stream);
@@ -157,21 +161,65 @@ public class LinkSystemVolume {
             if (streamType == -1) return;
 
             if (packet.body.has("volume")) {
-                int volume = packet.body.getInt("volume");
-                audio.setStreamVolume(streamType, volume, 0);
+                int volumePercent = packet.body.getInt("volume");
+                int maxVolume = audio.getStreamMaxVolume(streamType);
+                // volumePercent is 0-100; scale to device's maxVolume
+                int scaledVolume = (volumePercent * maxVolume) / 100;
+                audio.setStreamVolume(streamType, scaledVolume, 0);
             }
 
             if (packet.body.has("muted")) {
                 boolean muted = packet.body.getBoolean("muted");
                 if (streamType == android.media.AudioManager.STREAM_NOTIFICATION || streamType == android.media.AudioManager.STREAM_RING) {
-                    try {
-                        audio.setRingerMode(muted ? android.media.AudioManager.RINGER_MODE_SILENT : android.media.AudioManager.RINGER_MODE_NORMAL);
-                    } catch (SecurityException e) {
-                        audio.setRingerMode(muted ? android.media.AudioManager.RINGER_MODE_VIBRATE : android.media.AudioManager.RINGER_MODE_NORMAL);
+                    // 1. Attempt to set global system ringer mode (for visual status bar / silent state representation)
+                    boolean isOnePlusOrOppo = android.os.Build.MANUFACTURER.equalsIgnoreCase("OnePlus")
+                            || android.os.Build.MANUFACTURER.equalsIgnoreCase("OPPO")
+                            || android.os.Build.MANUFACTURER.equalsIgnoreCase("REALME");
+                    if (!isOnePlusOrOppo) {
+                        try {
+                            audio.setRingerMode(muted ? android.media.AudioManager.RINGER_MODE_SILENT : android.media.AudioManager.RINGER_MODE_NORMAL);
+                            android.util.Log.i("LinkSystemVolume", "Successfully set ringer mode to: " + (muted ? "SILENT" : "NORMAL"));
+                        } catch (SecurityException e) {
+                            android.util.Log.w("LinkSystemVolume", "SecurityException setting ringer mode to silent/normal, trying vibrate fallback", e);
+                            try {
+                                audio.setRingerMode(muted ? android.media.AudioManager.RINGER_MODE_VIBRATE : android.media.AudioManager.RINGER_MODE_NORMAL);
+                                android.util.Log.i("LinkSystemVolume", "Successfully set ringer mode to: " + (muted ? "VIBRATE" : "NORMAL") + " (fallback)");
+                            } catch (Exception ex) {
+                                android.util.Log.e("LinkSystemVolume", "Failed to set fallback ringer mode", ex);
+                            }
+                        }
+                    } else {
+                        // For OnePlus/OPPO/Realme, setting RINGER_MODE_SILENT programmatically triggers DND due to physical slider mapping.
+                        // Instead, we set VIBRATE to avoid DND while still getting a visual mute/vibrate status indicator.
+                        try {
+                            audio.setRingerMode(muted ? android.media.AudioManager.RINGER_MODE_VIBRATE : android.media.AudioManager.RINGER_MODE_NORMAL);
+                            android.util.Log.i("LinkSystemVolume", "OnePlus/OPPO/Realme detected. Set ringer mode to: " + (muted ? "VIBRATE" : "NORMAL"));
+                        } catch (Exception e) {
+                            android.util.Log.e("LinkSystemVolume", "Failed to set ringer mode on OnePlus/OPPO/Realme", e);
+                        }
                     }
-                } else if (android.os.Build.VERSION.SDK_INT >= 23) {
-                    int direction = muted ? android.media.AudioManager.ADJUST_MUTE : android.media.AudioManager.ADJUST_UNMUTE;
-                    audio.adjustStreamVolume(streamType, direction, 0);
+                    // 2. Also attempt to mute/unmute the stream directly (for direct channel silencing)
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= 23) {
+                            int direction = muted ? android.media.AudioManager.ADJUST_MUTE : android.media.AudioManager.ADJUST_UNMUTE;
+                            audio.adjustStreamVolume(streamType, direction, 0);
+                            android.util.Log.i("LinkSystemVolume", "Successfully adjusted notification stream volume direction to: " + direction);
+                        } else {
+                            audio.setStreamMute(streamType, muted);
+                            android.util.Log.i("LinkSystemVolume", "Successfully set stream mute to: " + muted);
+                        }
+                    } catch (Exception ex) {
+                        android.util.Log.w("LinkSystemVolume", "Failed to adjust notification stream volume directly", ex);
+                    }
+                } else {
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= 23) {
+                            int direction = muted ? android.media.AudioManager.ADJUST_MUTE : android.media.AudioManager.ADJUST_UNMUTE;
+                            audio.adjustStreamVolume(streamType, direction, 0);
+                        } else {
+                            audio.setStreamMute(streamType, muted);
+                        }
+                    } catch (Exception ignored) {}
                 }
             }
         } catch (Exception e) {

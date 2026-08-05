@@ -1,8 +1,8 @@
 package in.rodix.link;
 
-// Wraps a MediaCodec configured for Opus encoding — used by LinkAudioRelayServer to compress
+// Wraps a MediaCodec configured for Opus encoding — used by LinkAudioSinkServer to compress
 // captured PCM before sending, mirroring desktop's @evan/opus Encoder usage (see
-// audio-relay-server.ts's setupOpusIfPossible/relayAudioOpus). Requires API 29+ (Android added
+// audio-sink-server.ts's setupOpusIfPossible/relayAudioOpus). Requires API 29+ (Android added
 // MediaCodec Opus ENCODING support in Android 10) — already satisfied whenever this class is
 // even reachable, since phone-hosting already gates on SDK_INT >= Q for MediaProjection.
 //
@@ -10,7 +10,7 @@ package in.rodix.link;
 // which was validated end-to-end via a standalone Node script (including a measured ~42dB SNR
 // round-trip), this class was written from documented Android MediaCodec conventions with no way
 // to run it in this environment. Treat with real suspicion until confirmed working on a device;
-// the fallback-to-PCM path in LinkAudioRelayServer (setupOpusIfPossible) stays fully intact
+// the fallback-to-PCM path in LinkAudioSinkServer (setupOpusIfPossible) stays fully intact
 // specifically so a failure here degrades gracefully instead of breaking Audio Relay outright.
 //
 // Uses MediaCodec's synchronous (dequeue/queue) API rather than the async callback API — this

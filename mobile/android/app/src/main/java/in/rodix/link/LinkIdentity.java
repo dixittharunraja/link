@@ -6,7 +6,9 @@ package in.rodix.link;
 // Architectural rule: this is the ONE place identity is generated or loaded from disk on this
 // device. Everything else (transport, pairing, plugin bridge) reads it from here.
 
+import android.app.UiModeManager;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.os.Build;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -28,16 +30,12 @@ public class LinkIdentity {
     /** Plain data shape for a device identity — used both for our own identity and any peer's parsed one. */
     public static class Identity {
         public final String deviceId;
-        public final String deviceName;
+        public String deviceName;
         public final String deviceType;
         public final int protocolVersion;
         public final String[] incomingCapabilities;
         public final String[] outgoingCapabilities;
-        // Trusted Pool (Wave 2) — mutable, non-final: absent until this device joins a pool, then
-        // set by LinkDeviceManager.refreshMyPoolIdentity() so every NEW connection advertises it.
-        // Mirrors desktop DeviceIdentity's optional ownerKeyFingerprint/membershipCert fields.
-        public String ownerKeyFingerprint = null;
-        public LinkPool.MembershipCert membershipCert = null;
+        public boolean visibility = true;
 
         public Identity(String deviceId, String deviceName, String deviceType, int protocolVersion,
                          String[] incomingCapabilities, String[] outgoingCapabilities) {
@@ -57,10 +55,7 @@ public class LinkIdentity {
             body.put("protocolVersion", protocolVersion);
             body.put("incomingCapabilities", new JSONArray(incomingCapabilities));
             body.put("outgoingCapabilities", new JSONArray(outgoingCapabilities));
-            if (ownerKeyFingerprint != null && membershipCert != null) {
-                body.put("ownerKeyFingerprint", ownerKeyFingerprint);
-                body.put("membershipCert", membershipCert.toJson());
-            }
+            body.put("visibility", visibility);
             return body;
         }
 
@@ -79,12 +74,7 @@ public class LinkIdentity {
                     body.optInt("protocolVersion", 0),
                     incoming.toArray(new String[0]),
                     outgoing.toArray(new String[0]));
-            String ownerFp = body.optString("ownerKeyFingerprint", null);
-            JSONObject mc = body.optJSONObject("membershipCert");
-            if (ownerFp != null && mc != null) {
-                id.ownerKeyFingerprint = ownerFp;
-                id.membershipCert = LinkPool.MembershipCert.fromJson(mc);
-            }
+            id.visibility = body.optBoolean("visibility", true);
             return id;
         }
     }
@@ -110,6 +100,22 @@ public class LinkIdentity {
         return new File(context.getFilesDir(), "link-config/identity.json");
     }
 
+    // The standard, documented way to detect Android TV / Google TV at runtime — UiModeManager's
+    // current mode reflects the actual running device (TV box, set-top box, Google TV), not just
+    // a manifest guess. Previously this was hardcoded to "phone" unconditionally, which meant a
+    // Link install running on a real Android TV device always misidentified itself, breaking any
+    // TV-only feature gating (e.g. Remote Input's D-pad/Menu capability) at the source.
+    private static String detectDeviceType(Context context) {
+        try {
+            UiModeManager uiModeManager = (UiModeManager) context.getSystemService(Context.UI_MODE_SERVICE);
+            if (uiModeManager != null && uiModeManager.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION) {
+                return "tv";
+            }
+        } catch (Exception ignored) {
+        }
+        return "phone";
+    }
+
     public static Identity loadOrCreate(Context context, String[] incomingCapabilities, String[] outgoingCapabilities) {
         File file = identityFile(context);
         String storedId = null;
@@ -129,13 +135,16 @@ public class LinkIdentity {
             // Corrupt file — fall through and regenerate.
         }
 
+        String deviceType = detectDeviceType(context);
+
         if (storedId == null) {
             storedId = generateDeviceId();
-            storedName = filterDeviceName(Build.MODEL != null ? Build.MODEL : "Android Phone");
+            String defaultName = Build.MODEL != null ? Build.MODEL : (deviceType.equals("tv") ? "Android TV" : "Android Phone");
+            storedName = filterDeviceName(defaultName);
             persist(file, storedId, storedName);
         }
 
-        return new Identity(storedId, storedName, "phone", PROTOCOL_VERSION, incomingCapabilities, outgoingCapabilities);
+        return new Identity(storedId, storedName, deviceType, PROTOCOL_VERSION, incomingCapabilities, outgoingCapabilities);
     }
 
     public static String saveDeviceName(Context context, String newName) {

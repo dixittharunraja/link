@@ -1,8 +1,6 @@
 package in.rodix.link;
 
-// Clipboard plugin — Java port of desktop/src/core/plugins/clipboard.ts, itself a faithful port
-// of kdeconnect-kde's plugins/clipboard/clipboardplugin.cpp. Supports text, image, and file sync
-// using the link.clipboard.file packet type.
+// Clipboard plugin. Supports text, image, and file sync using the link.clipboard.file packet type.
 
 import android.content.ClipData;
 import android.content.ClipboardManager;

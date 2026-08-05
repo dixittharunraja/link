@@ -1,5 +1,4 @@
 // TLS identity — self-signed certificate generated once per device, reused forever.
-// Ported from kdeconnect-kde's sslhelper.cpp (KdeConnectConfig::certificate()/privateKey()).
 //
 // Trust model (docs/PROTOCOL.md §5):
 //   - Unpaired connections: no peer verification, just get the socket up for pairing.
@@ -18,7 +17,7 @@ export interface TlsIdentity {
 
 /**
  * Loads this device's TLS cert+key from `configDir`, generating a new self-signed pair (valid
- * ~10 years, matching KDE Connect's long-lived certs) if none exists yet.
+ * ~10 years) if none exists yet.
  */
 export function loadOrCreateTlsIdentity(configDir: string, deviceId: string): TlsIdentity {
   const certFile = path.join(configDir, 'cert.pem');

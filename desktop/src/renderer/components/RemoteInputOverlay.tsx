@@ -216,7 +216,7 @@ const RemoteInputOverlay: React.FC<RemoteInputOverlayProps> = ({ deviceId, onClo
 
   const handleKeyboardToggle = () => {
     if (inputRef.current) {
-      if (document.activeElement === inputRef.current) {
+      if (isKeyboardActive) {
         inputRef.current.blur();
         setIsKeyboardActive(false);
       } else {
@@ -242,7 +242,26 @@ const RemoteInputOverlay: React.FC<RemoteInputOverlayProps> = ({ deviceId, onClo
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (!linkApi) return;
-    if (e.key === 'Backspace') {
+    // Ctrl/Cmd shortcuts — only reachable via a hardware/Bluetooth keyboard paired to the phone
+    // (Android's software keyboard has no Ctrl key), sent as dedicated specialKey codes rather
+    // than literal characters. Codes 40-43 match touchpad.ts's C# helper's Ctrl+combo branch.
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      // preventDefault so the browser/WebView doesn't also select-all the invisible local input —
+      // without it, a subsequent Ctrl+C would copy from THIS device's clipboard instead of the
+      // remote target's, and Ctrl+V would paste local clipboard text into the hidden field,
+      // triggering handleInputChange and sending it as literal characters on top of the combo.
+      e.preventDefault();
+      linkApi.sendSpecialKey(deviceId, 40); // Select All
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+      e.preventDefault();
+      linkApi.sendSpecialKey(deviceId, 41); // Copy
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+      e.preventDefault();
+      linkApi.sendSpecialKey(deviceId, 42); // Paste
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') {
+      e.preventDefault();
+      linkApi.sendSpecialKey(deviceId, 43); // Cut
+    } else if (e.key === 'Backspace') {
       linkApi.sendSpecialKey(deviceId, 1); // 1 is Backspace in mouse-helper.cs
     } else if (e.key === 'Enter') {
       linkApi.sendSpecialKey(deviceId, 12); // 12 is Enter / Return in mouse-helper.cs
@@ -261,7 +280,7 @@ const RemoteInputOverlay: React.FC<RemoteInputOverlayProps> = ({ deviceId, onClo
 
   return (
     <div id="touchpadSurface" className="landscape-overlay" style={{ height: '100vw', width: '100vh' }}>
-      <div style={{ width: '100%', paddingBottom: '12px', fontFamily: 'var(--font-display)', fontSize: '20px', fontWeight: 'bold', color: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div style={{ width: '100%', paddingTop: '0px', paddingBottom: '12px', fontFamily: 'var(--font-display)', fontSize: '20px', fontWeight: 'bold', color: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span>Remote Input</span>
         {/* Invisible input field to receive key inputs from mobile soft keyboard */}
         <input
@@ -309,12 +328,12 @@ const RemoteInputOverlay: React.FC<RemoteInputOverlayProps> = ({ deviceId, onClo
         </span>
       </div>
 
-      <div style={{ width: '100%', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', paddingTop: '16px' }}>
+      <div style={{ width: '100%', display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px', paddingTop: '16px' }}>
         <button
           onClick={handleKeyboardToggle}
           style={{
             padding: '16px',
-            background: isKeyboardActive ? 'var(--accent-color, #00f0ff)' : 'rgba(255,255,255,0.03)',
+            background: isKeyboardActive ? 'var(--accent-color, #009bd5)' : 'rgba(255,255,255,0.03)',
             color: isKeyboardActive ? '#000' : '#fff',
             border: '1px solid var(--border-color)',
             borderRadius: '8px',
@@ -331,6 +350,12 @@ const RemoteInputOverlay: React.FC<RemoteInputOverlayProps> = ({ deviceId, onClo
           style={{ padding: '16px', background: 'rgba(255,255,255,0.03)', color: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', fontSize: '15px', fontWeight: 'bold' }}
         >
           Left Click
+        </button>
+        <button
+          onClick={() => linkApi?.sendMouseClick(deviceId, 'middle')}
+          style={{ padding: '16px', background: 'rgba(255,255,255,0.03)', color: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', fontSize: '15px', fontWeight: 'bold' }}
+        >
+          Middle Click
         </button>
         <button
           onClick={() => linkApi?.sendMouseClick(deviceId, 'right')}

@@ -7,19 +7,10 @@ format).
 
 THE CORE DEAL
 ------------------------------------------------------
-This is a faithful PORT of KDE Connect's protocol and plugin behavior, built from scratch in
-TypeScript/Electron (desktop) and Java/Capacitor (Android) — NOT a reuse of KDE Connect's actual
-C++/Qt or Kotlin source. "Faithful" means: same wire packet types (renamed kdeconnect.* ->
-link.*), same field names/shapes, same directional behavior, same feature semantics. It does NOT
-mean bit-for-bit reimplementation of upstream's internal architecture — use whatever's idiomatic
-on this stack (Node child_process instead of Qt, PowerShell instead of D-Bus, etc).
-
-Reference source lives locally at /reference/kdeconnect-kde and /reference/kdeconnect-android.
-READ THE ACTUAL PLUGIN SOURCE before implementing anything — packet field names, direction of
-each packet type, which side owns which behavior. Don't guess from the plugin's name or from
-general KDE Connect knowledge; the real source has settled every ambiguity already. When a
-question comes up about whether current work matches upstream (it will — the user checks this
-periodically), answer it by re-reading the source, not from memory of what you implemented earlier.
+This is a clean-room implementation of the wire protocol and plugin behavior, built from scratch in
+TypeScript/Electron (desktop) and Java/Capacitor (Android). Same wire packet types (prefixed link.*),
+same field names/shapes, same directional behavior, same feature semantics. Use whatever's idiomatic
+on this stack (Node child_process, PowerShell, etc).
 
 ORDERING: EASY TO HARD, ALWAYS
 ------------------------------------------------------

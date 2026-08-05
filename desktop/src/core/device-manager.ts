@@ -9,36 +9,27 @@ import { PairingHandler, PACKET_TYPE_PAIR, PairState } from './pairing';
 import { TrustStore } from './trust';
 import { certFingerprint } from './tls';
 import { LinkPacket, createPacket } from './packet';
-import {
-  OwnerKeyStore,
-  RevocationStore,
-  MembershipCert,
-  Revocation,
-  OwnerKeyPair,
-  generateOwnerKeyPair,
-  issueMembershipCert,
-  verifyMembershipCert,
-  signRevocation,
-  verifyRevocation,
-  PACKET_TYPE_POOL_ENROLL,
-  PACKET_TYPE_POOL_REVOKE,
-} from './pool';
 
 interface ManagedPeer {
   conn: PeerConnection;
   pairing: PairingHandler;
   trusted: boolean;
+  identity?: DeviceIdentity;
 }
 
 export interface DeviceManagerEvents {
   deviceConnected: (identity: DeviceIdentity, trusted: boolean) => void;
   deviceDisconnected: (deviceId: string) => void;
-  incomingPairRequest: (deviceId: string, verificationKey: string | null) => void;
+  incomingPairRequest: (deviceId: string, deviceName: string, deviceType: string | undefined, verificationKey: string | null) => void;
   pairingSuccessful: (deviceId: string) => void;
   pairingFailed: (deviceId: string, reason: string) => void;
   unpaired: (deviceId: string) => void;
   trustMismatch: (deviceId: string) => void;
   packet: (deviceId: string, packet: LinkPacket) => void;
+  /** Emitted when a pool-member IP hint arrives — main.ts uses this to attempt a direct TCP connect
+   *  and to persist the deviceId+ip as a retry candidate in case the immediate attempt fails. */
+  poolPeerHint: (deviceId: string, ip: string) => void;
+  trustListUpdated: () => void;
 }
 
 export declare interface DeviceManager {
@@ -54,33 +45,13 @@ export class DeviceManager extends EventEmitter {
   constructor(
     private opts: TransportOptions,
     public trustStore: TrustStore,
-    port: number = LINK_PORT,
-    // Trusted Pool (Wave 2). Optional so existing callers/tests still work; main.ts passes them.
-    private ownerStore?: OwnerKeyStore,
-    private revStore?: RevocationStore
+    port: number = LINK_PORT
   ) {
     super();
     this.myPublicKeyDer = extractPublicKeyDer(opts.cert);
-    this.refreshMyPoolIdentity();
 
     this.server = new LinkServer(opts, port);
     this.server.on('connection', (conn) => this.attach(conn));
-  }
-
-  /** Stamp this device's current pool membership onto the shared identity object, so every NEW
-   *  connection advertises it (the identity packet is the auto-mesh signal — see attach's
-   *  onIdentity). Called at startup and whenever credentials change (enroll / exit). */
-  private refreshMyPoolIdentity(): void {
-    if (!this.ownerStore) return;
-    const fp = this.ownerStore.fingerprint();
-    const membership = this.ownerStore.getMembership();
-    if (fp && membership) {
-      this.opts.myIdentity.ownerKeyFingerprint = fp;
-      this.opts.myIdentity.membershipCert = membership;
-    } else {
-      delete this.opts.myIdentity.ownerKeyFingerprint;
-      delete this.opts.myIdentity.membershipCert;
-    }
   }
 
   async connectTo(host: string, port: number = LINK_PORT): Promise<void> {
@@ -96,7 +67,6 @@ export class DeviceManager extends EventEmitter {
       if (existing) {
         const pinnedFingerprint = certFingerprint(existing.certPem);
         if (currentFingerprint !== pinnedFingerprint) {
-          // Certificate mismatch on an already-trusted device — never silently re-pin.
           this.emit('trustMismatch', identity.deviceId);
           conn.close();
           return;
@@ -116,29 +86,20 @@ export class DeviceManager extends EventEmitter {
         }
       }
 
-      // Auto-mesh (Trusted Pool, item 8): a device we haven't manually paired with, but which
-      // presents a valid membership cert signed by OUR OWN owner key, is one of our own pool
-      // devices — trust it with no second PIN. Verified against the peer's ACTUAL presented TLS
-      // cert (not just its claimed deviceId), and refused if the device has been revoked.
-      let trusted = !!existing;
-      if (!trusted && this.tryAutoTrust(conn, identity)) {
-        trusted = true;
-      }
+      const trusted = !!existing;
 
       const pairing = new PairingHandler(
         trusted ? 'Paired' : 'NotPaired',
         this.myPublicKeyDer,
         () => extractPeerPublicKeyDer(conn)
       );
-      // Carry any in-flight pairing state over from the connection being replaced — see
-      // PairingHandler.snapshot()/restore() for why this matters.
       if (existingPeer) {
         pairing.restore(existingPeer.pairing.snapshot());
       }
 
       pairing.on('sendPacket', (packet) => conn.send(packet));
       pairing.on('incomingPairRequest', () => {
-        this.emit('incomingPairRequest', identity.deviceId, pairing.verificationKey());
+        this.emit('incomingPairRequest', identity.deviceId, identity.deviceName, identity.deviceType, pairing.verificationKey());
       });
       pairing.on('pairingSuccessful', () => {
         const peer = this.peers.get(identity.deviceId);
@@ -152,11 +113,9 @@ export class DeviceManager extends EventEmitter {
           });
           peer.trusted = true;
         }
-        // Item 7: the manual PIN pairing that just completed is the human gate for bringing a new
-        // device into the pool. Now bootstrap it — hand over the owner key + issue its membership
-        // cert — so it can auto-mesh with the rest of the pool without pairing each one.
-        this.enrollAfterPairing(conn, identity);
         this.emit('pairingSuccessful', identity.deviceId);
+        this.broadcastPoolSync();
+        this.sendPoolSync(conn);
       });
       pairing.on('pairingFailed', (reason) => this.emit('pairingFailed', identity.deviceId, reason));
       pairing.on('unpaired', () => {
@@ -166,8 +125,12 @@ export class DeviceManager extends EventEmitter {
         this.emit('unpaired', identity.deviceId);
       });
 
-      this.peers.set(identity.deviceId, { conn, pairing, trusted });
+      this.peers.set(identity.deviceId, { conn, pairing, trusted, identity });
       this.emit('deviceConnected', identity, trusted);
+      if (trusted) {
+        conn.send(createPacket('link.pairing-state', { state: 'Paired' }));
+        this.sendPoolSync(conn);
+      }
     });
 
     conn.on('packet', (packet) => {
@@ -175,23 +138,77 @@ export class DeviceManager extends EventEmitter {
       if (!peerEntry) return;
       const [deviceId, peer] = peerEntry;
 
+      if (packet.type === 'link.pairing-state') {
+        const body = packet.body as { state?: string };
+        if (body.state === 'Paired') {
+          if (!peer.trusted) {
+            console.log(`[Link] Peer ${deviceId.slice(0, 8)} thinks they are paired, but we don't trust them. Sending unpair.`);
+            conn.send(createPacket('link.pair', { pair: false }));
+            setTimeout(() => {
+              conn.close();
+            }, 500);
+          }
+        }
+        return;
+      }
+
+      if (packet.type === 'link.pool.sync') {
+        const body = packet.body as { trustList?: Array<{ deviceId: string; deviceName: string; certPem: string; protocolVersion: number; lastKnownIp?: string }> };
+        if (body.trustList && Array.isArray(body.trustList)) {
+          let updated = false;
+          for (const dev of body.trustList) {
+            if (dev.deviceId === this.opts.myIdentity.deviceId) continue;
+            if (!this.trustStore.isPaired(dev.deviceId)) {
+              console.log(`[Link] Auto-learning trust for pool peer ${dev.deviceName} (${dev.deviceId.slice(0, 8)})`);
+              this.trustStore.pair({
+                deviceId: dev.deviceId,
+                deviceName: dev.deviceName,
+                certPem: dev.certPem,
+                protocolVersion: dev.protocolVersion || 1,
+                pairedAt: Date.now(),
+                lastKnownIp: dev.lastKnownIp,
+              });
+              updated = true;
+            } else {
+              const existing = this.trustStore.get(dev.deviceId);
+              if (existing && dev.lastKnownIp && existing.lastKnownIp !== dev.lastKnownIp) {
+                console.log(`[Link] Updating IP for pool peer ${dev.deviceName} (${dev.deviceId.slice(0, 8)}) to ${dev.lastKnownIp}`);
+                this.trustStore.updateLastKnownIp(dev.deviceId, dev.lastKnownIp);
+                updated = true;
+              }
+            }
+          }
+          if (updated) {
+            this.emit('trustListUpdated');
+            this.broadcastPoolSync();
+          }
+        }
+        return;
+      }
+
+      if (packet.type === 'link.pool.remove') {
+        const body = packet.body as { deviceId?: string };
+        if (body.deviceId && this.trustStore.isPaired(body.deviceId)) {
+          console.log(`[Link] Peer ${deviceId.slice(0, 8)} requested removal of ${body.deviceId.slice(0, 8)} from pool.`);
+          this.unpair(body.deviceId);
+
+          // Propagate to other trusted connected devices (excluding the sender and the target)
+          const targetId = body.deviceId;
+          for (const otherId of this.trustedConnectedDeviceIds()) {
+            if (otherId !== deviceId && otherId !== targetId) {
+              this.sendTo(otherId, createPacket('link.pool.remove', { deviceId: targetId }));
+            }
+          }
+        }
+        return;
+      }
+
       if (packet.type === PACKET_TYPE_PAIR) {
         peer.pairing.packetReceived(packet as LinkPacket<{ pair: boolean; timestamp?: number }>);
         return;
       }
 
-      if (!peer.trusted) return; // ignore feature packets from unpaired devices
-
-      // Pool control packets (Trusted Pool, items 7 & 9) — handled internally, never surfaced as
-      // ordinary feature packets. They only ever arrive over an already-trusted connection.
-      if (packet.type === PACKET_TYPE_POOL_ENROLL) {
-        this.applyEnrollment(packet.body as { owner: OwnerKeyPair; membership: MembershipCert });
-        return;
-      }
-      if (packet.type === PACKET_TYPE_POOL_REVOKE) {
-        this.applyRevocation((packet.body as { revocation: Revocation }).revocation, conn);
-        return;
-      }
+      if (!peer.trusted) return;
 
       this.emit('packet', deviceId, packet);
     });
@@ -199,9 +216,6 @@ export class DeviceManager extends EventEmitter {
     conn.on('close', () => {
       const peerEntry = [...this.peers.entries()].find(([, p]) => p.conn === conn);
       if (peerEntry) {
-        // Delete before emitting — listeners that synchronously check trustedConnectedDeviceIds()
-        // inside their deviceDisconnected handler (e.g. screensaver-inhibit) must see this device
-        // already gone, not the stale pre-disconnect state.
         this.peers.delete(peerEntry[0]);
         this.emit('deviceDisconnected', peerEntry[0]);
       }
@@ -210,175 +224,6 @@ export class DeviceManager extends EventEmitter {
     conn.on('error', (err) => {
       console.error('PeerConnection error:', err.message);
     });
-  }
-
-  // ===== Trusted Pool (Wave 2) =====
-
-  /** Item 8: verify a peer's advertised membership cert against OUR own owner key + the peer's
-   *  actual TLS cert, and write it into the trust store if it checks out. Returns true if trusted. */
-  private tryAutoTrust(conn: PeerConnection, identity: DeviceIdentity): boolean {
-    if (!this.ownerStore || !this.ownerStore.hasKey()) return false;
-    if (!identity.membershipCert || !identity.ownerKeyFingerprint) return false;
-    if (!conn.peerCertPem) return false;
-    if (this.revStore?.has(identity.deviceId)) return false; // revoked — never auto-trust
-
-    const myFp = this.ownerStore.fingerprint();
-    if (identity.ownerKeyFingerprint !== myFp) return false; // different pool
-
-    const owner = this.ownerStore.get();
-    if (!owner) return false;
-    const peerCertFp = certFingerprint(conn.peerCertPem);
-    if (!verifyMembershipCert(identity.membershipCert, owner.publicKeyDerB64, identity.deviceId, peerCertFp)) {
-      return false;
-    }
-
-    this.trustStore.pair({
-      deviceId: identity.deviceId,
-      deviceName: identity.deviceName,
-      certPem: conn.peerCertPem,
-      protocolVersion: identity.protocolVersion,
-      pairedAt: Date.now(),
-    });
-    return true;
-  }
-
-  /** Item 7: right after a manual pair completes, bootstrap the peer into the pool. Deterministic —
-   *  both sides run the identical evaluation off the identities they already exchanged, so exactly
-   *  one side enrolls the other with no extra negotiation. */
-  private enrollAfterPairing(conn: PeerConnection, identity: DeviceIdentity): void {
-    if (!this.ownerStore || !conn.peerCertPem) return;
-
-    const myFp = this.ownerStore.fingerprint();          // null if I'm not in a pool yet
-    const peerFp = identity.ownerKeyFingerprint ?? null; // null if the peer isn't
-
-    if (myFp && peerFp) {
-      // Both already in a pool: same pool = nothing to do; different pools = no-merge (per scope).
-      return;
-    }
-    if (!myFp && peerFp) {
-      // Peer has a pool, I don't → the peer enrolls me. Just wait for its link.pool.enroll.
-      return;
-    }
-    if (!myFp && !peerFp) {
-      // Neither is in a pool → this pairing CREATES one. Deterministic creator = larger deviceId,
-      // so both sides agree without negotiating; the other side simply waits for the enroll packet.
-      if (this.opts.myIdentity.deviceId > identity.deviceId) {
-        const owner = generateOwnerKeyPair();
-        const myMembership = issueMembershipCert(owner, this.opts.myIdentity.deviceId, certFingerprint(this.opts.cert));
-        this.ownerStore.setCredentials(owner, myMembership);
-        this.refreshMyPoolIdentity();
-        this.sendEnroll(conn, identity);
-      }
-      return;
-    }
-    // myFp && !peerFp → I enroll the peer.
-    this.sendEnroll(conn, identity);
-  }
-
-  private sendEnroll(conn: PeerConnection, identity: DeviceIdentity): void {
-    const owner = this.ownerStore?.get();
-    if (!owner || !conn.peerCertPem) return;
-    const membership = issueMembershipCert(owner, identity.deviceId, certFingerprint(conn.peerCertPem));
-    conn.send(createPacket(PACKET_TYPE_POOL_ENROLL, { owner, membership } as unknown as Record<string, unknown>));
-  }
-
-  /** Received link.pool.enroll: store the handed-over owner key + our own membership cert, verify
-   *  it's genuinely for us, then re-mesh so already-open connections upgrade to trusted. */
-  private applyEnrollment(body: { owner: OwnerKeyPair; membership: MembershipCert }): void {
-    if (!this.ownerStore || this.ownerStore.hasKey()) return; // already in a pool — ignore
-    const { owner, membership } = body || ({} as any);
-    if (!owner || !membership) return;
-    const myCertFp = certFingerprint(this.opts.cert);
-    if (!verifyMembershipCert(membership, owner.publicKeyDerB64, this.opts.myIdentity.deviceId, myCertFp)) {
-      return; // not a valid cert for THIS device — reject
-    }
-    this.ownerStore.setCredentials(owner, membership);
-    this.refreshMyPoolIdentity();
-    // Force any still-open UNTRUSTED connections to reconnect: on the fresh handshake both sides
-    // now advertise membership, so they auto-mesh mutually. Trusted connections are untouched.
-    this.closeUntrustedConnections();
-  }
-
-  private closeUntrustedConnections(): void {
-    for (const peer of [...this.peers.values()]) {
-      if (!peer.trusted) peer.conn.close();
-    }
-  }
-
-  /** Received link.pool.revoke: verify against our owner key, record it, drop the device if here,
-   *  and flood it onward to our other pool members so it propagates. If it names US, we've been
-   *  kicked — wipe our own credentials. */
-  private applyRevocation(rev: Revocation, from: PeerConnection): void {
-    if (!this.ownerStore || !this.revStore) return;
-    const owner = this.ownerStore.get();
-    if (!owner || !verifyRevocation(rev, owner.publicKeyDerB64)) return;
-
-    const isNew = this.revStore.add(rev);
-    if (!isNew) return; // already seen — stop the flood
-
-    if (rev.deviceId === this.opts.myIdentity.deviceId) {
-      // We were removed from the pool by another member. Leave: wipe credentials, drop everyone.
-      this.ownerStore.clear();
-      this.refreshMyPoolIdentity();
-      for (const [id, peer] of [...this.peers.entries()]) {
-        this.trustStore.unpair(id);
-        peer.trusted = false;
-        peer.conn.close();
-      }
-      return;
-    }
-
-    // Drop the revoked device if it's currently connected/trusted.
-    const target = this.peers.get(rev.deviceId);
-    if (target) {
-      this.trustStore.unpair(rev.deviceId);
-      target.trusted = false;
-      target.conn.close();
-      this.emit('unpaired', rev.deviceId);
-    } else {
-      this.trustStore.unpair(rev.deviceId);
-    }
-    // Flood onward to every OTHER trusted pool member.
-    for (const peer of this.peers.values()) {
-      if (peer.trusted && peer.conn !== from) {
-        peer.conn.send(createPacket(PACKET_TYPE_POOL_REVOKE, { revocation: rev } as unknown as Record<string, unknown>));
-      }
-    }
-  }
-
-  /** Remove another device from the pool (item 9). Owner-signs a revocation, applies it locally,
-   *  and gossips it to every connected member. Falls back to a plain unpair if we're not in a pool. */
-  removeFromPool(deviceId: string): void {
-    const owner = this.ownerStore?.get();
-    if (owner && this.revStore) {
-      const rev = signRevocation(owner, deviceId);
-      this.revStore.add(rev);
-      for (const peer of this.peers.values()) {
-        if (peer.trusted) {
-          peer.conn.send(createPacket(PACKET_TYPE_POOL_REVOKE, { revocation: rev } as unknown as Record<string, unknown>));
-        }
-      }
-    }
-    this.unpair(deviceId);
-  }
-
-  /** Leave the pool ourselves (item 9). Sign our own revocation so the others drop us, gossip it,
-   *  then wipe our credentials and unpair everyone. Falls back to unpair-all if not in a pool. */
-  exitPool(): void {
-    const owner = this.ownerStore?.get();
-    if (owner) {
-      const rev = signRevocation(owner, this.opts.myIdentity.deviceId);
-      for (const peer of this.peers.values()) {
-        if (peer.trusted) {
-          peer.conn.send(createPacket(PACKET_TYPE_POOL_REVOKE, { revocation: rev } as unknown as Record<string, unknown>));
-        }
-      }
-      this.ownerStore?.clear();
-      this.refreshMyPoolIdentity();
-    }
-    for (const id of [...this.peers.keys()]) {
-      this.unpair(id);
-    }
   }
 
   requestPairing(deviceId: string): string | null {
@@ -394,6 +239,10 @@ export class DeviceManager extends EventEmitter {
     this.peers.get(deviceId)?.pairing.acceptPairing();
   }
 
+  cancelPairing(deviceId: string): void {
+    this.peers.get(deviceId)?.pairing.cancelPairing();
+  }
+
   rejectPairing(deviceId: string): void {
     this.peers.get(deviceId)?.pairing.cancelPairing();
   }
@@ -401,11 +250,21 @@ export class DeviceManager extends EventEmitter {
   unpair(deviceId: string): void {
     const peer = this.peers.get(deviceId);
     if (peer) {
+      try {
+        console.log(`[Link] Sending unpair packet to ${deviceId.slice(0, 8)}`);
+        peer.conn.send(createPacket('link.pair', { pair: false }));
+      } catch (err: any) {
+        console.error(`[Link] Failed to send unpair: ${err.message}`);
+      }
       peer.pairing.unpair();
-      peer.conn.close(); // Force-close socket immediately on disconnect
+      setTimeout(() => {
+        peer.conn.close();
+      }, 500);
+      this.peers.delete(deviceId);
     }
     // Cover the case where the device isn't currently connected — still drop local trust.
     this.trustStore.unpair(deviceId);
+    this.emit('unpaired', deviceId);
   }
 
   closeConnection(deviceId: string): void {
@@ -463,8 +322,27 @@ export class DeviceManager extends EventEmitter {
     return trusted ? certFingerprint(trusted.certPem) : null;
   }
 
+  getPeerIdentity(deviceId: string): DeviceIdentity | undefined {
+    return this.peers.get(deviceId)?.conn.peerIdentity ?? undefined;
+  }
+
+  getConnectedPeers(): Array<{ deviceId: string; identity?: DeviceIdentity; trusted: boolean }> {
+    return [...this.peers.entries()].map(([id, p]) => ({
+      deviceId: id,
+      identity: p.conn.peerIdentity ?? undefined,
+      trusted: p.trusted,
+    }));
+  }
+
   hasPeer(deviceId: string): boolean {
     return this.peers.has(deviceId);
+  }
+
+  updatePeerName(deviceId: string, newName: string): void {
+    const peer = this.peers.get(deviceId);
+    if (peer && peer.conn && peer.conn.peerIdentity) {
+      peer.conn.peerIdentity.deviceName = newName;
+    }
   }
 
   /**
@@ -496,6 +374,30 @@ export class DeviceManager extends EventEmitter {
         peer.conn.close();
       } else {
         peer.conn.sendHeartbeat();
+      }
+    }
+  }
+
+  private getPoolSyncList() {
+    return this.trustStore.list().map((d) => ({
+      deviceId: d.deviceId,
+      deviceName: d.deviceName,
+      certPem: d.certPem,
+      protocolVersion: d.protocolVersion,
+      lastKnownIp: d.lastKnownIp,
+    }));
+  }
+
+  private sendPoolSync(conn: PeerConnection) {
+    conn.send(createPacket('link.pool.sync', { trustList: this.getPoolSyncList() }));
+  }
+
+  private broadcastPoolSync() {
+    const list = this.getPoolSyncList();
+    const packet = createPacket('link.pool.sync', { trustList: list });
+    for (const peer of this.peers.values()) {
+      if (peer.trusted) {
+        peer.conn.send(packet);
       }
     }
   }

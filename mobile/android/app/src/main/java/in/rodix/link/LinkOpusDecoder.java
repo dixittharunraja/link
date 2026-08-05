@@ -1,6 +1,6 @@
 package in.rodix.link;
 
-// Wraps a MediaCodec configured for Opus decoding — used by LinkAudioRelayClient to decompress
+// Wraps a MediaCodec configured for Opus decoding — used by LinkAudioSinkClient to decompress
 // incoming audio, mirroring desktop's @evan/opus Decoder usage. Opus DECODING via MediaCodec has
 // been available since Android 5.0 (API 21), well below this project's minSdkVersion (23), so
 // unlike the encoder there's no additional API-level gate needed here.
@@ -10,11 +10,11 @@ package in.rodix.link;
 // two: Android's MediaCodec Opus decoder, unlike @evan/opus's simple decode(buf) API, requires
 // being initialized with proper Opus container metadata — see buildOpusHead() below). The
 // fallback-to-PCM contract on the sending side plus the try/catch around this class's
-// construction (see LinkAudioRelayClient's handleFormatMessage) means a failure here surfaces as
+// construction (see LinkAudioSinkClient's handleFormatMessage) means a failure here surfaces as
 // a clear error rather than silently breaking playback.
 //
 // Uses MediaCodec's synchronous (dequeue/queue) API — this class is only ever driven from
-// LinkAudioRelayClient's single dedicated UDP receive thread, matching LinkOpusEncoder's same
+// LinkAudioSinkClient's single dedicated UDP receive thread, matching LinkOpusEncoder's same
 // reasoning on the capture thread.
 
 import android.media.MediaCodec;

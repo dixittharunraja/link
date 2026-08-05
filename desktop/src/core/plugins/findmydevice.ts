@@ -1,29 +1,19 @@
-// Find My Phone / Find This Device plugin — port of kdeconnect-kde's plugins/findmyphone
-// (desktop-finds-phone) and plugins/findthisdevice (phone-finds-desktop) — same packet type,
-// used in either direction. See docs/PROTOCOL.md §8.
-//
-// Scoped down from upstream Android's actual behavior on purpose: real kdeconnect-android loops
-// a ringtone at max ALARM volume, flashes the camera flashlight, and shows a full-screen
-// notification that only stops when the user taps it — there's no "stop" packet in the protocol
-// at all, it rings until manually acknowledged on the device. We don't have that notification/
-// activity infrastructure built yet, so this implements the core "make noise to help locate it"
-// behavior with a fixed auto-stop duration instead of tap-to-dismiss. Disclosed deviation, not a
-// silent one — see docs/features.txt.
+// Find My Device plugin. Same packet type is used in either direction. See docs/PROTOCOL.md §8.
 
 import { exec, ChildProcess } from 'child_process';
 import { LinkPacket, createPacket } from '../packet';
 
-export const PACKET_TYPE_FINDMYPHONE_REQUEST = 'link.findmyphone.request';
-export interface FindMyPhoneBody {
+export const PACKET_TYPE_FINDMYDEVICE_REQUEST = 'link.findmydevice.request';
+export interface FindMyDeviceBody {
   cancel?: boolean;
 }
 
-export function createFindMyPhonePacket(cancel = false): LinkPacket<FindMyPhoneBody> {
-  return createPacket(PACKET_TYPE_FINDMYPHONE_REQUEST, cancel ? { cancel: true } : {});
+export function createFindMyDevicePacket(cancel = false): LinkPacket<FindMyDeviceBody> {
+  return createPacket(PACKET_TYPE_FINDMYDEVICE_REQUEST, cancel ? { cancel: true } : {});
 }
 
-export function isFindMyPhonePacket(packet: LinkPacket): boolean {
-  return packet.type === PACKET_TYPE_FINDMYPHONE_REQUEST;
+export function isFindMyDevicePacket(packet: LinkPacket): boolean {
+  return packet.type === PACKET_TYPE_FINDMYDEVICE_REQUEST;
 }
 
 let ringProcess: ChildProcess | null = null;

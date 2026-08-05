@@ -26,19 +26,27 @@ function getInterfaceBroadcastAddresses(): string[] {
   return addresses;
 }
 
-// Shortened from an earlier 5000ms — combined with the heartbeat cycle now detecting a dead peer
-// within ~9s instead of relying on slow/opaque OS TCP keepalive, a snappier rebroadcast means
-// less time sitting between "peer confirmed dead" and "next chance to rediscover it."
-const DISCOVERY_INTERVAL_MS = 3000;
+const DISCOVERY_INTERVAL_MS = 2000;
+
+// A peer that has stopped broadcasting will miss 3 intervals (6 seconds total) before
+// expiring. Using 3x gives a 1-packet buffer for Wi-Fi frame drops so the UI never flickers.
+const PEER_EXPIRY_MS = DISCOVERY_INTERVAL_MS * 3;
 
 export class DiscoveryService {
   private socket: dgram.Socket | null = null;
-  private interval: NodeJS.Timeout | null = null;
+  private broadcastInterval: NodeJS.Timeout | null = null;
+  private expiryInterval: NodeJS.Timeout | null = null;
   private visibilityEnabled = true;
+
+  // Tracks the last time we received a UDP identity broadcast from each discovered peer.
+  // This is the source of truth for "is this device currently visible on the LAN" —
+  // presence here means we heard from them recently; absence means they stopped broadcasting.
+  private discoveredPeers = new Map<string, { ip: string; lastSeen: number }>();
 
   constructor(
     private localIdentity: any,
-    private onDeviceDiscovered: (ip: string, identity: any) => void
+    private onDeviceDiscovered: (ip: string, identity: any) => void,
+    private onDeviceExpired?: (deviceId: string) => void,
   ) {}
 
   start(visibilityEnabled = true) {
@@ -51,6 +59,12 @@ export class DiscoveryService {
         const packet = JSON.parse(str) as LinkPacket;
         if (packet.type === 'link.identity') {
           if (packet.body.deviceId !== this.localIdentity.deviceId) {
+            // Update the last-seen timestamp every time a broadcast arrives. This is the
+            // heartbeat that keeps the peer alive in the expiry check below.
+            this.discoveredPeers.set(packet.body.deviceId, {
+              ip: rinfo.address,
+              lastSeen: Date.now(),
+            });
             this.onDeviceDiscovered(rinfo.address, packet.body);
           }
         }
@@ -74,6 +88,9 @@ export class DiscoveryService {
       if (this.visibilityEnabled) {
         this.startBroadcasting();
       }
+      // Always start the expiry check regardless of visibility — we always listen for
+      // other devices' broadcasts, so we always need to expire stale ones.
+      this.startExpiryCheck();
     });
   }
 
@@ -87,8 +104,9 @@ export class DiscoveryService {
   }
 
   private broadcastOnce() {
-    if (!this.visibilityEnabled || !this.socket) return;
+    if (!this.socket) return;
     try {
+      this.localIdentity.visibility = true;
       const packet = {
         id: Date.now(),
         type: 'link.identity',
@@ -108,23 +126,48 @@ export class DiscoveryService {
   }
 
   private startBroadcasting() {
-    if (this.interval) return;
+    if (this.broadcastInterval) return;
     // setInterval's first tick fires only after the full delay — without this, a device that just
     // launched or just re-enabled visibility stayed invisible to peers for up to a full interval
     // for no reason, when there's nothing to wait for.
     this.broadcastOnce();
-    this.interval = setInterval(() => this.broadcastOnce(), DISCOVERY_INTERVAL_MS);
+    this.broadcastInterval = setInterval(() => this.broadcastOnce(), DISCOVERY_INTERVAL_MS);
   }
 
   private stopBroadcasting() {
-    if (this.interval) {
-      clearInterval(this.interval);
-      this.interval = null;
+    if (this.broadcastInterval) {
+      clearInterval(this.broadcastInterval);
+      this.broadcastInterval = null;
     }
+  }
+
+  /**
+   * Periodically checks the last-seen timestamp for each discovered peer. If a peer has not
+   * sent a UDP broadcast within PEER_EXPIRY_MS (3 missed intervals), it is considered gone
+   * and the onDeviceExpired callback fires so the caller can close any open TCP connection.
+   *
+   * This makes discovery realtime: a device that toggles visibility OFF will stop sending
+   * broadcasts, and will automatically disappear from every peer's Nearby list after ~9s.
+   */
+  private startExpiryCheck() {
+    this.expiryInterval = setInterval(() => {
+      const now = Date.now();
+      for (const [deviceId, info] of this.discoveredPeers.entries()) {
+        if (now - info.lastSeen > PEER_EXPIRY_MS) {
+          this.discoveredPeers.delete(deviceId);
+          this.onDeviceExpired?.(deviceId);
+        }
+      }
+    }, DISCOVERY_INTERVAL_MS);
   }
 
   stop() {
     this.stopBroadcasting();
+    if (this.expiryInterval) {
+      clearInterval(this.expiryInterval);
+      this.expiryInterval = null;
+    }
+    this.discoveredPeers.clear();
     if (this.socket) {
       try {
         this.socket.close();

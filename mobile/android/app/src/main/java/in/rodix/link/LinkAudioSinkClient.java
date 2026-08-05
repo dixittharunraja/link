@@ -1,11 +1,11 @@
 package in.rodix.link;
 
-// Audio Relay — listener side, mirroring desktop's audio-relay-client.ts protocol exactly (see
+// Audio Relay — listener side, mirroring desktop's audio-sink-client.ts protocol exactly (see
 // that file's header comment for the full wire protocol: JSON control messages for join/admit/
 // format/mute/end over WebSocket, PCM audio over a separate UDP channel). Deliberately independent
 // of LinkDeviceManager/LinkTrustStore — an admitted listener here never becomes a paired device.
 //
-// PCM arrives over LinkTransport.AUDIO_RELAY_UDP_PORT, not this WebSocket — see audio-relay-
+// PCM arrives over LinkTransport.AUDIO_RELAY_UDP_PORT, not this WebSocket — see audio-sink-
 // server.ts's header comment for the full reasoning (TCP head-of-line blocking vs. real-time
 // audio). The "admitted" control message now also carries our connId and a per-session
 // AES-256-GCM key; setupUdp() opens the UDP socket, sends one "hello" datagram (our connId) so
@@ -26,33 +26,31 @@ import org.json.JSONObject;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
-import java.net.Socket;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.security.PrivateKey;
-import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSocket;
 
-public class LinkAudioRelayClient {
-    private static final String TAG = "LinkAudioRelayClient";
+public class LinkAudioSinkClient {
+    private static final String TAG = "LinkAudioSinkClient";
     private static final byte CODEC_TAG_PCM = 0x00;
     private static final byte CODEC_TAG_OPUS = 0x01;
-    // Must match desktop's OPUS_FRAME_MS in audio-relay-server.ts and this project's own
-    // LinkAudioRelayServer.OPUS_FRAME_MS — Opus mandates fixed frame durations, and this is only
+    // Must match desktop's OPUS_FRAME_MS in audio-sink-server.ts and this project's own
+    // LinkAudioSinkServer.OPUS_FRAME_MS — Opus mandates fixed frame durations, and this is only
     // used to drive LinkOpusDecoder's presentation-timestamp bookkeeping (monotonic, not
     // wall-clock-critical), not to parse anything on the wire. History: 20ms -> 10ms (confirmed
     // good) -> 5ms (reverted — real throughput ceiling on Android's MediaCodec path, see
-    // LinkAudioRelayServer's OPUS_FRAME_MS comment for the full reasoning).
+    // LinkAudioSinkServer's OPUS_FRAME_MS comment for the full reasoning).
     private static final int OPUS_FRAME_MS = 10;
     private static final int UDP_SEQ_BYTES = 4;
+    private static final int UDP_TS_BYTES = 6; // capture-time wall-clock ms, [hi:2][lo:4]
     private static final int UDP_NONCE_BYTES = 12;
     private static final int UDP_MAX_PACKET_BYTES = 65507;
     // The host slices each capture chunk into several MTU-safe sub-packets and fires them in a
@@ -66,8 +64,12 @@ public class LinkAudioRelayClient {
     private static final int REORDER_WINDOW_MAX = 8;
 
     public interface Listener {
+        // Never actually called — LinkAudioSinkServer.java's join-guest branch admits
+        // immediately, there is no PIN gate to report. Kept only because LinkPlugin.java's
+        // sAudioSinkClient still implements this interface; not worth a signature change to
+        // drop a single always-empty callback.
         void onPinComputed(String pin);
-        void onAdmitted();
+        void onAdmitted(String hostName);
         void onFormat(int sampleRate, int channels, int bitsPerSample, boolean isFloat);
         void onHostMuted(boolean muted);
         void onEnded();
@@ -83,15 +85,48 @@ public class LinkAudioRelayClient {
     private int channels;
     private int bitsPerSample;
     private boolean isFloatFormat;
-    private boolean pinComputedLocally = false;
 
     private String hostAddress;
+    // Derived UDP target is controlPort + 1 (see setupUdp) — this class is shared by Audio Relay
+    // and Walkie Talkie's listening leg, each on its own port pair, so this must never hardcode
+    // AUDIO_RELAY_UDP_PORT the way this field replaced.
+    private int controlPort;
+    private volatile boolean resolved = false;
+    private final java.util.List<WebSocketClient> pendingClients = new java.util.concurrent.CopyOnWriteArrayList<>();
     private DatagramSocket udpSocket;
     private Thread udpReceiveThread;
     private volatile boolean udpRunning = false;
     private byte[] sessionKey;
     private int nextExpectedSeq = -1; // -1 = not bootstrapped yet; accept whatever arrives first
     private final java.util.TreeMap<Integer, byte[]> reorderBuffer = new java.util.TreeMap<>(); // seq -> decrypted PCM payload
+
+    // --- Clock-drift correction ---
+    // At session start the phone measures the round-trip delta between the PC's capture timestamp
+    // and the phone's own wall clock; drift correction then tracks how that offset changes over
+    // time and micro-adjusts AudioTrack.setPlaybackRate() by up to ±1% to converge all phones on
+    // the same play-offset from the live capture, eliminating the audible misalignment caused by
+    // each device's independent crystal-clock running at a slightly different frequency.
+    //
+    // Terminology:
+    //   captureMs  = PC wall-clock time (ms) when the audio was captured, from the UDP frame
+    //   arrivalMs  = phone wall-clock time (ms) when the packet arrived at the UDP socket
+    //   playOffset = arrivalMs - captureMs  (positive = phone is "behind" the capture by this much)
+    //
+    // A steady, hardware-bounded playOffset is fine — it's just the transport+buffer latency.
+    // What we're correcting is the DRIFT: if playOffset GROWS from 80ms to 120ms over 30 seconds,
+    // the phone's clock is running slower than the PC's and we need to play back slightly faster.
+    // Similarly, a shrinking playOffset means the phone clock is faster and we slow down a tiny bit.
+    //
+    // Implementation: exponential-moving-average (alpha=0.02, reacts slowly to avoid over-correction)
+    // of the measured playOffset, compared against the baseline measured in the first few seconds.
+    // The correction applied to AudioTrack.setPlaybackRate() is clamped to ±1% of the nominal rate.
+    private long baselineOffsetMs = Long.MIN_VALUE;  // set once, from the first ~1s of measurements
+    private double smoothedOffsetMs = 0;             // EMA of playOffset
+    private int baselineSampleCount = 0;
+    private long baselineAccumMs = 0;
+    private static final int BASELINE_SAMPLES = 50; // ~1s of audio at 10ms Opus cadence
+    private static final double EMA_ALPHA = 0.02;   // slow smoothing — reacts in ~50 frames
+    private static final double MAX_RATE_CORRECTION = 0.01; // ±1% max
 
     // Reused across every packet on the single UDP receive thread instead of calling
     // Cipher.getInstance("AES/GCM/NoPadding") fresh each time — that lookup (JCA provider
@@ -114,7 +149,7 @@ public class LinkAudioRelayClient {
     private android.net.wifi.WifiManager.WifiLock wifiLock;
     private android.os.PowerManager.WakeLock wakeLock;
 
-    public LinkAudioRelayClient(Context context, Listener listener) {
+    public LinkAudioSinkClient(Context context, Listener listener) {
         this.context = context.getApplicationContext();
         this.listener = listener;
     }
@@ -125,13 +160,13 @@ public class LinkAudioRelayClient {
                 (android.net.wifi.WifiManager) context.getSystemService(Context.WIFI_SERVICE);
             if (wifiManager != null) {
                 wifiLock = wifiManager.createWifiLock(
-                    android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Link:audiorelay-wifi");
+                    android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Link:audiosink-wifi");
                 wifiLock.setReferenceCounted(false);
                 wifiLock.acquire();
             }
             android.os.PowerManager pm = (android.os.PowerManager) context.getSystemService(Context.POWER_SERVICE);
             if (pm != null) {
-                wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "Link:audiorelay-cpu");
+                wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "Link:audiosink-cpu");
                 wakeLock.setReferenceCounted(false);
                 wakeLock.acquire();
             }
@@ -147,10 +182,142 @@ public class LinkAudioRelayClient {
         wakeLock = null;
     }
 
-    /** token null = guest path (PIN confirmation); token non-null = already-paired fast path. */
-    public void connect(String host, int port, X509Certificate myCert, PrivateKey myKey, String token) {
+    private String localDeviceName = "Guest";
+    private boolean pinComputedLocally = false;
+
+    private void computeAndReportPin(X509Certificate myCert) {
+        try {
+            java.net.Socket socket = client.getSocket();
+            if (socket instanceof javax.net.ssl.SSLSocket) {
+                java.security.cert.Certificate[] chain = ((javax.net.ssl.SSLSocket) socket).getSession().getPeerCertificates();
+                if (chain.length > 0) {
+                    String pin = LinkVerification.computeCode(myCert.getPublicKey().getEncoded(), chain[0].getPublicKey().getEncoded(), "");
+                    pinComputedLocally = true;
+                    listener.onPinComputed(pin);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not independently verify PIN from peer certificate — will trust the host-reported PIN instead", e);
+        }
+    }
+
+    public void connect(final String host, final int port, final X509Certificate myCert, final PrivateKey myKey, final String token, String localDeviceName) {
+        this.localDeviceName = localDeviceName != null ? localDeviceName : "Guest";
         Log.i(TAG, "connect() to " + host + ":" + port + " mode=" + (token != null ? "paired-token" : "guest-pin"));
+        
+        String[] hosts = host.split(",");
+        for (int i = 0; i < hosts.length; i++) {
+            hosts[i] = hosts[i].trim();
+        }
+
+        if (hosts.length <= 1) {
+            connectSingle(host, port, myCert, myKey, token);
+            return;
+        }
+
+        resolved = false;
+        pendingClients.clear();
+        acquireLocks();
+
+        try {
+            final SSLContext sslContext = LinkTransport.buildSslContext(myCert, myKey);
+            
+            for (final String singleHost : hosts) {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            URI uri = new URI("wss://" + singleHost + ":" + port);
+                            final WebSocketClient ws = new WebSocketClient(uri) {
+                                @Override
+                                public void onOpen(ServerHandshake handshakedata) {
+                                    synchronized (LinkAudioSinkClient.this) {
+                                        if (resolved) {
+                                            try { close(); } catch (Exception ignored) {}
+                                            return;
+                                        }
+                                        resolved = true;
+                                        client = this;
+                                        hostAddress = singleHost;
+                                        controlPort = port;
+                                        
+                                        // Clean up all other pending clients
+                                        for (WebSocketClient c : pendingClients) {
+                                            if (c != this) {
+                                                try { c.close(); } catch (Exception ignored) {}
+                                            }
+                                        }
+                                        pendingClients.clear();
+                                    }
+
+                                    Log.i(TAG, "onOpen (" + singleHost + ") — TLS handshake complete, sending join message");
+                                    if (token != null) {
+                                        sendJoin("join-token", "token", token);
+                                    } else {
+                                        pinComputedLocally = false;
+                                        computeAndReportPin(myCert);
+                                        sendJoin("join-guest", null, null);
+                                    }
+                                }
+
+                                @Override
+                                public void onMessage(String message) {
+                                    if (client == this) {
+                                        handleControlMessage(message);
+                                    }
+                                }
+
+                                @Override
+                                public void onMessage(ByteBuffer bytes) {
+                                    Log.w(TAG, "Unexpected binary WebSocket message (" + bytes.remaining() + " bytes) — ignoring");
+                                }
+
+                                @Override
+                                public void onClose(int code, String reason, boolean remote) {
+                                    if (client == this) {
+                                        Log.i(TAG, "onClose code=" + code + " reason=" + reason + " remote=" + remote);
+                                        stopPlayback();
+                                        stopUdp();
+                                        releaseLocks();
+                                        listener.onClosed(reason != null && !reason.isEmpty() ? reason : ("code " + code));
+                                    }
+                                }
+
+                                @Override
+                                public void onError(Exception ex) {
+                                    if (client == this) {
+                                        Log.e(TAG, "onError", ex);
+                                        stopUdp();
+                                        releaseLocks();
+                                        listener.onError(ex.getMessage());
+                                    } else if (!resolved) {
+                                        Log.w(TAG, "Failed connection attempt to " + singleHost + ": " + ex.getMessage());
+                                        pendingClients.remove(this);
+                                        if (pendingClients.isEmpty()) {
+                                            releaseLocks();
+                                            listener.onError("All connection attempts failed. Last error: " + ex.getMessage());
+                                        }
+                                    }
+                                }
+                            };
+                            ws.setSocketFactory(sslContext.getSocketFactory());
+                            pendingClients.add(ws);
+                            ws.connect();
+                        } catch (Exception e) {
+                            Log.w(TAG, "Failed to connect to " + singleHost, e);
+                        }
+                    }
+                }).start();
+            }
+        } catch (Exception e) {
+            releaseLocks();
+            listener.onError("Failed to initialize parallel connect: " + e.getMessage());
+        }
+    }
+
+    private void connectSingle(String host, int port, X509Certificate myCert, PrivateKey myKey, final String token) {
         this.hostAddress = host;
+        this.controlPort = port;
         try {
             URI uri = new URI("wss://" + host + ":" + port);
             SSLContext sslContext = LinkTransport.buildSslContext(myCert, myKey);
@@ -163,6 +330,7 @@ public class LinkAudioRelayClient {
                     if (token != null) {
                         sendJoin("join-token", "token", token);
                     } else {
+                        pinComputedLocally = false;
                         computeAndReportPin(myCert);
                         sendJoin("join-guest", null, null);
                     }
@@ -219,7 +387,29 @@ public class LinkAudioRelayClient {
      *  for no benefit). That means the shared React volume slider can't reach a Web Audio
      *  GainNode on mobile the way it does on desktop — this method is what it calls instead,
      *  wired through a dedicated PluginMethod (see LinkPlugin.java). */
+    // Local-only mute for the LISTENER side (distinct from the host's own setMuted() broadcast,
+    // which silences the stream for every listener at once) — used by the active-session
+    // notification's Mute/Unmute button. lastVolume tracks whatever the real (non-toggle) volume
+    // was last set to, so unmuting restores it instead of always snapping back to 1.0.
+    private volatile boolean locallyMuted = false;
+    private volatile float lastVolume = 1f;
+
     public void setVolume(float volume) {
+        lastVolume = volume;
+        locallyMuted = false;
+        applyVolume(volume);
+    }
+
+    public void toggleLocalMute() {
+        locallyMuted = !locallyMuted;
+        applyVolume(locallyMuted ? 0f : lastVolume);
+    }
+
+    public boolean isLocallyMuted() {
+        return locallyMuted;
+    }
+
+    private void applyVolume(float volume) {
         if (audioTrack != null) {
             try { audioTrack.setVolume(volume); } catch (Exception ignored) {}
         }
@@ -240,36 +430,13 @@ public class LinkAudioRelayClient {
             JSONObject obj = new JSONObject();
             obj.put("type", type);
             if (extraKey != null) obj.put(extraKey, extraValue);
+            if ("join-guest".equals(type)) {
+                obj.put("deviceName", localDeviceName);
+            }
             Log.i(TAG, "sending join message: " + type);
             client.send(obj.toString());
         } catch (Exception e) {
             Log.e(TAG, "Failed to send join message", e);
-        }
-    }
-
-    /** Best-effort independent PIN computation from the peer's TLS certificate — mirrors
-     *  desktop's approach (see audio-relay-client.ts). WebSocketClient.getSocket() is a
-     *  documented public method of org.java-websocket that returns the underlying Socket (an
-     *  SSLSocket once a secure socket factory is set), giving straightforward access to
-     *  getSession().getPeerCertificates() — no NIO SSLEngine reflection needed here, unlike
-     *  LinkFsServer's server-side code, because java-websocket's CLIENT uses a plain blocking
-     *  SSLSocket under the hood. Falls back to the host's own 'pin' control message (see
-     *  handleControlMessage) if this doesn't pan out for any reason — see
-     *  audio-relay-server.ts's join-guest branch for why that fallback is an acceptable
-     *  degradation rather than a hard failure. */
-    private void computeAndReportPin(X509Certificate myCert) {
-        try {
-            Socket socket = client.getSocket();
-            if (socket instanceof SSLSocket) {
-                Certificate[] chain = ((SSLSocket) socket).getSession().getPeerCertificates();
-                if (chain.length > 0) {
-                    String pin = LinkVerification.computeCode(myCert.getPublicKey().getEncoded(), chain[0].getPublicKey().getEncoded(), "");
-                    pinComputedLocally = true;
-                    listener.onPinComputed(pin);
-                }
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Could not independently verify PIN from peer certificate — will trust the host-reported PIN instead", e);
         }
     }
 
@@ -279,8 +446,9 @@ public class LinkAudioRelayClient {
             String type = obj.optString("type");
             Log.i(TAG, "control message: " + type);
             if ("admitted".equals(type)) {
+                String hostName = obj.optString("hostName", "");
                 setupUdp(obj.optString("connId", null), obj.optString("udpKey", null));
-                listener.onAdmitted();
+                listener.onAdmitted(hostName);
             } else if ("format".equals(type)) {
                 sampleRate = obj.getInt("sampleRate");
                 channels = obj.getInt("channels");
@@ -304,7 +472,6 @@ public class LinkAudioRelayClient {
             } else if ("ended".equals(type)) {
                 listener.onEnded();
             } else if ("pin".equals(type) && !pinComputedLocally) {
-                // Fallback path only — see computeAndReportPin().
                 listener.onPinComputed(obj.optString("code"));
             }
         } catch (Exception e) {
@@ -315,7 +482,7 @@ public class LinkAudioRelayClient {
     private int chunksReceived = 0;
 
     /** Opens the UDP socket for this session and sends the one "hello" datagram that lets the
-     *  host learn our (address, port) — see audio-relay-server.ts's header comment for the full
+     *  host learn our (address, port) — see audio-sink-server.ts's header comment for the full
      *  protocol. */
     private void setupUdp(String connId, String udpKeyBase64) {
         if (connId == null || udpKeyBase64 == null) {
@@ -326,6 +493,10 @@ public class LinkAudioRelayClient {
             sessionKey = Base64.decode(udpKeyBase64, Base64.NO_WRAP);
             nextExpectedSeq = -1;
             reorderBuffer.clear();
+            baselineOffsetMs = Long.MIN_VALUE;
+            smoothedOffsetMs = 0;
+            baselineSampleCount = 0;
+            baselineAccumMs = 0;
             decryptCipher = Cipher.getInstance("AES/GCM/NoPadding"); // instantiated once, reused per packet
             udpSocket = new DatagramSocket();
             // The host fires several sub-packets per capture chunk back-to-back with zero delay
@@ -342,7 +513,7 @@ public class LinkAudioRelayClient {
             udpSocket.send(new DatagramPacket(
                 connId.getBytes(java.nio.charset.StandardCharsets.UTF_8),
                 connId.getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
-                InetAddress.getByName(hostAddress), LinkTransport.AUDIO_RELAY_UDP_PORT));
+                InetAddress.getByName(hostAddress), controlPort + 1));
 
             udpRunning = true;
             udpReceiveThread = new Thread(() -> {
@@ -357,7 +528,7 @@ public class LinkAudioRelayClient {
                     }
                     handleUdpFrame(packet.getData(), packet.getLength());
                 }
-            }, "LinkAudioRelayClient-udp");
+            }, "LinkAudioSinkClient-udp");
             udpReceiveThread.start();
         } catch (Exception e) {
             listener.onError("Failed to set up UDP audio socket: " + e.getMessage());
@@ -365,14 +536,23 @@ public class LinkAudioRelayClient {
     }
 
     private void handleUdpFrame(byte[] data, int length) {
-        int minLen = UDP_SEQ_BYTES + UDP_NONCE_BYTES + 16; // 16 = GCM auth tag
+        // Frame layout (server-side): [seq:4][ts:6][nonce:12][encrypted payload+16-byte GCM tag]
+        int minLen = UDP_SEQ_BYTES + UDP_TS_BYTES + UDP_NONCE_BYTES + 16;
         if (sessionKey == null || length < minLen) return;
 
         ByteBuffer bb = ByteBuffer.wrap(data, 0, length);
         int seq = bb.getInt();
+
+        // Read the 6-byte capture timestamp: [hi:2 unsigned][lo:4 unsigned]
+        long tsHi = (bb.getShort() & 0xFFFFL);
+        long tsLo = (bb.getInt() & 0xFFFFFFFFL);
+        long captureMs = (tsHi << 32) | tsLo;
+        long arrivalMs = System.currentTimeMillis();
+        updateDriftCorrection(captureMs, arrivalMs);
+
         byte[] nonce = new byte[UDP_NONCE_BYTES];
         bb.get(nonce);
-        byte[] ciphertext = new byte[length - UDP_SEQ_BYTES - UDP_NONCE_BYTES];
+        byte[] ciphertext = new byte[length - UDP_SEQ_BYTES - UDP_TS_BYTES - UDP_NONCE_BYTES];
         bb.get(ciphertext);
 
         byte[] payload;
@@ -380,10 +560,50 @@ public class LinkAudioRelayClient {
             decryptCipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(sessionKey, "AES"), new GCMParameterSpec(128, nonce));
             payload = decryptCipher.doFinal(ciphertext); // throws on auth-tag mismatch — wrong key, corrupted, or spoofed
         } catch (Exception e) {
-            return; // failed auth — silently drop, matches desktop's audio-relay-client.ts
+            return; // failed auth — silently drop, matches desktop's audio-sink-client.ts
         }
 
         acceptDecrypted(seq, payload);
+    }
+
+    /** Measures the current play-offset (arrivalMs - captureMs) and applies a slow
+     *  exponential-smoothing correction to AudioTrack.setPlaybackRate() to cancel any drift.
+     *  Called from the UDP receive thread; audioTrack access is guarded by a null-check (the
+     *  race window between startPlayback and the first packet is safe — we just skip one sample). */
+    private void updateDriftCorrection(long captureMs, long arrivalMs) {
+        long offsetMs = arrivalMs - captureMs;
+
+        // Phase 1: collect baseline from the first BASELINE_SAMPLES packets
+        if (baselineOffsetMs == Long.MIN_VALUE) {
+            baselineAccumMs += offsetMs;
+            baselineSampleCount++;
+            if (baselineSampleCount >= BASELINE_SAMPLES) {
+                baselineOffsetMs = baselineAccumMs / baselineSampleCount;
+                smoothedOffsetMs = baselineOffsetMs;
+                Log.i(TAG, "Drift correction baseline established: " + baselineOffsetMs + " ms");
+            }
+            return; // don't apply any correction yet
+        }
+
+        // Phase 2: EMA of ongoing offset, compare against baseline
+        smoothedOffsetMs = EMA_ALPHA * offsetMs + (1.0 - EMA_ALPHA) * smoothedOffsetMs;
+        double driftMs = smoothedOffsetMs - baselineOffsetMs;
+
+        // driftMs > 0 means phone is falling behind (clock too slow) -> play faster
+        // driftMs < 0 means phone is running ahead (clock too fast) -> play slower
+        // Clamp correction to ±MAX_RATE_CORRECTION of the nominal sample rate.
+        double correction = driftMs / 1000.0; // convert ms drift to a fractional rate offset
+        correction = Math.max(-MAX_RATE_CORRECTION, Math.min(MAX_RATE_CORRECTION, correction));
+        int correctedRate = (int) Math.round(sampleRate * (1.0 + correction));
+
+        AudioTrack track = audioTrack;
+        if (track != null && track.getPlayState() == AudioTrack.PLAYSTATE_PLAYING) {
+            try {
+                track.setPlaybackRate(correctedRate);
+            } catch (Exception e) {
+                Log.w(TAG, "setPlaybackRate failed: " + e.getMessage());
+            }
+        }
     }
 
     /** Reorder-tolerant delivery: plays packets in seq order, briefly holding out-of-order

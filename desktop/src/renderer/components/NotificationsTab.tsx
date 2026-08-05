@@ -11,15 +11,18 @@ interface NotificationItem {
     ticker?: string;
     requestReplyId?: string;
   };
+  isMeshSync?: boolean;
 }
 
 interface NotificationsTabProps {
   notifications: NotificationItem[];
+  peers?: Map<string, any>;
   onReply: (deviceId: string, replyId: string, message: string, notifKey: string) => Promise<void>;
 }
 
 const NotificationsTab: React.FC<NotificationsTabProps> = ({
   notifications,
+  peers,
   onReply,
 }) => {
   const [replies, setReplies] = useState<Record<string, string>>({});
@@ -43,10 +46,14 @@ const NotificationsTab: React.FC<NotificationsTabProps> = ({
     }
   };
 
+  const getDeviceDisplayName = (deviceId: string) => {
+    return peers?.get(deviceId)?.name || deviceId.slice(0, 8);
+  };
+
   return (
     <div id="tab-notifications" className="tab-content active" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div className="card">
-        <div className="card-title">Mirrored Alerts</div>
+        <div className="card-title">Pool Notifications</div>
         <div id="notifications-list">
           {notifications.length === 0 ? (
             <div style={{ color: 'var(--text-muted)', fontSize: '13px', fontStyle: 'italic' }}>
@@ -56,13 +63,14 @@ const NotificationsTab: React.FC<NotificationsTabProps> = ({
             notifications.map((item) => {
               const body = item.body;
               const titleText = body.title ? body.title : body.appName;
+              const deviceName = getDeviceDisplayName(item.deviceId);
               const hasReply = !!body.requestReplyId;
 
               return (
                 <div key={item.key} className="notif-card" style={{ marginBottom: '12px' }}>
                   {body.title && (
                     <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '2px' }}>
-                      {body.appName}
+                      {body.appName} (from {deviceName})
                     </div>
                   )}
                   <div style={{ fontWeight: 600 }}>{titleText}</div>

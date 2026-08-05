@@ -1,12 +1,6 @@
 package in.rodix.link;
 
-// Presenter plugin — port of kdeconnect-android's plugins/presenter/PresenterPlugin.kt's
-// sendPointer/stopPointer. Only the pointer-dot-movement half — slide navigation
-// (next/prev/fullscreen/esc) goes over touchpad.request with real key injection, deferred
-// separately. See desktop/src/core/plugins/presenter.ts's header comment and docs/features.txt.
-//
-// Input source note: real upstream drives dx/dy from the phone's gyroscope (tilt control). Our
-// mobile dev harness uses touch-drag instead — the wire packet format is identical either way.
+// Presenter helper. Constructs movement/stop packets for the pointer overlay.
 
 import org.json.JSONObject;
 

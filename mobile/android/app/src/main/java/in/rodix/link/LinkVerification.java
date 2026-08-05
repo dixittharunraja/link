@@ -3,7 +3,7 @@ package in.rodix.link;
 // Standalone version of the same "eyeball-compare" hash LinkPairingHandler.verificationKey()
 // already computes for normal pairing — pulled out here as its own small utility (not by
 // refactoring LinkPairingHandler, which stays untouched) so Audio Relay's ephemeral guest-session
-// PIN (LinkAudioRelayClient) can reuse the identical algorithm without depending on the pairing
+// PIN (LinkAudioSinkClient) can reuse the identical algorithm without depending on the pairing
 // state machine or LinkTrustStore at all. Mirrors desktop's computeVerificationCode() in
 // core/pairing.ts exactly (same byte ordering, same SHA-256-first-4-bytes truncation).
 

@@ -1,14 +1,11 @@
-// TCP+TLS transport — ported from kdeconnect-kde's core/backends/lan/lanlinkprovider.cpp,
-// adapted for Node's `tls` module. See docs/PROTOCOL.md §5.
+// TCP+TLS transport, adapted for Node's `tls` module. See docs/PROTOCOL.md §5.
 //
-// Implementation note: Qt's flow exchanges the identity packet in PLAINTEXT first (so it knows
-// the peer's deviceId before deciding how strict to make the TLS handshake), then upgrades to
-// TLS. Node's `tls` module makes it simpler to do the reverse without weakening anything: we
-// always start TLS immediately with `rejectUnauthorized: false` (accept any cert at the socket
-// layer), then manually verify the peer's certificate fingerprint against our pinned store right
-// after the handshake completes and we've learned their deviceId via the (now encrypted) identity
-// packet. End result is identical: unpaired connections proceed with an unverified cert, paired
-// connections are rejected outright on any certificate mismatch.
+// Implementation note: We start TLS immediately with `rejectUnauthorized: false` (accept any
+// cert at the socket layer), then manually verify the peer's certificate fingerprint against our
+// pinned store right after the handshake completes and we've learned their deviceId via the
+// (now encrypted) identity packet. Unpaired connections proceed with an unverified cert, while
+// paired connections are rejected outright on any certificate mismatch.
+
 
 import * as net from 'net';
 import * as tls from 'tls';
@@ -19,15 +16,30 @@ import { certFingerprint } from './tls';
 
 export const LINK_PORT = 1739; // arbitrary, distinct from KDE Connect's 1716/1717
 // File System's WebSocket server lives on LINK_PORT + 2 (see LinkFsServer.java/fs-client.ts).
-// Audio Relay's dedicated relay server (see audio-relay-server.ts) uses LINK_PORT + 3 — entirely
+// Audio Sink's dedicated relay server (see audio-sink-server.ts) uses LINK_PORT + 3 — entirely
 // separate from this module's DeviceManager/TrustStore-backed connections by design: guest
 // listeners are never paired and must never touch the trust store or peers map.
-export const AUDIO_RELAY_PORT = LINK_PORT + 3;
-// Dedicated UDP channel for the actual PCM stream (see audio-relay-server.ts's header comment) —
-// AUDIO_RELAY_PORT above now carries only JSON control messages (join/admit/format/mute/end) over
+export const AUDIO_SINK_PORT = LINK_PORT + 3;
+// Dedicated UDP channel for the actual PCM stream (see audio-sink-server.ts's header comment) —
+// AUDIO_SINK_PORT above now carries only JSON control messages (join/admit/format/mute/end) over
 // TLS/WebSocket; audio frames move over UDP here to avoid TCP head-of-line blocking stalling
 // playback behind a single delayed/lost packet.
-export const AUDIO_RELAY_UDP_PORT = AUDIO_RELAY_PORT + 1;
+export const AUDIO_SINK_UDP_PORT = AUDIO_SINK_PORT + 1;
+// Remote Mic reuses AUDIO_SINK_PORT + 2 / + 3 for its control/UDP pair (see main.ts) — next free
+// offset for a new ephemeral feature is + 7. Portal Mode (one-time file transfer to an unpaired
+// device) gets its own dedicated port for the same reason Audio Sink/Remote Mic do: guest
+// connections here are NEVER paired and must never touch the trust store or peers map.
+export const PORTAL_TRANSFER_PORT = LINK_PORT + 7;
+// Walkie Talkie's actual audio is WebRTC (getUserMedia + RTCPeerConnection, already built into
+// both Electron's renderer and Android's WebView) and never touches our own transport layer.
+// Signaling (session membership + SDP/ICE) between already-paired devices rides over the existing
+// trusted connection as plain link.walkietalkie.* packets — see main.ts. But an unpaired guest has
+// no such connection to ride on, so this dedicated control-only port (no UDP pair needed, unlike
+// Audio Sink/Remote Mic — there's no PCM stream of our own to carry) exists purely for guests to
+// reach the same signaling protocol via manual IP + PIN, same guest-admission model as every other
+// ephemeral Tools plugin. See walkie-talkie-signal-server.ts.
+export const WALKIE_TALKIE_PORT = LINK_PORT + 8;
+export const JOYSTICK_PORT = LINK_PORT + 9;
 export const PACKET_TYPE_IDENTITY = 'link.identity';
 // Silent, transport-level-only packet — never surfaced as a 'packet' event, purely to prove
 // liveness and reset lastActivityAt. TCP keepalive alone was too slow/opaque to rely on for this:

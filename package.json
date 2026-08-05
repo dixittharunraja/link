@@ -1,7 +1,8 @@
 {
   "name": "link",
   "version": "0.1.0",
-  "description": "Link — faithful Electron + Capacitor port of KDE Connect's protocol",
+  "description": "Link — secure peer-to-peer local network device synchronization and control suite",
+  "author": "Dixit Tharun Raja P / Rodix",
   "license": "GPL-3.0-only",
   "private": true,
   "scripts": {

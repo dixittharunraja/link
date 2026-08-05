@@ -6,15 +6,20 @@
   --sidebar-bg: rgba(7, 7, 9, 0.75); /* Translucent glass sidebar */
   --card-bg: rgba(13, 13, 17, 0.6);  /* Glass card base */
   --border-color: rgba(255, 255, 255, 0.04); /* Sub-pixel border */
-  --border-hover: rgba(0, 240, 255, 0.25);
+  --border-hover: rgba(0, 155, 213, 0.25);
   
   --text-color: #f8fafc;       /* Off-white */
   --text-muted: #64748b;       /* Cool slate gray */
   
-  --accent-color: #00f0ff;     /* Neon Cyan */
+  /* Sky blue — matches Life OS's own --primary token (oklch(0.62 0.19 221), same hue in both
+     of that app's themes) so the two products read as one family rather than each having their
+     own arbitrary brand color. Was a neon cyan (#00f0ff) before; that shade was bright enough
+     that white button text needed a black-text special case (see --btn-primary-text below,
+     now removed) and read as a different, unrelated color family from Life OS entirely. */
+  --accent-color: #009bd5;
   --accent-blue: #3b82f6;      /* Electric Blue */
-  --accent-glow: rgba(0, 240, 255, 0.08);
-  --accent-gradient: linear-gradient(135deg, #00f0ff 0%, #3b82f6 100%);
+  --accent-glow: rgba(0, 155, 213, 0.08);
+  --accent-gradient: linear-gradient(135deg, #009bd5 0%, #3b82f6 100%);
   
   --active-dot: #10b981;       /* Cyber emerald */
   --inactive-dot: #ef4444;     /* Crimson */
@@ -27,7 +32,9 @@
   --topbar-bg: rgba(3, 3, 3, 0.3);
   --input-bg: rgba(0, 0, 0, 0.4);
   --input-focus-bg: rgba(0, 0, 0, 0.6);
-  --btn-primary-text: #000000;
+  /* No longer needs to special-case black text: #009bd5 is dark enough for white text to sit on
+     with solid contrast, unlike the old #00f0ff neon cyan this replaced. */
+  --btn-primary-text: #ffffff;
   --slider-dot: #000000;
   --modal-bg: rgba(10, 10, 12, 0.95);
   --modal-shadow: rgba(0, 0, 0, 0.9);
@@ -44,10 +51,13 @@
   --text-color: #0f172a;
   --text-muted: #64748b;
   
-  --accent-color: #00b4d8;     /* Slightly deeper vibrant sky cyan for readability in Light Mode */
+  /* Same #009bd5 as dark mode — Life OS keeps its --primary token identical across its own
+     light/dark themes too (only a separate, brighter "ring" accent shifts between them), so
+     this doesn't need a lightened variant the way the old palette did. */
+  --accent-color: #009bd5;
   --accent-blue: #3b82f6;      /* Keeping the electric blue */
-  --accent-glow: rgba(0, 180, 216, 0.08);
-  --accent-gradient: linear-gradient(135deg, #00b4d8 0%, #3b82f6 100%);
+  --accent-glow: rgba(0, 155, 213, 0.08);
+  --accent-gradient: linear-gradient(135deg, #009bd5 0%, #3b82f6 100%);
   
   --active-dot: #10b981;
   --inactive-dot: #ef4444;
@@ -78,6 +88,19 @@
 /* Treat the whole shell like a native app: no accidental text-selection highlight or long-press
    callout on UI chrome from a tap/drag. Real text entry (inputs/textareas) and anything
    explicitly opted back in still selects normally. */
+html, body {
+  height: 100vh;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  /* Kills the WebView's built-in pull-to-refresh (and the rubber-band overscroll glow). Without
+     this, a downward swipe anywhere that isn't consumed by a control — very easy to do while
+     playing on the Joystick surface — reloads the whole app mid-session. `overflow: hidden`
+     above does NOT prevent it: the gesture is handled by the browser's overscroll layer, not by
+     any scroll container. */
+  overscroll-behavior: none;
+}
+
 body {
   -webkit-user-select: none;
   user-select: none;
@@ -94,11 +117,9 @@ textarea,
 body {
   background: var(--bg-color);
   background-image: 
-    radial-gradient(circle at 0% 0%, rgba(0, 240, 255, 0.03) 0%, transparent 40%),
+    radial-gradient(circle at 0% 0%, rgba(0, 155, 213, 0.03) 0%, transparent 40%),
     radial-gradient(circle at 100% 100%, rgba(59, 130, 246, 0.04) 0%, transparent 40%);
   color: var(--text-color);
-  height: 100vh;
-  overflow: hidden;
   display: flex;
 }
 
@@ -106,6 +127,7 @@ body {
   display: flex;
   width: 100%;
   height: 100%;
+  overflow: hidden;
 }
 
 /* Scrollbars - Minimalist Custom Scrollbar */
@@ -151,8 +173,8 @@ body {
   height: 36px;
   border-radius: 9px;
   background: #000000;
-  border: 1.5px solid rgba(0, 240, 255, 0.2);
-  box-shadow: 0 0 15px rgba(0, 240, 255, 0.15);
+  border: 1.5px solid rgba(0, 155, 213, 0.2);
+  box-shadow: 0 0 15px rgba(0, 155, 213, 0.15);
   transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -208,10 +230,10 @@ body {
 .nav-item.active {
   color: var(--text-color);
   background: var(--accent-glow);
-  border-color: rgba(0, 240, 255, 0.12);
+  border-color: rgba(0, 155, 213, 0.12);
   box-shadow: 
-    inset 0 0 12px rgba(0, 240, 255, 0.03),
-    0 4px 15px rgba(0, 240, 255, 0.03);
+    inset 0 0 12px rgba(0, 155, 213, 0.03),
+    0 4px 15px rgba(0, 155, 213, 0.03);
   font-weight: 600;
 }
 
@@ -243,10 +265,92 @@ body {
   flex-direction: column;
   overflow: hidden;
   position: relative;
+  min-width: 0; /* lets this flex child shrink past its content instead of forcing the page wider */
   transition: none !important;
 }
 
+.page-title-container {
+  flex-shrink: 0;
+}
+
+/* The single vertical scroller for tab content. `min-height: 0` is what actually makes it work:
+   a flex child defaults to min-height:auto, which refuses to shrink below its content, so
+   overflow-y would never engage and the content would just push out of the clipped parent. */
+.tab-scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Form controls carry hard pixel widths in a lot of places. max-width beats width, so this stops
+   any of them forcing a row wider than the space available. (It cannot override an explicit
+   min-width — min-width wins over max-width — so those are fixed at their call sites.) */
+input,
+textarea,
+select {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--input-bg);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 36px 10px 14px;
+  font-size: 13.5px;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml;utf8,<svg fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'><polyline points='6 9 12 15 18 9'></polyline></svg>");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 16px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+select:focus {
+  border-color: var(--border-hover);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+  background-color: var(--input-focus-bg);
+}
+
+select option {
+  background-color: #0d0d11;
+  color: #f8fafc;
+}
+
+[data-theme="light"] select option {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
+/* Device names, file paths and IPs are unbreakable runs that would otherwise push a container
+   wider than the viewport rather than wrapping. */
+.card,
+.fx-row,
+.peer-item {
+  overflow-wrap: anywhere;
+}
+
+/* Viewport clamp for every dialog, whatever inline width it declares.
+   max-width beats width in CSS, so one rule here retires a whole class of overflow bugs without
+   editing each dialog: several declare a hard pixel width (540px, 480px, 420px...) with no upper
+   bound, so any window narrower than that pushed the dialog off-screen with no way to reach it. */
+.modal > *,
+.popup-overlay > * {
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  box-sizing: border-box;
+}
+
 .top-bar {
+  position: relative;
+  flex-shrink: 0;
   height: 80px;
   border-bottom: 1px solid var(--border-color);
   display: flex;
@@ -299,18 +403,33 @@ body {
 }
 
 .local-device-card .status-dot {
+  position: relative;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background-color: var(--active-dot);
   box-shadow: 0 0 10px var(--active-dot);
+}
+
+/* The expanding ring was an animated box-shadow. box-shadow cannot be composited, so it
+   repainted this dot on every single frame, forever — and because the dot lives inside the
+   backdrop-filtered sidebar, each of those repaints also forced the sidebar's blur to be
+   recomputed. A scaled/faded pseudo-element looks the same and stays on the compositor.
+   Geometry matches the original: an 8px dot with an 8px spread is a 24px ring, i.e. scale(3). */
+.local-device-card .status-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background-color: var(--active-dot);
   animation: statusPulse 2s infinite;
+  pointer-events: none;
 }
 
 @keyframes statusPulse {
-  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
-  70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  0% { transform: scale(1); opacity: 0.6; }
+  70% { transform: scale(3); opacity: 0; }
+  100% { transform: scale(3); opacity: 0; }
 }
 
 .device-details {
@@ -336,15 +455,18 @@ body {
 .tab-content {
   flex-grow: 1;
   padding: 40px;
-  overflow-y: auto;
-  height: calc(100vh - 80px);
 }
 
 /* Premium Card Panels */
+/* No backdrop-filter here, deliberately. This class renders ~33 times at once, and each
+   instance is a separate compositor layer that has to re-snapshot and re-blur whatever sits
+   behind it every time anything under it changes — with a live device list that is constantly.
+   What is actually behind a card is the body's two 3-4%-alpha radial gradients, and blurring an
+   already-smooth gradient produces no visible difference, so this was pure cost for no pixels.
+   The translucent --card-bg still lets that gradient through exactly as before.
+   The genuine glass surfaces (.sidebar, .top-bar, .modal) keep their blur. */
 .card {
   background: var(--card-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--border-color);
   border-radius: 14px;
   padding: 24px;
@@ -402,7 +524,7 @@ button[data-action="pair"], #connectBtn, #addCommandBtn {
 
 button[data-action="pair"]:hover, #connectBtn:hover, #addCommandBtn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 0 16px rgba(0, 240, 255, 0.35);
+  box-shadow: 0 0 16px rgba(0, 155, 213, 0.35);
   opacity: 0.95;
 }
 
@@ -417,7 +539,7 @@ button.plugin-toggle-on {
 
 button.plugin-toggle-on:hover {
   transform: translateY(-1px);
-  box-shadow: 0 0 16px rgba(0, 240, 255, 0.35);
+  box-shadow: 0 0 16px rgba(0, 155, 213, 0.35);
   opacity: 0.95;
 }
 
@@ -435,7 +557,7 @@ input:not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
 
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus {
   border-color: var(--accent-color);
-  box-shadow: 0 0 12px rgba(0, 240, 255, 0.1);
+  box-shadow: 0 0 12px rgba(0, 155, 213, 0.1);
   background: var(--input-focus-bg);
 }
 
@@ -458,9 +580,11 @@ input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus {
 }
 
 .switch input {
+  position: absolute;
   opacity: 0;
   width: 0;
   height: 0;
+  pointer-events: none;
 }
 
 .slider {
@@ -553,12 +677,25 @@ input:checked + .slider:before {
   }
 
   .main-container {
-    height: calc(100vh - 135px) !important;
+    height: calc(100vh - 135px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
   }
 
   .top-bar {
-    height: 65px !important;
-    padding: 0 20px !important;
+    height: calc(65px + env(safe-area-inset-top, 0px)) !important;
+    padding-top: env(safe-area-inset-top, 0px) !important;
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+
+  .modal-content {
+    width: 90% !important;
+    max-width: 420px !important;
+    padding: 24px !important;
+    margin: 0 auto !important;
+  }
+
+  .page-title-container {
+    padding: 16px 20px 8px 20px !important;
   }
 
   .page-title {
@@ -566,12 +703,25 @@ input:checked + .slider:before {
   }
 
   .local-device-card {
-    padding: 6px 12px !important;
+    padding: 6px 10px !important;
+    gap: 8px !important;
+    max-width: 170px;
+  }
+
+  #header-device-name {
+    font-size: 11px !important;
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #header-device-ip {
+    font-size: 10px !important;
   }
 
   .tab-content {
     padding: 16px !important;
-    height: calc(100vh - 135px) !important;
   }
 
   .card {
@@ -659,7 +809,7 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 50%;
   background: var(--accent-color);
   cursor: pointer;
-  box-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+  box-shadow: 0 0 10px rgba(0, 155, 213, 0.5);
   transition: transform 0.15s;
 }
 
@@ -697,11 +847,14 @@ input[type="range"]::-webkit-slider-thumb:hover {
 }
 
 /* Onboarding Dialog */
+/* Deliberately no backdrop-filter: this covers the entire viewport, so blurring it makes the
+   compositor re-snapshot and re-blur the whole window whenever anything on top of it repaints.
+   The cost scales with window area, which is why it was unnoticeable in a small window and
+   caused visible stutter maximized. At 88% opaque there is almost nothing left to see through. */
 .modal {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 0, 0, 0.85);
-  backdrop-filter: blur(10px);
+  background: rgba(0, 0, 0, 0.88);
   z-index: 10000;
   display: flex;
   justify-content: center;
@@ -719,14 +872,39 @@ input[type="range"]::-webkit-slider-thumb:hover {
 }
 
 .onboarding-btn {
-  margin-top: 28px;
+  margin-top: 0;
   width: 100%;
-  padding: 14px;
-  font-size: 14.5px;
+  padding: 13px;
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--accent-gradient) !important;
+  border: none !important;
+  color: #000000 !important;
+  border-radius: 10px;
+  box-shadow: 0 4px 15px rgba(0, 155, 213, 0.25);
+  transition: all 0.2s ease;
+}
+
+.onboarding-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0, 155, 213, 0.4);
+}
+
+.onboarding-btn-skip {
+  width: 100%;
+  padding: 12px;
+  font-size: 13.5px;
   font-weight: 600;
-  background: var(--accent-gradient);
-  border: none;
-  color: #000000;
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid var(--border-color) !important;
+  color: var(--text-color) !important;
+  border-radius: 10px;
+  transition: all 0.2s ease;
+}
+
+.onboarding-btn-skip:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
 }
 
 .step-dot {
@@ -790,7 +968,7 @@ input[type="range"]::-webkit-slider-thumb:hover {
   box-shadow: 
     0 10px 30px rgba(0, 0, 0, 0.6),
     inset 0 1px 1px rgba(255, 255, 255, 0.1),
-    0 0 15px rgba(0, 240, 255, 0.15);
+    0 0 15px rgba(0, 155, 213, 0.15);
   z-index: 999999;
   pointer-events: none;
   transition: opacity 0.15s ease, transform 0.1s ease-out;
@@ -826,6 +1004,47 @@ input[type="range"]::-webkit-slider-thumb:hover {
   to { opacity: 1; }
 }
 
+/* File explorer rows/cells.
+   Hover used to be onMouseEnter/onMouseLeave handlers mutating element.style directly. That
+   meant two React props and an inline style write per row, and the write happens during event
+   dispatch rather than in the compositor. Declaring it in CSS lets hover be handled entirely
+   off the main thread and lets the row components below memoize on data alone. */
+/* `contain` tells the engine a row's layout and painting cannot affect anything outside it, so
+   hovering or swapping one row can't trigger a layout pass over the whole (very long) list. */
+.fx-row {
+  transition: background-color 0.1s ease;
+  contain: layout paint style;
+}
+.fx-row:hover {
+  background-color: rgba(255, 255, 255, 0.03);
+}
+
+.fx-cell {
+  transition: transform 0.15s ease, background-color 0.15s ease;
+  contain: layout paint style;
+}
+.fx-cell:hover {
+  transform: scale(1.02);
+  background-color: rgba(120, 120, 120, 0.05);
+}
+
+/* Replaces the querySelector-based show/hide of the per-cell action bar. */
+.fx-cell .fx-cell-actions {
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.fx-cell:hover .fx-cell-actions {
+  opacity: 1;
+}
+
+.fx-root {
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+.fx-root:hover {
+  transform: scale(1.02);
+  background-color: rgba(120, 120, 120, 0.1);
+}
+
 .flex-row {
   display: flex;
   flex-direction: row;
@@ -833,10 +1052,49 @@ input[type="range"]::-webkit-slider-thumb:hover {
   gap: 12px;
 }
 
+/* Two-column split panels (File Transfer's QR | Connect-to-Peer, etc.) — previously chose row vs.
+   column purely off the `isMobile` prop, so a desktop window narrowed below ~450px kept forcing
+   both columns into a row with `flex: 1, min-width: 0`, which lets flexbox shrink a column to
+   whatever is left over. With no floor, that squeezed the IP input down to a few visible
+   characters instead of ever wrapping to a stacked layout — the actual window's width was never
+   consulted, only the platform.
+   A container query fixes that at the source: it reacts to the SPLIT PANEL's own rendered width,
+   not the OS window or a global breakpoint, so this keeps behaving correctly inside a resizable
+   dialog, a smaller secondary window, or anywhere else this class is reused. */
+.fx-split-container {
+  container-type: inline-size;
+}
+.fx-split {
+  display: flex;
+  flex-direction: row;
+  gap: 24px;
+  align-items: stretch;
+  width: 100%;
+  box-sizing: border-box;
+}
+.fx-split-col {
+  flex: 1;
+  min-width: 0;
+}
+.fx-split-divider {
+  width: 1px;
+  flex-shrink: 0;
+  align-self: stretch;
+  background: var(--border-color, rgba(255, 255, 255, 0.08));
+}
+@container (max-width: 480px) {
+  .fx-split {
+    flex-direction: column;
+  }
+  .fx-split-divider {
+    display: none;
+  }
+}
+
 @keyframes pulseGlow {
-  0% { box-shadow: 0 0 0 0 rgba(0, 240, 255, 0.5); }
-  70% { box-shadow: 0 0 0 8px rgba(0, 240, 255, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(0, 240, 255, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(0, 155, 213, 0.5); }
+  70% { box-shadow: 0 0 0 8px rgba(0, 155, 213, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 155, 213, 0); }
 }
 
 .testing-pulse {
@@ -868,13 +1126,34 @@ input[type="range"]::-webkit-slider-thumb:hover {
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  padding: 16px;
+  padding-top: max(16px, env(safe-area-inset-top, 16px));
+  padding-bottom: max(16px, env(safe-area-inset-bottom, 16px));
+  padding-left: max(40px, env(safe-area-inset-left, 40px));
+  padding-right: max(16px, env(safe-area-inset-right, 16px));
   background: var(--bg-color);
   color: var(--text-color);
   font-family: var(--font-sans);
   z-index: 10000;
   overflow: hidden;
+  /* Belt-and-braces over the global rule on html/body: these surfaces are pure gesture targets
+     (touchpad drags, stylus strokes, thumbsticks), so no touch on them should ever reach the
+     browser's own scroll/pull-to-refresh handling. */
+  overscroll-behavior: none;
+  touch-action: none;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+}
+
+/* Hide scrollbars globally on the mobile app (Capacitor/WebView) while preserving desktop scrollbars */
+.mobile-app,
+.mobile-app * {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+}
+.mobile-app::-webkit-scrollbar,
+.mobile-app *::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }

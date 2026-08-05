@@ -21,6 +21,7 @@ import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
+import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
@@ -39,6 +40,7 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLPeerUnverifiedException;
 
 public class LinkRemoteMicServer extends WebSocketServer {
     private static final String TAG = "LinkRemoteMicServer";
@@ -49,7 +51,7 @@ public class LinkRemoteMicServer extends WebSocketServer {
     private static final int MAX_UDP_PCM_BYTES = 1280;
 
     public interface Listener {
-        void onGuestPinPending(String connId, String pin, String remoteAddress);
+        void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName);
         void onListenerJoined(String connId, String label);
         void onListenerLeft(String connId);
         void onError(String message);
@@ -81,10 +83,14 @@ public class LinkRemoteMicServer extends WebSocketServer {
         final WebSocket conn;
         final String pin;
         final ScheduledFuture<?> timeoutFuture;
-        PendingGuest(WebSocket conn, String pin, ScheduledFuture<?> timeoutFuture) {
+        final String remoteAddress;
+        final String deviceName;
+        PendingGuest(WebSocket conn, String pin, ScheduledFuture<?> timeoutFuture, String remoteAddress, String deviceName) {
             this.conn = conn;
             this.pin = pin;
             this.timeoutFuture = timeoutFuture;
+            this.remoteAddress = remoteAddress;
+            this.deviceName = deviceName;
         }
     }
 
@@ -92,14 +98,16 @@ public class LinkRemoteMicServer extends WebSocketServer {
         final WebSocket conn;
         final String deviceId;
         final String label;
+        final String remoteAddress; // needed so a guest (no deviceId) can still be blocked, by IP
         final byte[] sessionKey;
         final AtomicInteger seq = new AtomicInteger(0);
         volatile InetAddress udpAddress;
         volatile int udpPort = -1;
-        AdmittedListener(WebSocket conn, String deviceId, String label, byte[] sessionKey) {
+        AdmittedListener(WebSocket conn, String deviceId, String label, String remoteAddress, byte[] sessionKey) {
             this.conn = conn;
             this.deviceId = deviceId;
             this.label = label;
+            this.remoteAddress = remoteAddress;
             this.sessionKey = sessionKey;
         }
     }
@@ -154,10 +162,21 @@ public class LinkRemoteMicServer extends WebSocketServer {
         }
     }
 
+    // Same mechanism as LinkAudioSinkServer's — see that class's BlockChecker comment.
+    public interface BlockChecker {
+        boolean isBlocked(String idOrIp);
+    }
+    private final BlockChecker blockChecker;
+
     public LinkRemoteMicServer(Context context, X509Certificate cert, PrivateKey key, int port, Listener listener) throws Exception {
+        this(context, cert, key, port, listener, idOrIp -> false);
+    }
+
+    public LinkRemoteMicServer(Context context, X509Certificate cert, PrivateKey key, int port, Listener listener, BlockChecker blockChecker) throws Exception {
         super(new InetSocketAddress(port));
         this.context = context;
         this.listener = listener;
+        this.blockChecker = blockChecker;
         this.myPublicKeyDer = cert.getPublicKey().getEncoded();
 
         SSLContext sslContext = LinkTransport.buildSslContext(cert, key);
@@ -201,7 +220,7 @@ public class LinkRemoteMicServer extends WebSocketServer {
         PendingGuest pending = pendingGuests.remove(connId);
         if (pending == null) return;
         pending.timeoutFuture.cancel(false);
-        admit(connId, pending.conn, "Guest", null);
+        admit(connId, pending.conn, pending.deviceName, null, pending.remoteAddress);
     }
 
     public void rejectGuest(String connId) {
@@ -211,11 +230,40 @@ public class LinkRemoteMicServer extends WebSocketServer {
         try { pending.conn.close(4007, "rejected by host"); } catch (Exception ignored) {}
     }
 
+    /** Mirrors LinkAudioSinkServer's identically-named methods — see that class's comments. */
+    public String getPendingGuestRemoteAddress(String connId) {
+        PendingGuest pending = pendingGuests.get(connId);
+        return pending != null ? pending.remoteAddress : null;
+    }
+
+    public String getPendingGuestDeviceName(String connId) {
+        PendingGuest pending = pendingGuests.get(connId);
+        return pending != null ? pending.deviceName : null;
+    }
+
+    public static class ListenerBlockInfo {
+        public final String deviceId;
+        public final String remoteAddress;
+        ListenerBlockInfo(String deviceId, String remoteAddress) {
+            this.deviceId = deviceId;
+            this.remoteAddress = remoteAddress;
+        }
+    }
+
+    public ListenerBlockInfo getListenerBlockInfo(String connId) {
+        AdmittedListener l = admittedListeners.get(connId);
+        return l != null ? new ListenerBlockInfo(l.deviceId, l.remoteAddress) : null;
+    }
+
     public void setMuted(boolean muted) {
         this.muted = muted;
         try {
             broadcastJson(new JSONObject().put("type", "hostMuted").put("muted", muted));
         } catch (Exception ignored) {}
+    }
+
+    public boolean isMuted() {
+        return muted;
     }
 
     public List<ListenerInfo> listenersSnapshot() {
@@ -228,7 +276,7 @@ public class LinkRemoteMicServer extends WebSocketServer {
 
     /** Disconnects a single listener without ending the session for anyone else — the removal
      *  from admittedListeners happens when the resulting onClose() fires, not here; this just
-     *  requests the disconnect. Mirrors LinkAudioRelayServer's kickListener(). */
+     *  requests the disconnect. Mirrors LinkAudioSinkServer's kickListener(). */
     public void kickListener(String connId) {
         AdmittedListener l = admittedListeners.get(connId);
         if (l == null) return;
@@ -293,15 +341,15 @@ public class LinkRemoteMicServer extends WebSocketServer {
         }
     }
 
-    // Frame layout and encryption here must match audio-relay-client.ts exactly — main.ts connects
-    // to this server using the shared AudioRelayClient class (see wireRemoteMicClientEvents/
+    // Frame layout and encryption here must match audio-sink-client.ts exactly — main.ts connects
+    // to this server using the shared AudioSinkClient class (see wireRemoteMicClientEvents/
     // join-remote-mic-paired in main.ts), not a Remote-Mic-specific client, so any divergence from
     // that class's expected wire format silently breaks playback (GCM auth failures or misaligned
     // byte offsets) rather than throwing anywhere visible. This previously used AAD (the client
     // never sets one, so every packet would fail tag verification) and carried the codec tag as a
     // separate plaintext byte between the nonce and ciphertext (the client expects it to be the
     // FIRST DECRYPTED byte instead, prepended to the payload before encryption) — see
-    // LinkAudioRelayServer.java's own sendFrame() for the reference implementation this now
+    // LinkAudioSinkServer.java's own sendFrame() for the reference implementation this now
     // mirrors exactly: [seq(4)][nonce(12)][AES-256-GCM(codecTag + payload), tag included].
     private void sendFrame(byte codecTag, byte[] rawPayload) {
         byte[] framedPayload = new byte[1 + rawPayload.length];
@@ -367,11 +415,11 @@ public class LinkRemoteMicServer extends WebSocketServer {
         } catch (Exception ignored) {}
     }
 
-    private void admit(String connId, WebSocket conn, String label, String deviceId) {
+    private void admit(String connId, WebSocket conn, String label, String deviceId, String remoteAddress) {
         byte[] sessionKey = new byte[32];
         new SecureRandom().nextBytes(sessionKey);
 
-        AdmittedListener listenerObj = new AdmittedListener(conn, deviceId, label, sessionKey);
+        AdmittedListener listenerObj = new AdmittedListener(conn, deviceId, label, remoteAddress != null ? remoteAddress : "unknown", sessionKey);
         admittedListeners.put(connId, listenerObj);
 
         try {
@@ -394,14 +442,48 @@ public class LinkRemoteMicServer extends WebSocketServer {
         }
     }
 
+    // Stashes just enough per-connection context to resolve the first message — mirrors
+    // LinkAudioSinkServer.java's identically-named fields/pattern.
+    private final Map<WebSocket, byte[]> peerKeysByConn = new ConcurrentHashMap<>();
+    private final Map<WebSocket, String> remoteAddrByConn = new ConcurrentHashMap<>();
+
     @Override
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
+        String remoteAddress = null;
+        try {
+            remoteAddress = conn.getRemoteSocketAddress().getAddress().getHostAddress();
+        } catch (Exception ignored) {}
+        if (remoteAddress != null && blockChecker.isBlocked(remoteAddress)) {
+            conn.close(4010, "blocked");
+            return;
+        }
+
+        SocketAddress addr = conn.getRemoteSocketAddress();
+        SSLEngine engine = addr != null ? pendingEngines.remove(addr.toString()) : null;
+        byte[] peerPublicKeyDer;
+        try {
+            if (engine == null) throw new SSLPeerUnverifiedException("no engine for connection");
+            Certificate[] chain = engine.getSession().getPeerCertificates();
+            if (chain.length == 0) throw new SSLPeerUnverifiedException("empty chain");
+            peerPublicKeyDer = chain[0].getPublicKey().getEncoded();
+        } catch (SSLPeerUnverifiedException e) {
+            conn.close(4001, "no client certificate presented");
+            return;
+        } catch (Exception e) {
+            conn.close(4002, "invalid certificate");
+            return;
+        }
+
         String connId = UUID.randomUUID().toString();
         connIds.put(conn, connId);
+        peerKeysByConn.put(conn, peerPublicKeyDer);
+        remoteAddrByConn.put(conn, remoteAddress);
     }
 
     @Override
     public void onClose(WebSocket conn, int code, String reason, boolean remote) {
+        peerKeysByConn.remove(conn);
+        remoteAddrByConn.remove(conn);
         String connId = connIds.remove(conn);
         if (connId != null) {
             pendingGuests.remove(connId);
@@ -421,18 +503,38 @@ public class LinkRemoteMicServer extends WebSocketServer {
             JSONObject obj = new JSONObject(message);
             String type = obj.optString("type");
 
+            String remoteAddress = conn.getRemoteSocketAddress().getAddress().getHostAddress();
             if ("join-guest".equals(type)) {
-                String pin = "123456"; // Reuse basic pinning for mic guest path
+                if (!admittedListeners.isEmpty()) {
+                    conn.close(4009, "Server busy");
+                    return;
+                }
+                byte[] peerPublicKeyDer = peerKeysByConn.get(conn);
+                if (peerPublicKeyDer == null) {
+                    conn.close(4002, "invalid certificate");
+                    return;
+                }
+                String deviceName = obj.optString("deviceName", "Guest");
+                String pin = LinkVerification.computeCode(myPublicKeyDer, peerPublicKeyDer, "");
                 ScheduledFuture<?> future = scheduler.schedule(() -> rejectGuest(connId), 30000, TimeUnit.MILLISECONDS);
-                pendingGuests.put(connId, new PendingGuest(conn, pin, future));
-                listener.onGuestPinPending(connId, pin, conn.getRemoteSocketAddress().getAddress().getHostAddress());
+                pendingGuests.put(connId, new PendingGuest(conn, pin, future, remoteAddress, deviceName));
+                try {
+                    conn.send(new JSONObject().put("type", "pin").put("code", pin).toString());
+                } catch (Exception ignored) {}
+                listener.onGuestPinPending(connId, pin, remoteAddress, deviceName);
             } else if ("join-token".equals(type)) {
+                if (!admittedListeners.isEmpty()) {
+                    conn.close(4009, "Server busy");
+                    return;
+                }
                 String token = obj.optString("token");
                 TokenEntry entry = validTokens.remove(token);
-                if (entry != null) {
-                    admit(connId, conn, entry.deviceName, entry.deviceId);
-                } else {
+                if (entry == null) {
                     conn.close(4003, "invalid or expired token");
+                } else if (blockChecker.isBlocked(entry.deviceId)) {
+                    conn.close(4010, "blocked");
+                } else {
+                    admit(connId, conn, entry.deviceName, entry.deviceId, remoteAddress);
                 }
             }
         } catch (Exception e) {

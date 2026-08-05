@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Notification, nativeImage, powerMonitor, Tray, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, Notification, nativeImage, powerMonitor, Tray, Menu, dialog } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -6,17 +6,24 @@ import * as http from 'http';
 import * as https from 'https';
 import * as net from 'net';
 import * as dgram from 'dgram';
+import * as crypto from 'crypto';
 
 app.setName('Link');
+app.disableHardwareAcceleration();
 import { loadOrCreateIdentity, saveDeviceName } from '../core/identity';
 import { loadOrCreateTlsIdentity } from '../core/tls';
 import { TrustStore } from '../core/trust';
-import { OwnerKeyStore, RevocationStore } from '../core/pool';
 import { DeviceManager } from '../core/device-manager';
-import { LINK_PORT, AUDIO_RELAY_PORT } from '../core/transport';
+import { LINK_PORT, AUDIO_SINK_PORT, PORTAL_TRANSFER_PORT, WALKIE_TALKIE_PORT } from '../core/transport';
 import { createPacket } from '../core/packet';
-import { AudioRelayServer } from './audio-relay-server';
-import { AudioRelayClient, JoinMode } from './audio-relay-client';
+import { AudioSinkServer } from './audio-sink-server';
+import { AudioSinkClient, JoinMode } from './audio-sink-client';
+import { JoystickServer } from './joystick-server';
+import { JOYSTICK_PORT } from '../core/transport';
+import { PortalTransferServer } from './portal-transfer-server';
+import { PortalTransferClient, JoinMode as PortalJoinMode } from './portal-transfer-client';
+import { WalkieTalkieSignalServer } from './walkie-talkie-signal-server';
+import { WalkieTalkieSignalClient } from './walkie-talkie-signal-client';
 import {
   ClipboardWatcher,
   createClipboardPacket,
@@ -35,11 +42,12 @@ import {
   computeEffectiveCapabilities,
   pushEffectiveCapabilities,
   canSendClipboardTo,
+  deletePermissionsForDevice,
 } from './permissions';
 import { loadSetting, saveSetting, loadBlocklist, saveBlocklist, BlocklistEntry } from './settings-store';
 import { DiscoveryService } from '../core/discovery';
 import { BatteryWatcher, createBatteryPacket, isBatteryPacket } from '../core/plugins/battery';
-import { createFindMyPhonePacket, isFindMyPhonePacket, ringThisDevice, stopRinging } from '../core/plugins/findmyphone';
+import { createFindMyDevicePacket, isFindMyDevicePacket, ringThisDevice, stopRinging } from '../core/plugins/findmydevice';
 import { LinkSocketFsClient } from './fs-socket-client';
 import { getLocalPhysicalDrives } from './fs-helper';
 import { SpeedTestManager } from '../core/plugins/speedtest';
@@ -51,7 +59,7 @@ import {
   createTriggerCommandPacket,
   CommandEntry,
 } from '../core/plugins/runcommand';
-import { isPresenterPacket, isPresenterStopPacket, PresenterPosition } from '../core/plugins/presenter';
+import { isPresenterPacket, isPresenterStopPacket, PresenterPosition, createPresenterStopPacket } from '../core/plugins/presenter';
 import {
   VolumeWatcher,
   createSystemVolumePacket,
@@ -69,7 +77,7 @@ import {
   isLocalDeviceLocked,
   lockThisDevice,
   setLocalLockedState,
-} from '../core/plugins/lockdevice';
+} from '../core/plugins/lock';
 import { isConnectivityPacket, ConnectivityBody } from '../core/plugins/connectivity';
 import { TouchpadHandler, isTouchpadRequestPacket } from '../core/plugins/touchpad';
 import { createMprisStatePacket, isMprisRequestPacket, MprisRequest, queryMprisSessions, controlMpris } from '../core/plugins/mpris';
@@ -78,8 +86,9 @@ import { isNotificationPacket, NotificationBody } from '../core/plugins/notifica
 import { ScreensaverInhibitor } from '../core/plugins/screensaver-inhibit';
 import { PauseMusicController } from '../core/plugins/pausemusic';
 import { DigitizerHandler, isDigitizerSessionPacket, isDigitizerPacket } from '../core/plugins/digitizer';
-import { isFlashlightPacket, createFlashlightPacket } from '../core/plugins/flashlight';
-import { isDNDPacket, createDNDPacket } from '../core/plugins/dnd';
+import { JoystickHandler } from '../core/plugins/joystick';
+import { isFlashlightPacket, createFlashlightPacket, createFlashlightCommandPacket } from '../core/plugins/flashlight';
+import { isDNDPacket, createDNDPacket, createDNDCommandPacket } from '../core/plugins/dnd';
 import {
   isRenamePacket,
   isRenameRequestPacket,
@@ -98,7 +107,8 @@ import { LinkFsMountService } from './fs-mount-service';
 // Volume, and MPRIS have graduated out of this — confirmed working, so their gates were removed
 // entirely rather than left toggled on here.
 const ENABLED_PLUGINS = new Set<string>([
-  'Clipboard',
+  'Clipboard', 'Battery', 'Flashlight', 'DND', 'Connectivity', 'Lock', 'Notification', 'RunCommand',
+  'Presenter', 'Digitizer', 'Touchpad', 'Telephony', 'MPRIS', 'Joystick',
 ]);
 function isEnabled(name: string): boolean {
   return ENABLED_PLUGINS.has(name);
@@ -106,18 +116,21 @@ function isEnabled(name: string): boolean {
 
 const CAPABILITIES = {
   incoming: [
-    'link.clipboard', 'link.clipboard.connect', 'link.clipboard.file', 'link.battery',
-    'link.findmyphone.request', 'link.runcommand.request', 'link.presenter',
-    'link.systemvolume.request', 'link.lock.request', 'link.lock', 'link.connectivity_report',
+    'link.clipboard', 'link.clipboard.connect', 'link.battery',
+    'link.findmydevice.request', 'link.runcommand.request', 'link.presenter',
+    'link.systemvolume.request', 'link.lock.request', 'link.lock', 'link.connectivity',
     'link.touchpad.request', 'link.mpris.request', 'link.telephony', 'link.notification',
     'link.flashlight', 'link.dnd', 'link.rename', 'link.rename.request',
     // Digitizer was executable (checkDevicePermission-gated handlers already existed) but never
     // actually declared as a capability — peers had no way to discover the PC supports it at all.
     'link.digitizer.session', 'link.digitizer',
+    // Joystick has NO TLS packet type at all, deliberately — see joystick.ts's header comment.
+    // Its entire protocol (including the join handshake) rides the raw UDP:1717 line-based
+    // channel, identified by source IP only, same as an Audio Sink guest.
   ],
   outgoing: [
-    'link.clipboard', 'link.clipboard.connect', 'link.clipboard.file', 'link.battery',
-    'link.findmyphone.request', 'link.runcommand',
+    'link.clipboard', 'link.clipboard.connect', 'link.battery',
+    'link.findmydevice.request', 'link.runcommand',
     // 'link.presenter' was wrongly listed here — desktop has no IPC path that ever sends a
     // presenter/touchpad/digitizer packet (those are mobile-to-desktop only, desktop is purely
     // the executor), so it never belongs in desktop's own outgoing list.
@@ -133,6 +146,15 @@ let tray: Tray | null = null;
 let isQuitting = false;          // set true only by the tray "Quit" action / real app quit
 let closeToTray = true;          // user preference, loaded from disk in initCore
 let hasShownTrayBalloon = false; // one-time "still running" hint on first hide-to-tray
+let deviceDriveLetters: Record<string, string> = {}; // deviceId -> driveLetter
+// deviceId -> whether the user wants this device auto-mounted whenever fileaccess is granted on
+// connect. Missing/unset means "yes" (matches the original, always-auto-mount behavior) — only an
+// EXPLICIT unmount via the UI writes `false` here. Without this, "unmount"/fs-unmount-device only
+// ever touched the in-memory fsMountServices map: peerCapabilities gets wiped on every disconnect
+// (see deviceDisconnected's peerCapabilities.delete), so the next reconnect's capabilities packet
+// looks like fileaccess was just newly granted and remounts unconditionally — the toggle silently
+// didn't survive a reconnect, let alone an app restart.
+let deviceMountEnabled: Record<string, boolean> = {};
 let deviceManager: DeviceManager;
 // Last effective-capabilities list each connected peer pushed us (which of THEIR gated plugins
 // we're currently allowed to use). Cached in the main process so a renderer reload can re-hydrate
@@ -144,13 +166,37 @@ let tlsIdentity: { cert: string; key: string };
 const fsClients = new Map<string, LinkFsClient>();
 const socketFsClients = new Map<string, LinkSocketFsClient>();
 const fsMountServices = new Map<string, LinkFsMountService>();
-// Audio Relay: at most one role at a time — hosting (audioRelayServer) or listening
-// (audioRelayClient), never both. Deliberately isolated from DeviceManager/TrustStore — see
-// audio-relay-server.ts's header comment for why.
-let audioRelayServer: AudioRelayServer | null = null;
-let audioRelayClient: AudioRelayClient | null = null;
-let remoteMicServer: AudioRelayServer | null = null;
-let remoteMicClient: AudioRelayClient | null = null;
+// Audio Sink: at most one role at a time — hosting (audioSinkServer) or listening
+// (audioSinkClient), never both. Deliberately isolated from DeviceManager/TrustStore — see
+// audio-sink-server.ts's header comment for why.
+let audioSinkServer: AudioSinkServer | null = null;
+let audioSinkClient: AudioSinkClient | null = null;
+let audioSinkHostLabel: string = '';
+// Remote Mic is mobile-host / PC-listen only (see docs/backlog.txt) — a PC's mic streamed to a
+// phone can only ever be played back through the phone's speaker, never picked up by other apps
+// as an actual system microphone (unlike the reverse: a PC listener can route it into a virtual
+// audio cable), so PC-as-host added real complexity for a direction with no genuine use. Only the
+// client half (remoteMicClient) exists on desktop now.
+let remoteMicClient: AudioSinkClient | null = null;
+// Assigned once inside app.whenReady() (they close over deviceManager/tlsIdentity, which don't
+// exist until initCore() runs) — module-level so rebuildTrayMenu(), defined outside that closure
+// alongside createTray(), can still call them as the single shared "end this session" path.
+
+let endAudioSink: () => Promise<void> = async () => {};
+// Portal Mode (one-time file transfer to an unpaired/untrusted device) — same isolation model as
+// Audio Sink/Remote Mic above. portalTransferServer = actively receiving; portalTransferClient =
+// actively sending. A device can be doing both at once (unlike audio, there's no shared hardware
+// resource conflict), so these aren't mutually exclusive the way the audio pair above are.
+let portalTransferServer: PortalTransferServer | null = null;
+let portalTransferClient: PortalTransferClient | null = null;
+// Walkie Talkie's guest-facing signaling — only relevant for an UNPAIRED participant (manual IP +
+// PIN). Already-paired members never touch this: their session-membership/WebRTC-negotiation
+// traffic rides the existing trusted connection instead (see the link.walkietalkie.* packet relay
+// below). walkieTalkieGuestServer runs whenever this device is hosting a session (guests can join
+// any time during it); walkieTalkieGuestClient exists only while THIS device is joined to someone
+// else's session as an unpaired guest.
+let walkieTalkieGuestServer: WalkieTalkieSignalServer | null = null;
+let walkieTalkieGuestClient: WalkieTalkieSignalClient | null = null;
 let configDir: string;
 let clipboardWatcher: ClipboardWatcher;
 let lastKnownClipboardTimestamp = 0;
@@ -160,9 +206,74 @@ let touchpadHandler: TouchpadHandler;
 let screensaverInhibitor: ScreensaverInhibitor;
 let pauseMusicController: PauseMusicController;
 let digitizerHandler: DigitizerHandler;
+let joystickHandler: JoystickHandler;
+let joystickServer: JoystickServer | null = null;
 let runCommandManager: RunCommandManager;
 let speedTestManager: SpeedTestManager;
 let blocklist: BlocklistEntry[] = [];
+// Module-level (not local to initCore()) so the app.whenReady() closure — a separate function,
+// where AudioSinkServer/PortalTransferServer are constructed and their block/kick IPC handlers
+// live — can reference it too. Same reattach-scope reason as discoveredUnpairedPeers below.
+// Checks BOTH entry.id and entry.ip against whatever identifier the caller has on hand — a device
+// blocked by deviceId (e.g. reject+block on a pairing request) stores its IP separately in `ip`,
+// not `id`, but every untrusted-tool guest connection (Audio Sink/Remote Mic/Walkie Talkie/
+// Joystick/File Transfer) can only check by IP at connection time, before any device identity is
+// established. Checking `id` alone meant a device blocked via pairing could still reach every
+// untrusted tool by IP, and a device blocked as an untrusted-tool guest (id = IP) could still
+// re-pair under a fresh deviceId from the same, still-blocked IP. Also strips the IPv4-mapped
+// IPv6 prefix (`::ffff:`) and any trailing `:port`, since callers pass the raw socket address in
+// varying shapes depending on the underlying transport (ws vs java-websocket vs plain net).
+function isBlocked(idOrIp: string): boolean {
+  const clean = idOrIp.replace(/^::ffff:/, '').split(':')[0];
+  return blocklist.some((entry: BlocklistEntry) =>
+    entry.id === idOrIp || entry.id === clean || entry.ip === idOrIp || entry.ip === clean
+  );
+}
+
+/** Adds an entry (device or IP) to the blocklist if not already present, and persists it —
+ *  shared by the Settings blocklist manager, "reject + block" on an incoming pair request, and
+ *  the "Block" button next to Kick in Audio Sink/Remote Mic/Portal Mode's listener lists. Does
+ *  NOT itself disconnect anything — callers that have a live connection to terminate do that
+ *  separately right after calling this, since what counts as "the connection" differs per caller
+ *  (a full DeviceManager peer vs. a specific ephemeral guest-session listener). */
+function addToBlocklist(id: string, label: string, type: 'device' | 'ip', deviceType?: string, ip?: string) {
+  const cleanId = id.replace(/^::ffff:/, '').split(':')[0];
+  const cleanIp = ip ? ip.replace(/^::ffff:/, '').split(':')[0] : undefined;
+  if (blocklist.some((x: BlocklistEntry) => x.id === cleanId || x.id === id || (cleanIp && x.ip === cleanIp))) return;
+  blocklist.push({ id: cleanId, label, type, blockedAt: Date.now(), deviceType, ip: cleanIp });
+  saveBlocklist(configDir, blocklist);
+  console.log(`[Link] Blocked: ${label} (${cleanId})`);
+}
+
+/** Blocking an untrusted-tool guest (Audio Sink/Remote Mic/Walkie Talkie/Joystick/File Transfer)
+ *  by bare IP always produced a generic "Guest (ip)" / "Blocked IP" entry in the Blocklist UI —
+ *  visually and functionally different from blocking the same physical device via "reject +
+ *  block" on a pairing request, which shows its real name/type. If this IP happens to belong to a
+ *  device this app can actually identify — either already paired, or just visible via LAN
+ *  discovery even though never paired — block it the SAME way pairing-block does: by deviceId,
+ *  with its real name and device type, so the Blocklist entry (and hence its icon/label there)
+ *  looks identical regardless of which surface the block came from. Only falls back to a bare
+ *  IP/"Guest" entry when the device genuinely can't be identified (e.g. off-LAN, discovery
+ *  hasn't seen it, or it deliberately withheld its name). */
+function blockUntrustedGuest(remoteAddress: string, selfReportedName?: string) {
+  const cleanIp = remoteAddress.replace(/^::ffff:/, '').split(':')[0];
+
+  const pairedId = deviceManager.deviceIdForAddress(cleanIp);
+  if (pairedId) {
+    const dev = deviceManager.trustStore.get(pairedId);
+    addToBlocklist(pairedId, dev?.deviceName || selfReportedName || `Guest (${cleanIp})`, 'device', undefined, cleanIp);
+    return;
+  }
+
+  for (const info of discoveredUnpairedPeers.values()) {
+    if (info.ipAddress === cleanIp) {
+      addToBlocklist(info.deviceId, info.deviceName || selfReportedName || `Guest (${cleanIp})`, 'device', info.deviceType, cleanIp);
+      return;
+    }
+  }
+
+  addToBlocklist(cleanIp, selfReportedName || `Guest (${cleanIp})`, 'ip');
+}
 // Guards against firing overlapping connectTo() attempts at the same peer while a previous one
 // from an earlier discovery broadcast is still in flight — see discoveryService callback below.
 const connectingDeviceIds = new Set<string>();
@@ -198,7 +309,12 @@ const peerCommandLists = new Map<string, Record<string, CommandEntry>>();
 const activeNotifications = new Map<string, Notification>();
 const activeAppNotifications = new Map<string, Notification>();
 let discoveryService: DiscoveryService;
+// Purely-discovered (UDP broadcast only, never auto-connected) unpaired peers — module-level so
+// the 'request-pairing' IPC handler (registered in app.whenReady(), a separate closure from
+// initCore() where this is populated) can look up a discovered peer's IP to connect on demand.
+const discoveredUnpairedPeers = new Map<string, any>();
 let inputUdpSocket: dgram.Socket | null = null;
+let triggerReconnect: (() => void) | null = null;
 let visibilityEnabled = true;
 let screensaverInhibitEnabled = true;
 let activeRingerDeviceId: string | null = null;
@@ -234,6 +350,28 @@ function cycleTargetDisplay() {
   }
 }
 
+// Outbound half of the raw UDP input relay (port 1717) — needed now that desktop can also be
+// the CONTROLLER (not just the target) for presenter, e.g. PresenterOverlay.tsx's drag surface.
+// Mirrors mobile LinkPlugin.java's sendUdpMessage(); reuses the listening socket bound in
+// initCore() since dgram sockets are full-duplex. Module-level (not nested in initCore()) so it
+// stays in scope for the ipcMain handlers registered elsewhere in this file.
+function sendUdpMessageToPeer(deviceId: string, message: string) {
+  const ip = deviceManager.remoteAddressOf(deviceId);
+  if (!ip) return;
+  sendUdpMessageToAddress(ip, message);
+}
+
+// Joystick's whole protocol is IP-identified rather than deviceId-identified (see joystick.ts's
+// header comment), so its replies (hello-ack, rumble) address a raw IP directly instead of going
+// through deviceManager.remoteAddressOf() like every other plugin's outbound UDP traffic above.
+function sendUdpMessageToAddress(ip: string, message: string) {
+  if (!inputUdpSocket) return;
+  const buf = Buffer.from(message, 'utf8');
+  inputUdpSocket.send(buf, 1717, ip, (err) => {
+    if (err) console.error('[Link] Failed to send UDP input message:', message, err);
+  });
+}
+
 function send(channel: string, ...args: unknown[]) {
   mainWindow?.webContents.send(channel, ...args);
 }
@@ -249,31 +387,39 @@ function broadcastToPermittedPeers(permKey: string, packet: any) {
   }
 }
 
-/** Forwards every AudioRelayClient event to the renderer over its own IPC channel — one place so
- *  both join paths (guest, paired-token) get identical renderer-side behavior. */
-function wireAudioRelayClientEvents(client: AudioRelayClient) {
-  client.on('pinComputed', (pin) => send('audio-relay-pin-computed', pin));
-  client.on('admitted', () => send('audio-relay-admitted'));
-  client.on('format', (format) => send('audio-relay-format', format));
-  client.on('audioChunk', (pcm) => send('audio-relay-audio-chunk', pcm));
-  client.on('hostMuted', (muted) => send('audio-relay-host-muted', muted));
-  // Clearing audioRelayClient here (not just forwarding the event) is what makes reopening the
+/** Forwards every AudioSinkClient event to the renderer over its own IPC channel — one place so
+ *  both join paths (guest, paired-token) get identical renderer-side behavior. `hostLabel` is only
+ *  the PRE-connection placeholder (the raw IP typed/scanned, or a paired session's remembered
+ *  name) — once 'admitted' actually arrives it carries the host's own real device name (see
+ *  audio-sink-client.ts/audio-sink-server.ts), which is what should end up on screen. Falling back
+ *  to the placeholder only covers an old host build that doesn't send hostName yet. */
+function wireAudioSinkClientEvents(client: AudioSinkClient, hostLabel: string) {
+  client.on('pinComputed', (pin) => send('audio-sink-pin-computed', pin));
+  client.on('admitted', (hostName?: string) => {
+    const label = hostName || hostLabel;
+    audioSinkHostLabel = label;
+    send('audio-sink-admitted', label);
+  });
+  client.on('format', (format) => send('audio-sink-format', format));
+  client.on('audioChunk', (pcm) => send('audio-sink-audio-chunk', pcm));
+  client.on('hostMuted', (muted) => send('audio-sink-host-muted', muted));
+  // Clearing audioSinkClient here (not just forwarding the event) is what makes reopening the
   // tab show "not connected" instead of a stale "still connected" — without this, the socket is
-  // already dead but the module-level variable still points at it, so get-audio-relay-status
+  // already dead but the module-level variable still points at it, so get-audio-sink-status
   // keeps reporting listening:true forever after a kick/host-end.
-  client.on('ended', () => { audioRelayClient = null; send('audio-relay-ended'); });
-  client.on('closed', (reason) => { audioRelayClient = null; send('audio-relay-closed', reason); });
-  client.on('error', (err) => send('audio-relay-error', err.message));
+  client.on('ended', (reason?: string) => { audioSinkClient = null; audioSinkHostLabel = ''; send('audio-sink-ended', reason); rebuildTrayMenu(); });
+  client.on('closed', (reason) => { audioSinkClient = null; audioSinkHostLabel = ''; send('audio-sink-closed', reason); rebuildTrayMenu(); });
+  client.on('error', (err) => send('audio-sink-error', err.message));
 }
 
-function wireRemoteMicClientEvents(client: AudioRelayClient) {
+function wireRemoteMicClientEvents(client: AudioSinkClient) {
   client.on('pinComputed', (pin) => send('remote-mic-pin-computed', pin));
   client.on('admitted', () => send('remote-mic-admitted'));
   client.on('format', (format) => send('remote-mic-format', format));
   client.on('audioChunk', (pcm) => send('remote-mic-audio-chunk', pcm));
   client.on('hostMuted', (muted) => send('remote-mic-host-muted', muted));
-  client.on('ended', () => { remoteMicClient = null; send('remote-mic-ended'); });
-  client.on('closed', (reason) => { remoteMicClient = null; send('remote-mic-closed', reason); });
+  client.on('ended', (reason?: string) => { remoteMicClient = null; send('remote-mic-ended', reason); rebuildTrayMenu(); });
+  client.on('closed', (reason) => { remoteMicClient = null; send('remote-mic-closed', reason); rebuildTrayMenu(); });
   client.on('error', (err) => send('remote-mic-error', err.message));
 }
 
@@ -340,16 +486,68 @@ function updateScreensaverInhibition() {
   }
 }
 
-function getLocalIpAddress(): string {
+// Windows' built-in Mobile Hotspot (Settings > Network & internet > Mobile hotspot) always brings
+// up its ICS adapter on this exact subnet — a stable Microsoft default unchanged since Windows
+// XP's Internet Connection Sharing. When it's present, it means "this PC is actively hosting a
+// hotspot another device is connected to right now" — precisely the scenario the QR code / "Your
+// IP" display exists for, so it outranks everything else, INCLUDING a real Wi-Fi/Ethernet adapter
+// with a normal-looking LAN address. Without this, a PC that's simultaneously on its home Wi-Fi
+// AND hosting a hotspot for a phone would advertise the home-Wi-Fi address — reachable from other
+// devices on that home network, but never from the phone, which only has a route to the hotspot
+// subnet. That mismatch is exactly what broke Joystick/Audio Sink/etc. "scan to connect" when
+// hotspot mode was in use: the QR code encoded an address the scanning phone could never reach.
+const WINDOWS_HOTSPOT_SUBNET_PREFIX = '192.168.137.';
+
+/** Lower = tried first. See WINDOWS_HOTSPOT_SUBNET_PREFIX for why the hotspot subnet wins even
+ *  over a named Wi-Fi/Ethernet adapter — address content beats adapter-name guessing here. */
+function localIpPriority(address: string, adapterNameLower: string): number {
+  if (address.startsWith(WINDOWS_HOTSPOT_SUBNET_PREFIX)) return 0;
+  if (adapterNameLower.includes('wi-fi') || adapterNameLower.includes('wlan') || adapterNameLower.includes('ethernet')) return 1;
+  return 2;
+}
+
+/** Every non-internal IPv4 address across all adapters, ranked from most to least likely to be
+ *  reachable by another device on the LAN (see localIpPriority). Adapters that are virtual
+ *  bridges (WSL, Docker, VPN, Hyper-V, ...) are demoted below everything real, regardless of
+ *  address, since a peer device is essentially never reachable through them. Ties (same tier)
+ *  keep interface-enumeration order — Array.prototype.sort is stable. */
+function rankedLocalIpAddresses(): string[] {
   const interfaces = os.networkInterfaces();
+  const ranked: { address: string; tier: number }[] = [];
+  const fallback: string[] = [];
+
   for (const name of Object.keys(interfaces)) {
+    const lowerName = name.toLowerCase();
+    const isVirtual = lowerName.includes('wsl') ||
+                      lowerName.includes('virtual') ||
+                      lowerName.includes('vbox') ||
+                      lowerName.includes('docker') ||
+                      lowerName.includes('vpn') ||
+                      lowerName.includes('vmnet') ||
+                      lowerName.includes('vethernet') ||
+                      lowerName.includes('hyper-v');
+
     for (const net of interfaces[name] || []) {
-      if (net.family === 'IPv4' && !net.internal) {
-        return net.address;
+      if (net.family !== 'IPv4' || net.internal) continue;
+      if (isVirtual) {
+        fallback.push(net.address);
+      } else {
+        ranked.push({ address: net.address, tier: localIpPriority(net.address, lowerName) });
       }
     }
   }
-  return '127.0.0.1';
+
+  ranked.sort((a, b) => a.tier - b.tier);
+  return Array.from(new Set([...ranked.map((r) => r.address), ...fallback]));
+}
+
+function getLocalIpAddress(): string {
+  return rankedLocalIpAddresses()[0] || '127.0.0.1';
+}
+
+function getAllLocalIpAddresses(): string[] {
+  const all = rankedLocalIpAddresses();
+  return all.length > 0 ? all : ['127.0.0.1'];
 }
 
 // Finds the first unused drive letter from Z down to D — shared by both the desktop-peer and
@@ -357,7 +555,9 @@ function getLocalIpAddress(): string {
 function findUnusedDriveLetter(): string {
   const letters = 'ZYXWVUTSRQPONMLKJIHGFED'.split('');
   for (const letter of letters) {
-    if (!fs.existsSync(`${letter}:`)) return `${letter}:`;
+    const checkLetter = `${letter}:`;
+    const isOccupied = fs.existsSync(checkLetter) || Array.from(fsMountServices.values()).some((s) => s.getDriveLetter() === checkLetter);
+    if (!isOccupied) return checkLetter;
   }
   return 'Z:';
 }
@@ -383,16 +583,26 @@ async function mountFilesystemForDevice(peerIdentity: { deviceId: string; device
     return;
   }
   try {
-    if (peerIdentity.deviceType === 'desktop' || peerIdentity.deviceType === 'laptop') {
+    const isLetterOccupied = (letter: string) => {
+      if (fs.existsSync(letter)) return true;
+      return Array.from(fsMountServices.values()).some((s) => s.getDriveLetter() === letter);
+    };
+
+    let driveLetter = deviceDriveLetters[peerIdentity.deviceId];
+    if (!driveLetter || isLetterOccupied(driveLetter)) {
+      driveLetter = findUnusedDriveLetter();
+    }
+
+    if (peerIdentity.deviceType === 'desktop') {
       console.log(`[Link] Instantiating Socket FS Client for desktop ${peerIdentity.deviceName} at ${host}...`);
       const socketFsClient = new LinkSocketFsClient(deviceManager, peerIdentity.deviceId);
       socketFsClients.set(peerIdentity.deviceId, socketFsClient);
 
-      const driveLetter = findUnusedDriveLetter();
       console.log(`[Link] Mounting PC filesystem for ${peerIdentity.deviceName} on ${driveLetter}...`);
       const mountService = new LinkFsMountService(socketFsClient as any, driveLetter, peerIdentity.deviceName, peerIdentity.deviceType);
       await mountService.mount();
       fsMountServices.set(peerIdentity.deviceId, mountService);
+      send('device-mount-changed', peerIdentity.deviceId, driveLetter);
       console.log(`[Link] Mounted ${peerIdentity.deviceName} PC filesystem on ${driveLetter} successfully.`);
     } else {
       console.log(`[Link] Starting FS WSS client for ${peerIdentity.deviceName} at ${host}...`);
@@ -401,11 +611,11 @@ async function mountFilesystemForDevice(peerIdentity: { deviceId: string; device
       fsClients.set(peerIdentity.deviceId, fsClient);
       console.log(`[Link] Connected FS client for ${peerIdentity.deviceName} successfully.`);
 
-      const driveLetter = findUnusedDriveLetter();
       console.log(`[Link] Mounting filesystem for ${peerIdentity.deviceName} on ${driveLetter}...`);
       const mountService = new LinkFsMountService(fsClient, driveLetter, peerIdentity.deviceName, peerIdentity.deviceType);
       await mountService.mount();
       fsMountServices.set(peerIdentity.deviceId, mountService);
+      send('device-mount-changed', peerIdentity.deviceId, driveLetter);
       console.log(`[Link] Mounted ${peerIdentity.deviceName} filesystem on ${driveLetter} successfully.`);
     }
   } catch (err: any) {
@@ -425,54 +635,141 @@ function initCore() {
   const identity = loadOrCreateIdentity(configDir, 'desktop', CAPABILITIES);
   tlsIdentity = loadOrCreateTlsIdentity(configDir, identity.deviceId);
   const trustStore = new TrustStore(configDir);
-  const ownerStore = new OwnerKeyStore(configDir);
-  const revStore = new RevocationStore(configDir);
 
   deviceManager = new DeviceManager(
     { cert: tlsIdentity.cert, key: tlsIdentity.key, myIdentity: identity },
     trustStore,
-    LINK_PORT,
-    ownerStore,
-    revStore
+    LINK_PORT
   );
   initPermissions(configDir, deviceManager);
 
   touchpadHandler = new TouchpadHandler(configDir);
   digitizerHandler = new DigitizerHandler(touchpadHandler);
+  // Vendored binaries live under <baseDir>/vendor — same dev-vs-packaged path resolution as
+  // fs-mount-service.ts's rclone.exe lookup, duplicated here rather than shared since each mount
+  // service already computes this independently.
+  {
+    const isDevBuild = process.argv.includes('--dev');
+    const vendorBaseDir = isDevBuild ? path.join(__dirname, '..', '..') : path.join(process.resourcesPath || __dirname, '..');
+    joystickHandler = new JoystickHandler(path.join(vendorBaseDir, 'vendor'));
+    joystickHandler.setIsBlocked(isBlocked);
+
+    joystickServer = new JoystickServer(tlsIdentity.cert, tlsIdentity.key, JOYSTICK_PORT, isBlocked);
+    joystickServer.on('error', (err) => console.error('[Link] Joystick WSS server error:', err.message));
+    joystickServer.on('guestPinPending', (connId, pin, remoteAddress, deviceName) => {
+      send('joystick-guest-pin-pending', connId, pin, remoteAddress, deviceName);
+    });
+    joystickServer.on('guestJoined', (ip, name) => {
+      // Handled via accept-joystick-guest IPC
+    });
+    joystickServer.on('guestLeft', (ip) => {
+      joystickHandler.handleBye(ip);
+    });
+    joystickServer.start().catch((err) => console.error('[Link] Failed to start Joystick WSS server:', err.message));
+  }
+  joystickHandler.onRumble((ip, large, small) => {
+    joystickServer?.sendRumble(ip, large, small);
+  });
+  joystickHandler.onDriverStatusChange((status, error) => {
+    send('joystick-driver-status', status, error);
+  });
+  joystickHandler.onRosterChange(() => {
+    send('joystick-roster-changed');
+  });
+  joystickHandler.onControllerRemoved((ip, reason) => {
+    joystickServer?.kickGuest(ip, reason);
+  });
   screensaverInhibitor = new ScreensaverInhibitor();
   pauseMusicController = new PauseMusicController();
   runCommandManager = new RunCommandManager(configDir);
   speedTestManager = new SpeedTestManager(deviceManager);
 
   closeToTray = loadSetting(configDir, 'tray-settings.json', 'closeToTray', true);
-  visibilityEnabled = loadSetting(configDir, 'discovery-settings.json', 'visibilityEnabled', true);
+
+  // Set open on startup (open at login) to true by default on a fresh installation
+  const openAtLoginInitialized = loadSetting(configDir, 'startup-settings.json', 'openAtLoginInitialized', false);
+  if (!openAtLoginInitialized) {
+    try {
+      app.setLoginItemSettings({ openAtLogin: true });
+      saveSetting(configDir, 'startup-settings.json', 'openAtLoginInitialized', true);
+      console.log('[Link] Initialized openOnStartup/openAtLogin to true by default for fresh installation.');
+    } catch (err: any) {
+      console.error('[Link] Failed to set default login item settings:', err.message);
+    }
+  }
+
+  visibilityEnabled = loadSetting(configDir, 'discovery-settings.json', 'visibilityEnabled', false);
   pauseMusicController.setEnabled(loadSetting(configDir, 'pause-music-settings.json', 'pauseMusicEnabled', true));
   screensaverInhibitEnabled = loadSetting(configDir, 'screensaver-inhibit-settings.json', 'screensaverInhibitEnabled', true);
   pinLockEnabled = loadSetting(configDir, 'pin-lock-settings.json', 'pinLockEnabled', false);
   pinCode = loadSetting(configDir, 'pin-lock-settings.json', 'pinCode', '1234');
+  deviceDriveLetters = loadSetting(configDir, 'mount-settings.json', 'deviceDriveLetters', {});
+  deviceMountEnabled = loadSetting(configDir, 'mount-settings.json', 'deviceMountEnabled', {});
 
   blocklist = loadBlocklist(configDir);
-  
-  function isBlocked(idOrIp: string): boolean {
-    return blocklist.some((entry: BlocklistEntry) => entry.id === idOrIp);
-  }
+
 
   discoveryService = new DiscoveryService(identity, (ip, peerIdentity) => {
     if (isBlocked(peerIdentity.deviceId) || isBlocked(ip)) {
       return;
     }
-    // Broadcasts repeat every ~5s while a peer stays undiscovered — without this guard, a single
-    // slow/hung connect attempt used to get re-fired on every subsequent broadcast, stacking up
-    // overlapping attempts to the same peer instead of letting the one in flight finish or time
-    // out. Combined with connectToPeer() now having an explicit timeout, a failed attempt clears
-    // itself and the very next broadcast can retry cleanly.
+
+    const isPaired = deviceManager.trustStore.isPaired(peerIdentity.deviceId);
+
+    let displayName = peerIdentity.deviceName;
+    if (isPaired) {
+      const trustedDev = deviceManager.trustStore.get(peerIdentity.deviceId);
+      if (trustedDev && trustedDev.deviceName) {
+        displayName = trustedDev.deviceName;
+      }
+    }
+    const info = {
+      deviceId: peerIdentity.deviceId,
+      deviceName: displayName,
+      deviceType: peerIdentity.deviceType || 'phone',
+      ipAddress: ip,
+      trusted: isPaired,
+      connected: deviceManager.hasPeer(peerIdentity.deviceId),
+    };
+
+    // Invisible to strangers: if an unpaired device has visibility OFF, hide it completely.
+    if (!isPaired && peerIdentity.visibility === false) {
+      return;
+    }
+
+    if (!isPaired) {
+      discoveredUnpairedPeers.set(peerIdentity.deviceId, info);
+      mainWindow?.webContents.send('device-discovered', info);
+      return; // Do NOT auto-connect untrusted devices over TCP
+    }
+
+    // Verify if the discovered IP address of the paired device has changed.
+    const existing = deviceManager.trustStore.get(peerIdentity.deviceId);
+    const currentIp = deviceManager.remoteAddressOf(peerIdentity.deviceId);
+    const ipChanged = (existing && existing.lastKnownIp !== ip) || (currentIp && currentIp !== ip);
+
+    if (ipChanged) {
+      console.log(`[Link] Paired peer ${displayName} (${peerIdentity.deviceId.slice(0, 8)}) changed IP to ${ip}`);
+      deviceManager.trustStore.updateLastKnownIp(peerIdentity.deviceId, ip);
+      (deviceManager as any).broadcastPoolSync();
+      
+      // Notify the frontend of the updated IP address
+      mainWindow?.webContents.send('device-discovered', info);
+
+      if (currentIp && currentIp !== ip) {
+        console.log(`[Link] Closing stale connection to peer ${peerIdentity.deviceId.slice(0, 8)} at old IP ${currentIp}`);
+        deviceManager.closeConnection(peerIdentity.deviceId);
+      }
+    }
+
+    // Auto-connect to trusted peers whenever we hear them
     if (
       !deviceManager.hasPeer(peerIdentity.deviceId) &&
       !connectingDeviceIds.has(peerIdentity.deviceId) &&
       canAttemptConnect(peerIdentity.deviceId)
     ) {
       connectingDeviceIds.add(peerIdentity.deviceId);
-      console.log(`[Link] Discovered peer ${peerIdentity.deviceName} at ${ip}. Connecting...`);
+      console.log(`[Link] Discovered trusted peer ${peerIdentity.deviceName} at ${ip}. Connecting...`);
       deviceManager.connectTo(ip).then(() => {
         clearConnectBackoff(peerIdentity.deviceId);
       }).catch((err) => {
@@ -482,14 +779,123 @@ function initCore() {
         connectingDeviceIds.delete(peerIdentity.deviceId);
       });
     }
+  }, (expiredDeviceId) => {
+    discoveredUnpairedPeers.delete(expiredDeviceId);
+    mainWindow?.webContents.send('device-expired', expiredDeviceId);
+
+    // A peer has not sent a UDP broadcast for PEER_EXPIRY_MS — it either turned off visibility
+    // or went offline. Close the TCP connection only if they are NOT a trusted/paired device
+    const peer = deviceManager.connectedPeers().find(p => p.identity.deviceId === expiredDeviceId);
+    if (peer && !peer.trusted) {
+      console.log(`[Link] Closing stale connection to undiscoverable peer ${expiredDeviceId.slice(0, 8)}`);
+      deviceManager.closeConnection(expiredDeviceId);
+    }
   });
   discoveryService.start(visibilityEnabled);
+
+  let lastLocalIps: string[] = [];
+
+  function getMyLocalIps(): string[] {
+    const ips: string[] = [];
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const net of interfaces[name] || []) {
+        if (net.family === 'IPv4' && !net.internal) {
+          ips.push(net.address);
+        }
+      }
+    }
+    return ips.sort();
+  }
+
+  function getSubnetIPs(): string[] {
+    const ips: string[] = [];
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const net of interfaces[name] || []) {
+        if (net.family === 'IPv4' && !net.internal) {
+          if (net.netmask === '255.255.255.0') {
+            const parts = net.address.split('.');
+            const prefix = parts.slice(0, 3).join('.');
+            const myLastOctet = parseInt(parts[3], 10);
+            for (let i = 1; i <= 254; i++) {
+              if (i !== myLastOctet) {
+                ips.push(`${prefix}.${i}`);
+              }
+            }
+          }
+        }
+      }
+    }
+    return ips;
+  }
+
+  function scanSubnet() {
+    const targets = getSubnetIPs();
+    if (targets.length === 0) return;
+    console.log(`[Link] LAN change detected or startup: scanning subnet of ${targets.length} IPs...`);
+    targets.forEach((ip) => {
+      const socket = net.connect({ host: ip, port: 1714, timeout: 1000 }, () => {
+        socket.destroy();
+        console.log(`[Link] Subnet scan found active listener at ${ip}. Connecting...`);
+        deviceManager.connectTo(ip).catch(() => {});
+      });
+      socket.on('error', () => {});
+    });
+  }
+
+  function attemptTrustedReconnects() {
+    const currentIps = getMyLocalIps();
+    const ipChange = JSON.stringify(currentIps) !== JSON.stringify(lastLocalIps);
+    if (ipChange) {
+      lastLocalIps = currentIps;
+      scanSubnet();
+    }
+
+    const targets: { deviceId: string; ip: string }[] = [
+      ...trustStore.list().filter((d) => d.lastKnownIp).map((d) => ({ deviceId: d.deviceId, ip: d.lastKnownIp! })),
+    ];
+
+    targets.forEach((target, idx) => {
+      if (deviceManager.hasPeer(target.deviceId) || connectingDeviceIds.has(target.deviceId) || !canAttemptConnect(target.deviceId)) return;
+      setTimeout(() => {
+        if (deviceManager.hasPeer(target.deviceId) || connectingDeviceIds.has(target.deviceId)) return;
+        connectingDeviceIds.add(target.deviceId);
+        deviceManager.connectTo(target.ip).then(() => {
+          clearConnectBackoff(target.deviceId);
+        }).catch(() => {
+          recordConnectFailure(target.deviceId);
+        }).finally(() => {
+          connectingDeviceIds.delete(target.deviceId);
+        });
+      }, idx * 250);
+    });
+  }
+
+  triggerReconnect = attemptTrustedReconnects;
+  attemptTrustedReconnects();
+  setInterval(attemptTrustedReconnects, 10000);
+
+  ipcMain.handle('get-discovered-devices', () => {
+    return Array.from(discoveredUnpairedPeers.values());
+  });
 
   // Start high-speed UDP input relay server
   try {
     inputUdpSocket = dgram.createSocket('udp4');
     inputUdpSocket.on('message', (msg: Buffer, rinfo) => {
       if (isBlocked(rinfo.address)) return;
+
+      const line = msg.toString('utf8').trim();
+
+      if (line.startsWith('js ')) {
+        const ip = rinfo.address;
+        if (joystickHandler.isControllerConnected(ip)) {
+          joystickHandler.handleStickState(ip, line.slice(3));
+        }
+        return;
+      }
+
       // This fast-path relay has no packet envelope/deviceId of its own — unlike every other
       // plugin, a raw UDP packet here previously trusted ANY sender on the LAN, regardless of
       // pairing or per-device permission. Identify the sender by source IP against the currently
@@ -497,7 +903,6 @@ function initCore() {
       const senderId = deviceManager.deviceIdForAddress(rinfo.address);
       if (!senderId || isBlocked(senderId)) return;
 
-      const line = msg.toString('utf8').trim();
       if (line.startsWith('pmove ')) {
         if (!checkDevicePermission(senderId, 'presenter')) return;
         const parts = line.split(' ');
@@ -518,8 +923,8 @@ function initCore() {
         // SetCursorPos (setpos), so the digitizer draws on the chosen monitor rather than being
         // locked to the primary one (which mouse_event's ABSOLUTE flag would force).
         const d = getTargetDisplay();
-        const px = Math.round(d.bounds.x + rx * d.bounds.width);
-        const py = Math.round(d.bounds.y + ry * d.bounds.height);
+        const px = Math.round((d.bounds.x + rx * d.bounds.width) * d.scaleFactor);
+        const py = Math.round((d.bounds.y + ry * d.bounds.height) * d.scaleFactor);
         touchpadHandler.writeCommand(`setpos ${px} ${py}`);
         touchpadHandler.writeCommand(`touch ${touching}`);
       } else if (line === 'undo' || line === 'redo') {
@@ -528,7 +933,7 @@ function initCore() {
         if (!checkDevicePermission(senderId, 'digitizer')) return;
         touchpadHandler.writeCommand(line);
       } else {
-        if (!checkDevicePermission(senderId, 'touchpad')) return;
+        if (!checkDevicePermission(senderId, 'remoteinput')) return;
         touchpadHandler.writeCommand(line);
       }
     });
@@ -551,18 +956,34 @@ function initCore() {
         displayName = trustedDev.deviceName;
       }
     }
-    const modifiedIdentity = { ...peerIdentity, deviceName: displayName };
+    const remoteIp = deviceManager.remoteAddressOf(peerIdentity.deviceId);
+    if (trusted && remoteIp) {
+      const existing = deviceManager.trustStore.get(peerIdentity.deviceId);
+      const ipChanged = existing && existing.lastKnownIp !== remoteIp;
+      deviceManager.trustStore.updateLastKnownIp(peerIdentity.deviceId, remoteIp);
+      if (ipChanged) {
+        (deviceManager as any).broadcastPoolSync();
+      }
+    }
+    if (trusted) {
+      const allPerms = getAllPermissions();
+      if (!allPerms[peerIdentity.deviceId]) {
+        console.log(`[Link] Auto-initializing denied permissions for newly connected pool device ${peerIdentity.deviceId.slice(0, 8)}`);
+        initializeDeniedPermissionsForNewDevice(peerIdentity.deviceId);
+      }
+    }
+    const modifiedIdentity = {
+      ...peerIdentity,
+      deviceName: displayName,
+      ipAddress: remoteIp || undefined
+    };
     send('device-connected', modifiedIdentity, trusted);
     if (trusted) {
       sendInitialSync(peerIdentity.deviceId);
-
-      const host = deviceManager.remoteAddressOf(peerIdentity.deviceId);
-      if (host) {
-        mountFilesystemForDevice(peerIdentity, host);
-      }
     }
     updateScreensaverInhibition();
   });
+
   deviceManager.on('deviceDisconnected', (deviceId) => {
     send('device-disconnected', deviceId);
     peerCapabilities.delete(deviceId); // drop cached caps — a fresh connect re-pushes them
@@ -577,6 +998,7 @@ function initCore() {
     if (mountService) {
       mountService.unmount();
       fsMountServices.delete(deviceId);
+      send('device-mount-changed', deviceId, undefined);
       console.log(`[Link] Unmounted filesystem for ${deviceId}`);
     }
 
@@ -604,14 +1026,25 @@ function initCore() {
         activeAppNotifications.delete(key);
       }
     }
+
+    // Joystick is IP-identified, not deviceId-identified (see joystick.ts) — a paired device's
+    // pairing state has no bearing on any joystick controller slot, so there's nothing to clean
+    // up here; a stale controller is instead caught by JoystickHandler's own liveness sweep.
+
     updateScreensaverInhibition();
   });
-  deviceManager.on('incomingPairRequest', (deviceId, verificationKey) => {
+  deviceManager.on('unpaired', (deviceId) => {
+    deletePermissionsForDevice(deviceId);
+    peerCapabilities.delete(deviceId);
+    peerCommandLists.delete(deviceId);
+    send('unpaired', { deviceId });
+  });
+  deviceManager.on('incomingPairRequest', (deviceId, deviceName, deviceType, verificationKey) => {
     if (isBlocked(deviceId)) {
       deviceManager.rejectPairing(deviceId);
       return;
     }
-    send('incoming-pair-request', deviceId, verificationKey);
+    send('incoming-pair-request', deviceId, deviceName, deviceType, verificationKey);
   });
   deviceManager.on('pairingSuccessful', (deviceId) => {
     initializeDeniedPermissionsForNewDevice(deviceId);
@@ -628,6 +1061,9 @@ function initCore() {
   });
   deviceManager.on('trustMismatch', (deviceId) => {
     send('trust-mismatch', deviceId);
+  });
+  deviceManager.on('trustListUpdated', () => {
+    attemptTrustedReconnects();
   });
   // Each packet type gets its own named handler below (previously one 350-line if-else chain) —
   // purely organizational, same closure scope (still nested in initCore) and identical dispatch
@@ -646,27 +1082,7 @@ function initCore() {
     }
   }
 
-  function handleClipboardFilePacket(deviceId: string, packet: any) {
-    if (!isEnabled('Clipboard')) return;
-    (async () => {
-      const senderHost = deviceManager.remoteAddressOf(deviceId);
-      const expectedFingerprint = deviceManager.pinnedFingerprintOf(deviceId);
-      if (!senderHost || !expectedFingerprint) return;
-      try {
-        const transferInfo = packet.payloadTransferInfo as { port: number } | undefined;
-        if (!transferInfo || typeof transferInfo.port !== 'number') {
-          throw new Error('clipboard.file packet missing port');
-        }
-        const filename = (packet.body as { filename: string }).filename;
-        const data = await downloadPayload(senderHost, transferInfo.port, deviceManager.myCert, deviceManager.myKey, expectedFingerprint);
-        clipboardWatcher.applyRemoteFile(filename, data);
-        console.log(`[Link] CLIPBOARD FILE RECEIVED: ${filename} (${data.length} bytes)`);
-        send('clipboard-received', deviceId);
-      } catch (err) {
-        console.error('[Link] Failed to receive clipboard file:', err);
-      }
-    })();
-  }
+
 
   function handleBatteryPacket(deviceId: string, packet: any) {
     const body = packet.body as { isCharging: boolean; currentCharge: number };
@@ -693,7 +1109,7 @@ function initCore() {
       if (ringTimeoutMain) clearTimeout(ringTimeoutMain);
       ringTimeoutMain = setTimeout(() => {
         if (activeRingerDeviceId) {
-          deviceManager.sendTo(activeRingerDeviceId, createFindMyPhonePacket(true));
+          deviceManager.sendTo(activeRingerDeviceId, createFindMyDevicePacket(true));
           send('find-my-phone-stopped', activeRingerDeviceId);
           activeRingerDeviceId = null;
         }
@@ -806,8 +1222,34 @@ function initCore() {
     // stale value is still cached from before.
     const body = packet.body as { capabilities: string[] };
     const caps = body.capabilities || [];
+    const oldCaps = peerCapabilities.get(deviceId) || [];
     peerCapabilities.set(deviceId, caps); // cache for renderer-reload re-hydration (see map decl)
     send('peer-capabilities-received', deviceId, caps);
+
+    const fileaccessWasAllowed = oldCaps.includes('fileaccess');
+    const fileaccessNowAllowed = caps.includes('fileaccess');
+
+    if (!fileaccessNowAllowed && fileaccessWasAllowed) {
+      const mountService = fsMountServices.get(deviceId);
+      if (mountService) {
+        mountService.unmount();
+        fsMountServices.delete(deviceId);
+        send('device-mount-changed', deviceId, undefined);
+        console.log(`[Link] Unmounted filesystem for ${deviceId} — peer fileaccess capability revoked.`);
+      }
+      const fsClient = fsClients.get(deviceId);
+      if (fsClient) {
+        fsClient.disconnect();
+        fsClients.delete(deviceId);
+      }
+      socketFsClients.delete(deviceId);
+    } else if (fileaccessNowAllowed && !fileaccessWasAllowed && deviceMountEnabled[deviceId] !== false) {
+      const peer = deviceManager.connectedPeers().find((p) => p.identity.deviceId === deviceId);
+      const host = deviceManager.remoteAddressOf(deviceId);
+      if (peer && host) {
+        mountFilesystemForDevice(peer.identity, host);
+      }
+    }
   }
 
   function handleRenameRequestPacket(deviceId: string, packet: any) {
@@ -830,6 +1272,7 @@ function initCore() {
     // accepted a rename request from us or someone else) — sync our local trust-store alias
     // and reflect it live without needing a reconnect.
     deviceManager.trustStore.rename(deviceId, packet.body.deviceName);
+    deviceManager.updatePeerName(deviceId, packet.body.deviceName);
     send('device-renamed', deviceId, packet.body.deviceName);
   }
 
@@ -839,7 +1282,7 @@ function initCore() {
   }
 
   function handleTouchpadRequestPacket(deviceId: string, packet: any) {
-    if (!checkDevicePermission(deviceId, 'touchpad')) return;
+    if (!checkDevicePermission(deviceId, 'remoteinput')) return;
     touchpadHandler.handleRequest(packet);
   }
 
@@ -875,6 +1318,40 @@ function initCore() {
     })();
   }
 
+  let telephonyRingProcess: any = null;
+  let telephonyRingTimeout: NodeJS.Timeout | null = null;
+
+  function stopTelephonyRinging() {
+    if (telephonyRingTimeout) {
+      clearTimeout(telephonyRingTimeout);
+      telephonyRingTimeout = null;
+    }
+    if (telephonyRingProcess) {
+      if (telephonyRingProcess.pid) {
+        try {
+          const { execSync } = require('child_process');
+          execSync(`taskkill /pid ${telephonyRingProcess.pid} /t /f`, { stdio: 'ignore' });
+        } catch (e) {}
+      }
+      try { telephonyRingProcess.kill('SIGKILL'); } catch (e) {}
+      telephonyRingProcess = null;
+    }
+  }
+
+  function startTelephonyRinging() {
+    stopTelephonyRinging();
+    const { exec } = require('child_process');
+    const ringtonePath = 'C:\\Windows\\Media\\Alarm01.wav';
+    
+    telephonyRingProcess = exec(
+      `powershell -NoProfile -Command "$sound = New-Object Media.SoundPlayer '${ringtonePath}'; while ($true) { $sound.PlaySync() }"`
+    );
+    
+    telephonyRingTimeout = setTimeout(() => {
+      stopTelephonyRinging();
+    }, 60000);
+  }
+
   function handleTelephonyPacket(deviceId: string, packet: any) {
     // No receive-side gate — Telephony is owned by the sending phone, which already decided
     // (via its own outbound permission-for-us) whether to share this. Desktop never gets its
@@ -895,7 +1372,8 @@ function initCore() {
       }
     })();
 
-    if (isCancel || body.event === 'cancelled') {
+    if (isCancel || body.event === 'cancelled' || body.event === 'talking') {
+      stopTelephonyRinging();
       const active = activeNotifications.get(deviceId);
       if (active) {
         active.close();
@@ -920,6 +1398,8 @@ function initCore() {
       if (body.event === 'ringing') {
         const active = activeNotifications.get(deviceId);
         if (active) active.close();
+
+        startTelephonyRinging();
 
         const name = body.contactName || body.phoneNumber || 'Unknown Caller';
         const details = body.phoneNumber ? `Ringing: ${body.phoneNumber}` : 'Incoming Call';
@@ -985,7 +1465,9 @@ function initCore() {
 
       const title = body.title || body.appName || 'Notification';
       const text = body.text || body.ticker || '';
-      const subtitle = body.title ? body.appName : undefined;
+      // Show device name + app name in subtitle for multi-phone users
+      const peerName = body.sourceDeviceName || deviceId.slice(0, 8);
+      const subtitle = body.title ? `${peerName} • ${body.appName}` : peerName;
 
       // Prefer the originating app's own icon (e.g. WhatsApp's icon) when the phone sent one,
       // falling back to the Link app icon if it didn't resolve one.
@@ -1065,11 +1547,9 @@ function initCore() {
     }
     if (isClipboardPacket(packet)) {
       handleClipboardTextPacket(deviceId, packet);
-    } else if (packet.type === 'link.clipboard.file') {
-      handleClipboardFilePacket(deviceId, packet);
     } else if (isBatteryPacket(packet)) {
       handleBatteryPacket(deviceId, packet);
-    } else if (isFindMyPhonePacket(packet)) {
+    } else if (isFindMyDevicePacket(packet)) {
       handleFindMyPhonePacket(deviceId, packet);
     } else if (isRunCommandRequestPacket(packet)) {
       handleRunCommandRequestPacket(deviceId, packet);
@@ -1111,6 +1591,10 @@ function initCore() {
       handleTelephonyPacket(deviceId, packet);
     } else if (isNotificationPacket(packet)) {
       handleNotificationPacket(deviceId, packet);
+    } else if (packet.type === 'link.notification.broadcast') {
+      // Mesh-wide notification sync from pool members
+      console.log('[Link] Received mesh notification broadcast from', deviceId, ':', packet.body.title);
+      send('notification-broadcast-received', deviceId, packet.body);
     } else if (packet.type === 'link.fs.request') {
       handleFsRequestPacket(deviceId, packet);
     } else if (packet.type === 'link.fs.response') {
@@ -1119,36 +1603,42 @@ function initCore() {
       speedTestManager.handleIncomingRequest(packet, deviceId);
     } else if (packet.type === 'link.speedtest.response') {
       speedTestManager.handleResponse(packet);
-    } else if (packet.type === 'link.audiorelay.started') {
+    } else if (packet.type === 'link.audiosink.started') {
       // Resolve the host's IP here, main-process-side — this is the one place it's actually
       // known (deviceManager.remoteAddressOf); the renderer only ever gets a deviceId otherwise.
       const host = deviceManager.remoteAddressOf(deviceId);
-      if (host) send('audio-relay-paired-session-started', deviceId, packet.body.token, host);
-    } else if (packet.type === 'link.audiorelay.ended') {
-      send('audio-relay-paired-session-ended', deviceId);
-    } else if (packet.type === 'link.audiorelay.query') {
-      // A peer asking "are you currently hosting?" — sent when their Audio Relay tab opens, so a
+      if (host) send('audio-sink-paired-session-started', deviceId, packet.body.token, host);
+    } else if (packet.type === 'link.audiosink.ended') {
+      send('audio-sink-paired-session-ended', deviceId);
+    } else if (packet.type === 'link.audiosink.query') {
+      // A peer asking "are you currently hosting?" — sent when their Audio Sink tab opens, so a
       // session that started before they were connected/looking doesn't just get silently missed
       // (the original 'started' broadcast only ever reaches whoever was connected AND had the
       // tab open at that exact moment — no way to catch up otherwise). Answer with the exact same
       // 'started' packet + a freshly minted token, reusing the normal path one level up.
-      if (audioRelayServer && checkDevicePermission(deviceId, 'audiorelay')) {
-        const token = audioRelayServer.issueToken(deviceId, deviceManager.trustStore.get(deviceId)?.deviceName || deviceId);
-        deviceManager.sendTo(deviceId, createPacket('link.audiorelay.started', { token, port: AUDIO_RELAY_PORT }));
+      if (audioSinkServer) {
+        const token = audioSinkServer.issueToken(deviceId, deviceManager.trustStore.get(deviceId)?.deviceName || deviceId);
+        deviceManager.sendTo(deviceId, createPacket('link.audiosink.started', { token, port: AUDIO_SINK_PORT }));
       }
     } else if (packet.type === 'link.remotemic.started') {
       const host = deviceManager.remoteAddressOf(deviceId);
       if (host) send('remote-mic-paired-session-started', deviceId, packet.body.token, host);
     } else if (packet.type === 'link.remotemic.ended') {
       send('remote-mic-paired-session-ended', deviceId);
-    } else if (packet.type === 'link.remotemic.query') {
-      // Mirrors the link.audiorelay.query handler above — a peer asking "are you hosting?" so a
-      // session that started before they were connected/looking doesn't get silently missed.
-      if (remoteMicServer && checkDevicePermission(deviceId, 'remotemic')) {
-        const token = remoteMicServer.issueToken(deviceId, deviceManager.trustStore.get(deviceId)?.deviceName || deviceId);
-        deviceManager.sendTo(deviceId, createPacket('link.remotemic.started', { token, port: AUDIO_RELAY_PORT + 2 }));
-      }
+    } else if (typeof packet.type === 'string' && packet.type.startsWith('link.walkietalkie.')) {
+      // Generic signaling relay — session membership (start/query/join/leave/member-*) and WebRTC
+      // negotiation (SDP offer/answer, ICE candidates) are all plain JSON bodies whose actual
+      // meaning is only interpreted in WalkieTalkieTab.tsx (shared between desktop and mobile).
+      // main.ts's only job is forwarding: it never parses these bodies or holds any session state
+      // itself, since the real media is WebRTC (peer-to-peer, not routed through this app at all)
+      // — only the signaling needs to ride over the existing trusted connection. No per-device
+      // permission gate — same as Joystick: pairing itself is the trust decision for this
+      // ephemeral session tool, not a standing capability to grant/deny separately.
+      if (isBlocked(deviceId)) return;
+      send('walkie-talkie-signal', deviceId, packet.type, packet.body);
     }
+    // No 'link.remotemic.query' reply here — desktop never hosts Remote Mic (see remoteMicClient's
+    // declaration comment), so there's nothing to answer a peer's "are you hosting?" query with.
   });
 
   clipboardWatcher = new ClipboardWatcher(async (type, data) => {
@@ -1157,16 +1647,6 @@ function initCore() {
     if (type === 'text') {
       const content = data as string;
       broadcastToPermittedPeers('clipboard', createClipboardPacket(content));
-    } else {
-      const fileData = data as { filename: string; buffer: Buffer };
-      try {
-        const upload = await startPayloadUpload(deviceManager.myCert, deviceManager.myKey, fileData.buffer);
-        const packet = createPacket('link.clipboard.file', { filename: fileData.filename });
-        packet.payloadTransferInfo = upload.info as any;
-        broadcastToPermittedPeers('clipboard', packet);
-      } catch (err) {
-        console.error('[Link] Failed to upload clipboard file:', err);
-      }
     }
   });
 
@@ -1219,14 +1699,19 @@ const callIconImg = nativeImage.createFromPath(path.join(__dirname, '../../call-
 
 function createWindow() {
   const iconImg = appIconImg;
-  console.log('[Link] appPath:', app.getAppPath());
-  console.log('[Link] iconPath:', appIconPath);
-  console.log('[Link] icon file exists:', fs.existsSync(appIconPath));
-  console.log('[Link] iconImg empty:', iconImg.isEmpty());
 
   mainWindow = new BrowserWindow({
     width: 480,
     height: 640,
+    // No floor previously existed, so the window could be dragged down to whatever the OS
+    // allows — well past the point text and controls stop being usable. Kept at/below the
+    // default launch size (480x640) so this never forces a resize on a normal start; it only
+    // stops the user from going smaller than that. The sidebar already collapses to a bottom
+    // nav bar under 768px via index.css's existing @media rule, so this floor doesn't need to
+    // clear that breakpoint — dialogs inside it (e.g. File Transfer's QR/Connect split) handle
+    // their own narrow-width stacking via CSS container queries (see .fx-split in index.css).
+    minWidth: 420,
+    minHeight: 480,
     icon: iconImg,
     webPreferences: {
       preload: path.join(__dirname, '../main/preload.js'),
@@ -1264,17 +1749,31 @@ function createWindow() {
     }
   });
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    console.log('[Link] mainWindow webContents successfully finished loading');
+  });
+
   if (process.argv.includes('--dev')) {
+    console.log('[Link] Dev mode: Loading http://localhost:5173');
     mainWindow.loadURL('http://localhost:5173');
-    // mainWindow.webContents.openDevTools();
-    mainWindow.webContents.on('did-fail-load', () => {
+    mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
+      console.warn(`[Link] Dev server load failed (${code}: ${desc}), retrying in 500ms...`);
       setTimeout(() => {
         mainWindow?.loadURL('http://localhost:5173');
       }, 500);
     });
   } else {
+    console.log('[Link] Prod mode: Loading index.html');
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
+
+  mainWindow.once('ready-to-show', () => {
+    console.log('[Link] mainWindow ready-to-show fired');
+    mainWindow?.show();
+    mainWindow?.focus();
+  });
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 /** Bring the main window back from the tray (or rebuild it if it was fully closed). */
@@ -1295,16 +1794,65 @@ function createTray() {
     const trayIcon = appIconImg.isEmpty() ? appIconImg : appIconImg.resize({ width: 16, height: 16 });
     tray = new Tray(trayIcon);
     tray.setToolTip('Link');
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Open Link', click: () => showMainWindow() },
-      { type: 'separator' },
-      { label: 'Quit Link', click: () => { isQuitting = true; app.quit(); } },
-    ]));
+    rebuildTrayMenu();
     // Left-click (Windows) / click the icon to reopen — the expected tray affordance.
     tray.on('click', () => showMainWindow());
   } catch (err) {
     console.error('[Link] Failed to create tray:', err);
   }
+}
+
+// Persistent controls for an active Audio Sink/Remote Mic session — the requested "persistent
+// notification with mute/end/disconnect" feature, built on the tray menu rather than a native
+// Windows toast: Electron's own Notification actions are macOS-only, and a real interactive
+// Windows toast (button clicks routed back to the app) needs a registered AUMID + COM activator
+// that only exists once this app has a proper installed shortcut — see docs/backlog.txt's
+// "Inline reply from the DESKTOP native toast notification" entry, blocked on the same
+// installer work. The tray icon is already always-present and persistent, so surfacing session
+// controls there needs no new native plumbing and works today, unlike a real toast.
+//
+// Only host sessions (Audio Sink, Remote Mic) get a Mute/Unmute entry here — mute/unmute for a
+// LISTENING session is a renderer-side Web Audio gain node (see AudioSinkTab/RemoteMicTab's
+// PcmPlayer), not something the main process has a handle on, so listening sessions only get
+// Disconnect from the tray (the in-app UI already has its own mute slider for that case).
+function rebuildTrayMenu() {
+  if (!tray) return;
+  const sessionItems: Electron.MenuItemConstructorOptions[] = [];
+
+  if (audioSinkServer) {
+    sessionItems.push({ label: `Audio Sink: Hosting${audioSinkServer.isMuted() ? ' (Muted)' : ''}`, enabled: false });
+    sessionItems.push({
+      label: audioSinkServer.isMuted() ? 'Unmute Audio Sink' : 'Mute Audio Sink',
+      click: () => { audioSinkServer?.setMuted(!audioSinkServer.isMuted()); rebuildTrayMenu(); },
+    });
+    sessionItems.push({ label: 'End Audio Sink Session', click: () => { endAudioSink(); } });
+    sessionItems.push({ type: 'separator' });
+  }
+
+  if (audioSinkClient) {
+    sessionItems.push({ label: 'Audio Sink: Listening', enabled: false });
+    sessionItems.push({
+      label: 'Disconnect Audio Sink',
+      click: () => { audioSinkClient?.disconnect(); audioSinkClient = null; send('audio-sink-ended'); rebuildTrayMenu(); },
+    });
+    sessionItems.push({ type: 'separator' });
+  }
+
+  if (remoteMicClient) {
+    sessionItems.push({ label: 'Remote Mic: Listening', enabled: false });
+    sessionItems.push({
+      label: 'Disconnect Remote Mic',
+      click: () => { remoteMicClient?.disconnect(); remoteMicClient = null; send('remote-mic-ended'); rebuildTrayMenu(); },
+    });
+    sessionItems.push({ type: 'separator' });
+  }
+
+  tray.setContextMenu(Menu.buildFromTemplate([
+    ...sessionItems,
+    { label: 'Open Link', click: () => showMainWindow() },
+    { type: 'separator' },
+    { label: 'Quit Link', click: () => { isQuitting = true; app.quit(); } },
+  ]));
 }
 
 // Windows caches the taskbar icon by executable path. In dev mode every Electron project on
@@ -1326,6 +1874,7 @@ app.whenReady().then(() => {
     return {
       ...identity,
       ipAddress: getLocalIpAddress(),
+      ipAddresses: getAllLocalIpAddresses(),
     };
   });
 
@@ -1334,6 +1883,7 @@ app.whenReady().then(() => {
       return deviceManager.trustStore.list().map((d) => ({
         deviceId: d.deviceId,
         deviceName: d.deviceName,
+        ipAddress: d.lastKnownIp || undefined,
         deviceType: 'phone', // default fallback, updated dynamically on connection
         trusted: true,
         connected: false,
@@ -1349,17 +1899,23 @@ app.whenReady().then(() => {
   // Flattened to match get-trusted-devices' shape (the renderer expects deviceId etc. at the top
   // level, not nested under an `identity` wrapper).
   ipcMain.handle('get-connected-devices', () => {
-    return deviceManager.connectedPeers().map(({ identity, trusted }) => ({
-      deviceId: identity.deviceId,
-      deviceName: identity.deviceName,
-      deviceType: identity.deviceType,
-      incomingCapabilities: identity.incomingCapabilities,
-      outgoingCapabilities: identity.outgoingCapabilities,
-      // Re-hydrate the peer's effective capabilities from the main-process cache so a renderer
-      // reload restores gated-plugin visibility without waiting for the peer to re-push.
-      allowedCapabilities: peerCapabilities.get(identity.deviceId) || [],
-      trusted,
-    }));
+    return deviceManager.connectedPeers().map(({ identity, trusted }) => {
+      const trustedDev = deviceManager.trustStore.get(identity.deviceId);
+      return {
+        deviceId: identity.deviceId,
+        deviceName: (trustedDev && trustedDev.deviceName) ? trustedDev.deviceName : identity.deviceName,
+        deviceType: identity.deviceType,
+        ipAddress: deviceManager.remoteAddressOf(identity.deviceId) || undefined,
+        incomingCapabilities: identity.incomingCapabilities,
+        outgoingCapabilities: identity.outgoingCapabilities,
+        // Re-hydrate the peer's effective capabilities from the main-process cache so a renderer
+        // reload restores gated-plugin visibility without waiting for the peer to re-push.
+        allowedCapabilities: peerCapabilities.get(identity.deviceId) || [],
+        driveLetter: fsMountServices.get(identity.deviceId)?.getDriveLetter() || undefined,
+        trusted,
+        connected: true,
+      };
+    });
   });
 
   // Re-runs the full initial-sync push (clipboard, battery, connectivity, volume, lock, MPRIS,
@@ -1369,6 +1925,7 @@ app.whenReady().then(() => {
   // dropping, so nothing re-populates it until some unrelated future change happens to broadcast
   // again. Calling this on renderer mount closes that gap.
   ipcMain.handle('resync-devices', () => {
+    triggerReconnect?.();
     for (const deviceId of deviceManager.trustedConnectedDeviceIds()) {
       // Push OUR state to the peer (refreshes their view of us)...
       sendInitialSync(deviceId);
@@ -1429,6 +1986,12 @@ app.whenReady().then(() => {
           }).catch(() => {});
         }
 
+        const runcommandWasAllowed = oldPerm.runcommand !== false;
+        const runcommandNowAllowed = newPerm.runcommand !== false;
+        if (runcommandNowAllowed && !runcommandWasAllowed) {
+          deviceManager.sendTo(deviceId, runCommandManager.createCommandListPacket());
+        }
+
         // fileaccess controls what THAT peer can do to THIS device (see doctrine note on
         // mountFilesystemForDevice) — but the mount itself is symmetric: this device is also
         // acting as a client of the peer's fs server, and the peer's own executor-side check
@@ -1443,6 +2006,7 @@ app.whenReady().then(() => {
           if (mountService) {
             mountService.unmount();
             fsMountServices.delete(deviceId);
+            send('device-mount-changed', deviceId, undefined);
             console.log(`[Link] Unmounted filesystem for ${deviceId} — fileaccess revoked.`);
           }
           const fsClient = fsClients.get(deviceId);
@@ -1451,7 +2015,7 @@ app.whenReady().then(() => {
             fsClients.delete(deviceId);
           }
           socketFsClients.delete(deviceId);
-        } else if (fileaccessNowAllowed && !fileaccessWasAllowed) {
+        } else if (fileaccessNowAllowed && !fileaccessWasAllowed && deviceMountEnabled[deviceId] !== false) {
           const peer = deviceManager.connectedPeers().find((p) => p.identity.deviceId === deviceId);
           const host = deviceManager.remoteAddressOf(deviceId);
           if (peer && host) {
@@ -1471,8 +2035,28 @@ app.whenReady().then(() => {
   ipcMain.handle('get-visibility', () => visibilityEnabled);
   ipcMain.handle('set-visibility', (_e, enabled: boolean) => {
     visibilityEnabled = enabled;
+    // visibilityEnabled only controls whether this device BROADCASTS its identity over UDP.
+    // It does NOT affect receiving — we still listen for and connect to peers that broadcast
+    // to us. This makes the toggle mean "am I visible to others" not "can I see others".
     discoveryService?.setVisibility(enabled);
     saveSetting(configDir, 'discovery-settings.json', 'visibilityEnabled', enabled);
+
+    // Going invisible used to be purely passive: this device just stopped broadcasting and
+    // waited for each peer's OWN discovery-expiry timeout (up to ~9-12s of silence) to notice
+    // and disconnect. That made the toggle feel broken/laggy rather than "realtime" — turn it
+    // off and an already-connected, untrusted (unpaired) peer would keep showing as connected
+    // for up to 12 more seconds. Proactively closing those connections the instant visibility
+    // goes off makes it actually instant on both sides (this device's own 'deviceDisconnected'
+    // fires immediately, and the peer sees the same TCP close immediately too — no need to wait
+    // for their expiry timer). Trusted/paired devices are deliberately left connected — pool
+    // membership is unaffected by LAN visibility, only casual/discovery-based connections are.
+    if (!enabled) {
+      for (const peer of deviceManager.connectedPeers()) {
+        if (!peer.trusted) {
+          deviceManager.closeConnection(peer.identity.deviceId);
+        }
+      }
+    }
   });
 
   ipcMain.handle('get-close-to-tray', () => closeToTray);
@@ -1507,29 +2091,132 @@ app.whenReady().then(() => {
 
   // ===== Pairing & Connection =====
   ipcMain.handle('connect-to', async (_e, host: string, port?: number) => {
+    const target = host.trim().toLowerCase();
+    if (target === '127.0.0.1' || target === 'localhost' || target === '::1') {
+      throw new Error('A device cannot connect to itself.');
+    }
+
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      for (const net of interfaces[name] || []) {
+        if (net.address === host) {
+          throw new Error('A device cannot connect to itself.');
+        }
+      }
+    }
+
     await deviceManager.connectTo(host, port ?? LINK_PORT);
   });
 
-  ipcMain.handle('request-pairing', (_e, deviceId: string) => {
+  ipcMain.handle('request-pairing', async (_e, deviceId: string) => {
+    const immediatePin = deviceManager.requestPairing(deviceId);
+    if (immediatePin !== null) return immediatePin;
+
+    // Came back null — this is expected for a device that only exists in the "Nearby Discovered
+    // Devices" list: those are announced purely from UDP discovery broadcasts and deliberately
+    // NEVER auto-connected over TCP (see the discoveryService callback above — auto-connect only
+    // fires for already-PAIRED devices), so there's no live connection yet for requestPairing()
+    // to compute a verification PIN against. Connect now using the IP we already know from
+    // discovery, then wait for the identity handshake to actually finish — connectTo()'s own
+    // promise resolves right after the raw TLS handshake, BEFORE identity packets are exchanged
+    // (see connectToPeer()'s comment in transport.ts), so awaiting it alone isn't enough; we need
+    // the 'deviceConnected' event for this specific deviceId, or requestPairing() would still
+    // race and come back null a second time.
+    const discovered = discoveredUnpairedPeers.get(deviceId);
+    if (!discovered?.ipAddress) return null;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          deviceManager.off('deviceConnected', onConnected);
+          reject(new Error('Timed out waiting for connection'));
+        }, 10000);
+        const onConnected = (identity: any) => {
+          if (identity.deviceId === deviceId) {
+            clearTimeout(timeout);
+            deviceManager.off('deviceConnected', onConnected);
+            resolve();
+          }
+        };
+        deviceManager.on('deviceConnected', onConnected);
+        deviceManager.connectTo(discovered.ipAddress).catch((err) => {
+          clearTimeout(timeout);
+          deviceManager.off('deviceConnected', onConnected);
+          reject(err);
+        });
+      });
+    } catch (err: any) {
+      console.error('[Link] Failed to connect before pairing:', err.message);
+      return null;
+    }
+
     return deviceManager.requestPairing(deviceId);
+  });
+
+  ipcMain.handle('request-pairing-by-ip', async (_e, ipListStr: string) => {
+    try {
+      console.log(`[Link] Manual connection request to IP list: ${ipListStr}`);
+      const normalizeIp = (i: string) => i.replace(/^::ffff:/, '');
+      
+      const ips = ipListStr.split(',').map((s) => s.trim()).filter(Boolean);
+      if (ips.length === 0) return null;
+
+      for (const ip of ips) {
+        const targetNormalized = normalizeIp(ip);
+        const existingPeer = [...(deviceManager as any).peers.values()].find((p) => {
+          const remoteIp = p.conn.remoteAddress;
+          return remoteIp && normalizeIp(remoteIp) === targetNormalized;
+        });
+        if (existingPeer && existingPeer.conn.peerIdentity) {
+          const pin = deviceManager.requestPairing(existingPeer.conn.peerIdentity.deviceId);
+          return pin ? { pin, deviceId: existingPeer.conn.peerIdentity.deviceId } : null;
+        }
+      }
+
+      return await new Promise<any>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          deviceManager.off('deviceConnected', onConnected);
+          reject(new Error('Timed out waiting for connection'));
+        }, 10000);
+        
+        const onConnected = (identity: any) => {
+          const remoteIp = deviceManager.remoteAddressOf(identity.deviceId);
+          if (remoteIp && ips.some((ip) => normalizeIp(remoteIp) === normalizeIp(ip))) {
+            clearTimeout(timeout);
+            deviceManager.off('deviceConnected', onConnected);
+            const pin = deviceManager.requestPairing(identity.deviceId);
+            resolve(pin ? { pin, deviceId: identity.deviceId } : null);
+          }
+        };
+        
+        deviceManager.on('deviceConnected', onConnected);
+        for (const ip of ips) {
+          deviceManager.connectTo(ip).catch((err) => {
+            console.warn(`[Link] Parallel connect attempt failed to ${ip}:`, err.message);
+          });
+        }
+      });
+    } catch (err: any) {
+      console.error('[Link] Manual connection failed:', err.message);
+      return null;
+    }
   });
   ipcMain.handle('accept-pairing', (_e, deviceId: string) => {
     deviceManager.acceptPairing(deviceId);
+  });
+  ipcMain.handle('cancel-pairing', (_e, deviceId: string) => {
+    deviceManager.cancelPairing(deviceId);
   });
   ipcMain.handle('get-blocklist', () => {
     return blocklist;
   });
 
   ipcMain.handle('block-device', (_e, id: string, label: string, type: 'device' | 'ip') => {
-    if (!blocklist.some((x: BlocklistEntry) => x.id === id)) {
-      blocklist.push({ id, label, type, blockedAt: Date.now() });
-      saveBlocklist(configDir, blocklist);
-      console.log(`[Link] Blocked: ${label} (${id})`);
-
-      // If it is a device currently connected, terminate immediately
-      if (type === 'device') {
-        deviceManager.closeConnection(id);
-      }
+    const ip = type === 'device' ? deviceManager.remoteAddressOf(id) : undefined;
+    addToBlocklist(id, label, type, undefined, ip);
+    // If it is a device currently connected, terminate immediately
+    if (type === 'device') {
+      deviceManager.closeConnection(id);
     }
     return blocklist;
   });
@@ -1541,26 +2228,25 @@ app.whenReady().then(() => {
     return blocklist;
   });
 
-  ipcMain.handle('reject-pairing', (_e, deviceId: string, shouldBlock?: boolean) => {
+  ipcMain.handle('reject-pairing', (_e, deviceId: string, shouldBlock?: boolean, deviceName?: string, deviceType?: string) => {
+    const ip = deviceManager.remoteAddressOf(deviceId);
     deviceManager.rejectPairing(deviceId);
     if (shouldBlock) {
-      if (!blocklist.some((x: BlocklistEntry) => x.id === deviceId)) {
-        blocklist.push({ id: deviceId, label: deviceId.slice(0, 8), type: 'device', blockedAt: Date.now() });
-        saveBlocklist(configDir, blocklist);
-        console.log(`[Link] Blocked device on reject: ${deviceId}`);
-      }
+      addToBlocklist(deviceId, deviceName || deviceId.slice(0, 8), 'device', deviceType, ip);
     }
   });
   ipcMain.handle('unpair', (_e, deviceId: string) => {
+    for (const otherId of deviceManager.trustedConnectedDeviceIds()) {
+      if (otherId !== deviceId) {
+        deviceManager.sendTo(otherId, createPacket('link.pool.remove', { deviceId }));
+      }
+    }
     deviceManager.unpair(deviceId);
   });
-  // Trusted Pool (Wave 2): removing a device owner-signs + gossips a revocation so it's dropped
-  // pool-wide (falls back to a plain unpair if this device isn't in a pool). Exit leaves the pool.
-  ipcMain.handle('remove-from-pool', (_e, deviceId: string) => {
-    deviceManager.removeFromPool(deviceId);
-  });
   ipcMain.handle('exit-pool', () => {
-    deviceManager.exitPool();
+    for (const d of deviceManager.trustStore.list()) {
+      deviceManager.unpair(d.deviceId);
+    }
   });
 
   ipcMain.handle('run-speed-test', async (_e, deviceId: string) => {
@@ -1569,13 +2255,17 @@ app.whenReady().then(() => {
     });
   });
 
-  // ===== Ring / Find My Phone =====
+  // ===== Ring / Find My Device =====
+  ipcMain.handle('send-find-my-device', (_e, deviceId: string) => {
+    deviceManager.sendTo(deviceId, createFindMyDevicePacket(false));
+  });
+
   ipcMain.handle('send-find-my-phone', (_e, deviceId: string) => {
-    deviceManager.sendTo(deviceId, createFindMyPhonePacket(false));
+    deviceManager.sendTo(deviceId, createFindMyDevicePacket(false));
   });
 
   ipcMain.handle('send-stop-ringing', (_e, deviceId: string) => {
-    deviceManager.sendTo(deviceId, createFindMyPhonePacket(true));
+    deviceManager.sendTo(deviceId, createFindMyDevicePacket(true));
   });
 
   ipcMain.handle('stop-ringing-local', () => {
@@ -1585,12 +2275,21 @@ app.whenReady().then(() => {
       ringTimeoutMain = null;
     }
     if (activeRingerDeviceId) {
-      deviceManager.sendTo(activeRingerDeviceId, createFindMyPhonePacket(true));
+      deviceManager.sendTo(activeRingerDeviceId, createFindMyDevicePacket(true));
       send('find-my-phone-stopped', activeRingerDeviceId);
+      send('find-my-device-stopped', activeRingerDeviceId);
       activeRingerDeviceId = null;
     }
   });
 
+
+  // ===== Remote Input (PC -> Android Keyboard & D-Pad) =====
+  ipcMain.handle('send-remote-input', (_e, deviceId: string, text?: string, specialKey?: string) => {
+    const body: any = {};
+    if (text) body.text = text;
+    if (specialKey) body.specialKey = specialKey;
+    deviceManager.sendTo(deviceId, createPacket('link.remoteinput.send', body));
+  });
 
   // ===== Rename =====
   ipcMain.handle('rename-device', (_e, newName: string) => {
@@ -1630,6 +2329,87 @@ app.whenReady().then(() => {
     deviceManager.sendTo(deviceId, createLockRequestPacket(undefined, true));
   });
 
+  // ===== Presenter (desktop-as-controller — mirrors mobile LinkPlugin.java's sendPresenterMove/
+  // sendPresenterStop/sendSpecialKey/cycleTargetDisplay PluginMethods) =====
+  // Moves ride the low-latency raw UDP relay, same as mobile-to-mobile; stop uses the reliable
+  // TCP packet channel (see LinkPlugin.java's handlePresenterPacket / isPresenterStopPacket
+  // above). "special key" and "cycle target display" sent to a MOBILE target are currently
+  // no-ops there (mobile never implemented receiving either — it only ever sent them, back when
+  // desktop was the only possible target) — harmless, not wired up to crash or block.
+  ipcMain.handle('send-presenter-move', (_e, deviceId: string, dx: number, dy: number) => {
+    sendUdpMessageToPeer(deviceId, `pmove ${dx} ${dy}`);
+  });
+  ipcMain.handle('send-presenter-stop', (_e, deviceId: string) => {
+    deviceManager.sendTo(deviceId, createPresenterStopPacket());
+  });
+  ipcMain.handle('send-special-key', (_e, deviceId: string, key: number) => {
+    sendUdpMessageToPeer(deviceId, `special ${key}`);
+  });
+  ipcMain.handle('send-cycle-target-display', (_e, deviceId: string) => {
+    deviceManager.sendTo(deviceId, createPacket('link.target.display', {}));
+  });
+
+  ipcMain.handle('send-digitizer-session', (_e, deviceId: string, action: string, w: number, h: number) => {
+    deviceManager.sendTo(deviceId, createPacket('link.digitizer.session', {
+      action,
+      width: w,
+      height: h,
+      resolutionX: 100,
+      resolutionY: 100
+    }));
+  });
+  ipcMain.handle('send-digitizer-event', (_e, deviceId: string, payload: any) => {
+    sendUdpMessageToPeer(deviceId, `dig ${payload.x || 0} ${payload.y || 0} ${payload.touching || false}`);
+  });
+  ipcMain.handle('send-digitizer-action', (_e, deviceId: string, action: string) => {
+    sendUdpMessageToPeer(deviceId, action); // "undo" or "redo"
+  });
+
+  // ===== Joystick =====
+  // Host-side (desktop) status query — JoystickTab.tsx polls this to render the driver banner
+  // and the live list of connected phone-controllers, mirroring get-audio-sink-status's shape.
+  // Controllers are IP-identified, not deviceId-identified (see joystick.ts), so there's no
+  // deviceId here to resolve a friendly name from — the name is whatever the phone sent in its
+  // "hello <name>" handshake.
+  ipcMain.handle('get-joystick-status', () => {
+    const { status, error } = joystickHandler.getDriverStatus();
+    return { driverStatus: status, driverError: error, connectedControllers: joystickHandler.getConnectedControllers() };
+  });
+  // "Verify Installation" — actively probes (spawns the helper if needed) rather than reading the
+  // passive cache above, which otherwise never updates until a phone actually connects.
+  ipcMain.handle('check-joystick-driver', () => {
+    const { status, error } = joystickHandler.checkDriverNow();
+    return { driverStatus: status, driverError: error };
+  });
+  ipcMain.handle('kick-joystick-controller', (_e, ip: string) => {
+    joystickHandler.handleBye(ip, 'kicked');
+  });
+  ipcMain.handle('block-joystick-controller', (_e, ip: string, name?: string) => {
+    blockUntrustedGuest(ip, name);
+    joystickHandler.handleBye(ip, 'blocked');
+  });
+  ipcMain.handle('accept-joystick-guest', (_e, connId: string) => {
+    const remoteAddress = joystickServer?.getPendingGuestRemoteAddress(connId);
+    const deviceName = joystickServer?.getPendingGuestDeviceName(connId);
+    if (!remoteAddress || !deviceName) return;
+    const result = joystickHandler.handleHello(remoteAddress, deviceName);
+    if (result.error) {
+      joystickServer?.rejectGuest(connId);
+    } else {
+      joystickServer?.acceptGuest(connId, result.padIndex!);
+    }
+  });
+  ipcMain.handle('reject-joystick-guest', (_e, connId: string) => {
+    joystickServer?.rejectGuest(connId);
+  });
+  ipcMain.handle('block-joystick-guest', (_e, connId: string) => {
+    const remoteAddress = joystickServer?.getPendingGuestRemoteAddress(connId);
+    if (remoteAddress) {
+      blockUntrustedGuest(remoteAddress, joystickServer?.getPendingGuestDeviceName(connId) ?? undefined);
+    }
+    joystickServer?.blockGuest(connId);
+  });
+
   // ===== Volume =====
   ipcMain.handle('send-set-volume', (_e, deviceId: string, sinkName: string, volume: number) => {
     deviceManager.sendTo(deviceId, createSetVolumeRequestPacket(sinkName, volume));
@@ -1641,13 +2421,65 @@ app.whenReady().then(() => {
 
   // ===== Flashlight / DND =====
   ipcMain.handle('send-flashlight-toggle', (_e, deviceId: string, enabled: boolean) => {
-    deviceManager.sendTo(deviceId, createFlashlightPacket(enabled));
+    deviceManager.sendTo(deviceId, createFlashlightCommandPacket(enabled));
   });
 
   ipcMain.handle('send-dnd-set', (_e, deviceId: string, enabled: boolean) => {
-    deviceManager.sendTo(deviceId, createDNDPacket(enabled));
+    deviceManager.sendTo(deviceId, createDNDCommandPacket(enabled));
+  });
+  ipcMain.handle('get-device-mount-config', (_e, deviceId: string) => {
+    const letters = 'ZYXWVUTSRQPONMLKJIHGFED'.split('').map(l => `${l}:`);
+    const preferredDriveLetter = deviceDriveLetters[deviceId] || '';
+    
+    const occupiedLetters: string[] = [];
+    for (const letter of letters) {
+      if (fs.existsSync(letter)) {
+        occupiedLetters.push(letter);
+        continue;
+      }
+      const otherDeviceUsingLetter = Object.entries(deviceDriveLetters).some(
+        ([id, preferred]) => id !== deviceId && preferred === letter
+      );
+      if (otherDeviceUsingLetter) {
+        occupiedLetters.push(letter);
+      }
+    }
+    
+    return {
+      preferredDriveLetter,
+      occupiedLetters,
+      letters
+    };
   });
 
+  ipcMain.handle('set-device-mount-letter', async (_e, deviceId: string, driveLetter: string) => {
+    if (driveLetter) {
+      deviceDriveLetters[deviceId] = driveLetter;
+    } else {
+      delete deviceDriveLetters[deviceId];
+    }
+    saveSetting(configDir, 'mount-settings.json', 'deviceDriveLetters', deviceDriveLetters);
+    
+    const activeMount = fsMountServices.get(deviceId);
+    if (activeMount) {
+      console.log(`[Link] Drive letter changed to ${driveLetter} for active device ${deviceId}. Remounting...`);
+      try {
+        await activeMount.unmount();
+        fsMountServices.delete(deviceId);
+        send('device-mount-changed', deviceId, undefined);
+        
+        const peer = deviceManager.connectedPeers().find((p) => p.identity.deviceId === deviceId);
+        const host = deviceManager.remoteAddressOf(deviceId);
+        
+        if (peer && host) {
+          await mountFilesystemForDevice(peer.identity, host);
+        }
+      } catch (err: any) {
+        console.error(`[Link] Failed to dynamically remount device ${deviceId}:`, err.message);
+      }
+    }
+    return { success: true };
+  });
   // ===== Media (MPRIS) =====
   ipcMain.handle('send-mpris-action', (_e, deviceId: string, player: string, action: string) => {
     deviceManager.sendTo(deviceId, createPacket('link.mpris.request', { player, action }));
@@ -1685,204 +2517,398 @@ app.whenReady().then(() => {
   });
 
   // ===== File System =====
+  const getFsClient = async (deviceId: string) => {
+    const client = fsClients.get(deviceId);
+    if (client) return client;
+    const socketClient = socketFsClients.get(deviceId);
+    if (socketClient) return socketClient;
+
+    // Lazily connect client for File Explorer if not mounted
+    const peer = deviceManager.connectedPeers().find((p) => p.identity.deviceId === deviceId);
+    const host = deviceManager.remoteAddressOf(deviceId);
+    if (peer && host && peer.identity.deviceType === 'phone') {
+      console.log(`[Link] Lazily starting FS WSS client for File Explorer: ${peer.identity.deviceName} at ${host}...`);
+      const fsClient = new LinkFsClient(host, undefined, tlsIdentity.cert, tlsIdentity.key);
+      await fsClient.connect();
+      fsClients.set(deviceId, fsClient);
+      return fsClient;
+    }
+    return null;
+  };
+
   ipcMain.handle('fs-get-connected-devices', () => {
-    return Array.from(fsClients.keys());
+    return [...Array.from(fsClients.keys()), ...Array.from(socketFsClients.keys())];
   });
 
   ipcMain.handle('fs-list-roots', async (_e, deviceId: string) => {
-    const client = fsClients.get(deviceId);
+    const client = await getFsClient(deviceId);
     if (!client) throw new Error('Device FS client not connected');
     return client.listRoots();
   });
 
   ipcMain.handle('fs-readdir', async (_e, deviceId: string, path: string) => {
-    const client = fsClients.get(deviceId);
+    const client = await getFsClient(deviceId);
     if (!client) throw new Error('Device FS client not connected');
     return client.readdir(path);
   });
 
   ipcMain.handle('fs-stat', async (_e, deviceId: string, path: string) => {
-    const client = fsClients.get(deviceId);
+    const client = await getFsClient(deviceId);
     if (!client) throw new Error('Device FS client not connected');
     return client.stat(path);
   });
 
+  // Returns raw bytes, not base64. Electron structured-clones a Buffer straight through as a
+  // Uint8Array, so base64 only ever added a full encode here, ~33% more bytes over IPC, and a
+  // matching decode in the renderer — per thumbnail, several at a time while scrolling.
+  // The renderer accepts either shape, because the Capacitor build's native bridge still hands
+  // back a base64 string and this handler's only consumer is shared between both builds.
   ipcMain.handle('fs-read', async (_e, deviceId: string, path: string, offset: number, length: number) => {
-    const client = fsClients.get(deviceId);
+    const client = await getFsClient(deviceId);
     if (!client) throw new Error('Device FS client not connected');
-    const buffer = await client.read(path, offset, length);
-    return buffer.toString('base64');
+    return client.read(path, offset, length);
   });
 
-  // ===== Audio Relay =====
-  ipcMain.handle('start-audio-relay', async () => {
-    if (audioRelayServer) return { started: true, port: AUDIO_RELAY_PORT };
+  ipcMain.handle('fs-create-directory', async (_e, deviceId: string, path: string) => {
+    const client = await getFsClient(deviceId);
+    if (!client) throw new Error('Device FS client not connected');
+    return client.create(path, true);
+  });
 
-    const server = new AudioRelayServer(tlsIdentity.cert, tlsIdentity.key, AUDIO_RELAY_PORT);
-    server.on('guestPinPending', (connId, pin, remoteAddress) => {
-      send('audio-relay-guest-pin-pending', connId, pin, remoteAddress);
+  ipcMain.handle('fs-delete', async (_e, deviceId: string, path: string) => {
+    const client = await getFsClient(deviceId);
+    if (!client) throw new Error('Device FS client not connected');
+    return client.delete(path);
+  });
+
+  ipcMain.handle('fs-rename', async (_e, deviceId: string, path: string, newPath: string) => {
+    const client = await getFsClient(deviceId);
+    if (!client) throw new Error('Device FS client not connected');
+    return client.rename(path, newPath);
+  });
+
+  ipcMain.handle('fs-download-file', async (_e, deviceId: string, remotePath: string, localPath: string) => {
+    const client = await getFsClient(deviceId);
+    if (!client) throw new Error('Device FS client not connected');
+
+    const entry = await client.stat(remotePath);
+    if (entry.isDirectory) throw new Error('Cannot download a directory');
+
+    const fd = fs.openSync(localPath, 'w');
+    const start = 0;
+    const end = entry.size - 1;
+
+    const chunkSize = 1 * 1024 * 1024; // 1MB chunks
+    const CONCURRENCY = 6; // 6 chunks in flight
+
+    const chunkDescs: { offset: number; length: number }[] = [];
+    for (let o = start; o <= end; o += chunkSize) {
+      chunkDescs.push({ offset: o, length: Math.min(chunkSize, end - o + 1) });
+    }
+
+    const inFlight: Promise<Buffer>[] = [];
+    let nextToIssue = 0;
+    const issueNext = () => {
+      if (nextToIssue < chunkDescs.length) {
+        const c = chunkDescs[nextToIssue++];
+        const p = client.read(remotePath, c.offset, c.length);
+        p.catch(() => {});
+        inFlight.push(p);
+      }
+    };
+
+    // Fill initial pipeline window
+    for (let i = 0; i < CONCURRENCY; i++) issueNext();
+
+    try {
+      for (let i = 0; i < chunkDescs.length; i++) {
+        const chunk = await inFlight[i];
+        issueNext(); // maintain window
+        fs.writeSync(fd, chunk, 0, chunk.length, chunkDescs[i].offset);
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    return true;
+  });
+
+  ipcMain.handle('fs-pick-save-path', async (_e, defaultName: string) => {
+    const { filePath } = await dialog.showSaveDialog({
+      defaultPath: defaultName,
     });
+    return filePath || null;
+  });
+
+  ipcMain.handle('fs-mount-device', async (_e, deviceId: string) => {
+    const peer = deviceManager.connectedPeers().find((p) => p.identity.deviceId === deviceId);
+    const host = deviceManager.remoteAddressOf(deviceId);
+    if (!peer || !host) throw new Error('Device is offline or unreachable');
+    // Record the user's intent so it survives a reconnect — see deviceMountEnabled's doc comment.
+    deviceMountEnabled[deviceId] = true;
+    saveSetting(configDir, 'mount-settings.json', 'deviceMountEnabled', deviceMountEnabled);
+    await mountFilesystemForDevice(peer.identity, host);
+    return true;
+  });
+
+  ipcMain.handle('fs-unmount-device', async (_e, deviceId: string) => {
+    // Record the user's intent so this doesn't silently remount on the next reconnect — see
+    // deviceMountEnabled's doc comment. This is the actual fix for that bug: previously this
+    // handler only ever touched the in-memory fsMountServices map below.
+    deviceMountEnabled[deviceId] = false;
+    saveSetting(configDir, 'mount-settings.json', 'deviceMountEnabled', deviceMountEnabled);
+    const mountService = fsMountServices.get(deviceId);
+    if (mountService) {
+      mountService.unmount();
+      fsMountServices.delete(deviceId);
+      send('device-mount-changed', deviceId, undefined);
+    }
+    const fsClient = fsClients.get(deviceId);
+    if (fsClient) {
+      fsClient.disconnect();
+      fsClients.delete(deviceId);
+    }
+    socketFsClients.delete(deviceId);
+    return true;
+  });
+
+  async function uploadItemRecursively(client: any, localPath: string, remoteParentPath: string) {
+    const stat = fs.statSync(localPath);
+    const name = path.basename(localPath);
+    const remotePath = remoteParentPath.endsWith('/') || remoteParentPath.endsWith('\\')
+      ? `${remoteParentPath}${name}`
+      : `${remoteParentPath}/${name}`;
+
+    if (stat.isDirectory()) {
+      await client.create(remotePath, true);
+      const files = fs.readdirSync(localPath);
+      for (const file of files) {
+        await uploadItemRecursively(client, path.join(localPath, file), remotePath);
+      }
+    } else {
+      const fd = fs.openSync(localPath, 'r');
+      const fileSize = stat.size;
+      const chunkSize = 256 * 1024;
+      try {
+        let offset = 0;
+        const buf = Buffer.alloc(chunkSize);
+        while (offset < fileSize) {
+          const bytesRead = fs.readSync(fd, buf, 0, Math.min(chunkSize, fileSize - offset), offset);
+          const chunk = buf.subarray(0, bytesRead);
+          await client.write(remotePath, offset, chunk);
+          offset += bytesRead;
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+  }
+
+  ipcMain.handle('fs-upload-item', async (_e, deviceId: string, localPath: string, remoteParentPath: string) => {
+    const client = await getFsClient(deviceId);
+    if (!client) throw new Error('Device FS client not connected');
+    await uploadItemRecursively(client, localPath, remoteParentPath);
+    return true;
+  });
+
+  ipcMain.handle('fs-pick-upload-items', async (_e, mode: 'file' | 'directory') => {
+    const properties: any[] = mode === 'file' ? ['openFile', 'multiSelections'] : ['openDirectory', 'multiSelections'];
+    const result = await dialog.showOpenDialog({
+      properties,
+      title: mode === 'file' ? 'Select files to upload' : 'Select folders to upload',
+    });
+    if (result.canceled) return [];
+    return result.filePaths;
+  });
+
+  ipcMain.handle('expand-dropped-paths', async (_e, filePaths: string[]) => {
+    let allFiles: { localPath: string; relPath: string }[] = [];
+    for (const filePath of filePaths) {
+      if (fs.existsSync(filePath)) {
+        const stat = fs.statSync(filePath);
+        if (stat.isDirectory()) {
+          allFiles = allFiles.concat(walkDir(filePath, path.dirname(filePath)));
+        } else {
+          allFiles.push({
+            localPath: filePath,
+            relPath: path.basename(filePath)
+          });
+        }
+      }
+    }
+    return allFiles;
+  });
+
+  ipcMain.handle('fs-get-stream-url', async (_e, deviceId: string, remotePath: string) => {
+    let mountService = fsMountServices.get(deviceId);
+    if (!mountService) {
+      const peer = deviceManager.connectedPeers().find((p) => p.identity.deviceId === deviceId);
+      const host = deviceManager.remoteAddressOf(deviceId);
+      if (!peer || !host) {
+        throw new Error('Device is offline or unreachable');
+      }
+      console.log(`[Link] Dynamically mounting filesystem for streaming on device: ${peer.identity.deviceName}`);
+      await mountFilesystemForDevice(peer.identity, host);
+      mountService = fsMountServices.get(deviceId);
+    }
+    if (!mountService) {
+      throw new Error('Could not start mount service for streaming');
+    }
+
+    const port = mountService.getPort();
+    const roots = mountService.getRoots();
+    const matchedRoot = roots.find(r => remotePath.startsWith(r.path));
+    if (!matchedRoot) {
+      throw new Error('Path does not match any storage roots');
+    }
+
+    const relativePath = remotePath.substring(matchedRoot.path.length);
+    const urlPath = `/${matchedRoot.name}${relativePath.startsWith('/') ? relativePath : '/' + relativePath}`;
+    return `http://127.0.0.1:${port}${encodeURI(urlPath)}`;
+  });
+
+  // ===== Audio Sink =====
+  ipcMain.handle('start-audio-sink', async () => {
+    if (audioSinkServer) return { started: true, port: AUDIO_SINK_PORT };
+
+    const server = new AudioSinkServer(tlsIdentity.cert, tlsIdentity.key, AUDIO_SINK_PORT, isBlocked, 'loopback', identity.deviceName);
     server.on('listenerJoined', (connId, label) => {
-      send('audio-relay-listener-joined', connId, label);
+      send('audio-sink-listener-joined', connId, label);
     });
     server.on('listenerLeft', (connId) => {
-      send('audio-relay-listener-left', connId);
+      send('audio-sink-listener-left', connId);
+    });
+    server.on('guestPinPending', (connId, pin, remoteAddress, deviceName) => {
+      send('audio-sink-guest-pin-pending', connId, pin, remoteAddress, deviceName);
     });
     server.on('error', (err) => {
-      console.error('[Link] Audio Relay server error:', err.message);
-      send('audio-relay-error', err.message);
+      console.error('[Link] Audio Sink server error:', err.message);
+      send('audio-sink-error', err.message);
     });
 
     try {
       await server.start();
     } catch (err: any) {
-      console.error('[Link] Failed to start Audio Relay:', err.message);
+      console.error('[Link] Failed to start Audio Sink:', err.message);
       return { started: false, error: err.message };
     }
-    audioRelayServer = server;
+    audioSinkServer = server;
 
-    // Notify already-connected, permitted paired devices with their own one-time join token.
+    // Notify every already-connected paired device with their own one-time join token — no extra
+    // per-device permission gate, same as Joystick: pairing itself is the trust decision, and this
+    // is an ephemeral session anyone paired can join, not a standing capability grant.
     // Known v1 limitation: a peer that connects to the main mesh AFTER this point won't
     // retroactively get one — they'd need the session restarted to see the "Join" banner.
     for (const peerId of deviceManager.trustedConnectedDeviceIds()) {
-      if (!checkDevicePermission(peerId, 'audiorelay')) continue;
       const token = server.issueToken(peerId, deviceManager.trustStore.get(peerId)?.deviceName || peerId);
-      deviceManager.sendTo(peerId, createPacket('link.audiorelay.started', { token, port: AUDIO_RELAY_PORT }));
+      deviceManager.sendTo(peerId, createPacket('link.audiosink.started', { token, port: AUDIO_SINK_PORT }));
     }
 
-    return { started: true, port: AUDIO_RELAY_PORT };
+    rebuildTrayMenu();
+    return { started: true, port: AUDIO_SINK_PORT };
   });
 
-  ipcMain.handle('accept-audio-relay-guest', (_e, connId: string) => {
-    audioRelayServer?.acceptGuest(connId);
-  });
-
-  ipcMain.handle('reject-audio-relay-guest', (_e, connId: string) => {
-    audioRelayServer?.rejectGuest(connId);
-  });
-
-  ipcMain.handle('set-audio-relay-muted', (_e, muted: boolean) => {
-    audioRelayServer?.setMuted(muted);
-  });
-
-  ipcMain.handle('kick-audio-relay-listener', (_e, connId: string) => {
-    audioRelayServer?.kickListener(connId);
-  });
-
-  ipcMain.handle('get-audio-relay-listeners', () => {
-    return audioRelayServer?.listenersSnapshot() ?? [];
-  });
-
-  ipcMain.handle('end-audio-relay', async () => {
-    if (!audioRelayServer) return;
+  // Shared by the 'end-audio-sink' IPC handler (renderer's End Session button) and the tray
+  // menu's own End Session item (see rebuildTrayMenu) — one implementation, two entry points.
+  endAudioSink = async () => {
+    if (!audioSinkServer) return;
     // Also tell every paired peer, not just admitted listeners — someone might have the tab
     // open with the "Join" banner showing but never actually joined, and needs it cleared too.
     for (const peerId of deviceManager.trustedConnectedDeviceIds()) {
-      deviceManager.sendTo(peerId, createPacket('link.audiorelay.ended', {}));
+      deviceManager.sendTo(peerId, createPacket('link.audiosink.ended', {}));
     }
-    await audioRelayServer.stop();
-    audioRelayServer = null;
+    await audioSinkServer.stop();
+    audioSinkServer = null;
+    send('audio-sink-ended');
+    rebuildTrayMenu();
+  };
+
+  ipcMain.handle('set-audio-sink-muted', (_e, muted: boolean) => {
+    audioSinkServer?.setMuted(muted);
+    rebuildTrayMenu();
   });
 
-  ipcMain.handle('join-audio-relay-guest', (_e, host: string) => {
-    audioRelayClient?.disconnect();
-    const client = new AudioRelayClient(host, AUDIO_RELAY_PORT, tlsIdentity.cert, tlsIdentity.key);
-    wireAudioRelayClientEvents(client);
-    audioRelayClient = client;
+  ipcMain.handle('kick-audio-sink-listener', (_e, connId: string) => {
+    audioSinkServer?.kickListener(connId);
+  });
+
+  // "Block" next to "Kick" — unlike a plain kick (which just disconnects), this also adds a real
+  // Blocklist entry so the same device/IP can't rejoin (or reach discovery/pairing/any other
+  // guest-session tool) until explicitly unblocked from Settings.
+  ipcMain.handle('block-audio-sink-listener', (_e, connId: string) => {
+    const info = audioSinkServer?.getListenerBlockInfo(connId);
+    if (!info) return;
+    if (info.deviceId) {
+      // Captures their current IP too (see isBlocked's comment) — without this, blocking a paired
+      // listener by deviceId wouldn't stop that same device from reconnecting as an untrusted-tool
+      // guest, which only ever checks by IP.
+      addToBlocklist(info.deviceId, deviceManager.trustStore.get(info.deviceId)?.deviceName || info.deviceId.slice(0, 8), 'device', undefined, info.remoteAddress);
+    } else {
+      blockUntrustedGuest(info.remoteAddress);
+    }
+    audioSinkServer?.kickListener(connId);
+  });
+
+  ipcMain.handle('accept-audio-sink-guest', (_e, connId: string) => {
+    audioSinkServer?.acceptGuest(connId);
+  });
+
+  ipcMain.handle('reject-audio-sink-guest', (_e, connId: string) => {
+    audioSinkServer?.rejectGuest(connId);
+  });
+
+  // Block a pending (not yet admitted) guest — adds a Blocklist entry before rejecting
+  ipcMain.handle('block-audio-sink-guest', (_e, connId: string) => {
+    const info = audioSinkServer?.getPendingGuestBlockInfo(connId);
+    if (info) blockUntrustedGuest(info.remoteAddress);
+    audioSinkServer?.rejectGuest(connId);
+  });
+
+  ipcMain.handle('get-audio-sink-listeners', () => {
+    return audioSinkServer?.listenersSnapshot() ?? [];
+  });
+
+  ipcMain.handle('end-audio-sink', () => endAudioSink());
+
+  ipcMain.handle('join-audio-sink-guest', (_e, host: string) => {
+    audioSinkClient?.disconnect();
+    const client = new AudioSinkClient(host, AUDIO_SINK_PORT, tlsIdentity.cert, tlsIdentity.key, identity.deviceName);
+    wireAudioSinkClientEvents(client, host);
+    audioSinkHostLabel = host;
+    audioSinkClient = client;
     client.connect({ kind: 'guest' });
+    rebuildTrayMenu();
   });
 
-  ipcMain.handle('join-audio-relay-paired', (_e, host: string, token: string) => {
-    audioRelayClient?.disconnect();
-    const client = new AudioRelayClient(host, AUDIO_RELAY_PORT, tlsIdentity.cert, tlsIdentity.key);
-    wireAudioRelayClientEvents(client);
-    audioRelayClient = client;
+  ipcMain.handle('join-audio-sink-paired', (_e, host: string, token: string, hostName?: string) => {
+    audioSinkClient?.disconnect();
+    const client = new AudioSinkClient(host, AUDIO_SINK_PORT, tlsIdentity.cert, tlsIdentity.key, identity.deviceName);
+    wireAudioSinkClientEvents(client, hostName || host);
+    audioSinkHostLabel = hostName || host;
+    audioSinkClient = client;
     const mode: JoinMode = { kind: 'token', token };
     client.connect(mode);
+    rebuildTrayMenu();
   });
 
-  ipcMain.handle('leave-audio-relay', () => {
-    audioRelayClient?.disconnect();
-    audioRelayClient = null;
+  ipcMain.handle('leave-audio-sink', () => {
+    audioSinkClient?.disconnect();
+    audioSinkClient = null;
+    audioSinkHostLabel = '';
+    rebuildTrayMenu();
   });
 
-  // Called once when the Audio Relay tab mounts, so a session that started before this device
+  // Called once when the Audio Sink tab mounts, so a session that started before this device
   // was connected/looking gets surfaced immediately instead of only ever catching the original
-  // one-shot broadcast — see the 'link.audiorelay.query' packet handler above.
-  ipcMain.handle('query-audio-relay-sessions', () => {
+  // one-shot broadcast — see the 'link.audiosink.query' packet handler above.
+  ipcMain.handle('query-audio-sink-sessions', () => {
     for (const peerId of deviceManager.trustedConnectedDeviceIds()) {
-      deviceManager.sendTo(peerId, createPacket('link.audiorelay.query', {}));
+      deviceManager.sendTo(peerId, createPacket('link.audiosink.query', {}));
     }
   });
 
   // ===== Remote Mic =====
-  // Host side (PC's own microphone) — same AudioRelayServer class as Audio Relay, just
-  // constructed with captureMode 'mic' instead of the default 'loopback'. See that class's
-  // constructor comment for why one class covers both rather than a duplicated one.
-  ipcMain.handle('start-remote-mic', async () => {
-    if (remoteMicServer) return { started: true, port: AUDIO_RELAY_PORT + 2 };
-
-    const server = new AudioRelayServer(tlsIdentity.cert, tlsIdentity.key, AUDIO_RELAY_PORT + 2, 'mic');
-    server.on('guestPinPending', (connId, pin, remoteAddress) => {
-      send('remote-mic-guest-pin-pending', connId, pin, remoteAddress);
-    });
-    server.on('listenerJoined', (connId, label) => {
-      send('remote-mic-listener-joined', connId, label);
-    });
-    server.on('listenerLeft', (connId) => {
-      send('remote-mic-listener-left', connId);
-    });
-    server.on('error', (err) => {
-      console.error('[Link] Remote Mic server error:', err.message);
-      send('remote-mic-error', err.message);
-    });
-
-    try {
-      await server.start();
-    } catch (err: any) {
-      console.error('[Link] Failed to start Remote Mic:', err.message);
-      return { started: false, error: err.message };
-    }
-    remoteMicServer = server;
-
-    for (const peerId of deviceManager.trustedConnectedDeviceIds()) {
-      if (!checkDevicePermission(peerId, 'remotemic')) continue;
-      const token = server.issueToken(peerId, deviceManager.trustStore.get(peerId)?.deviceName || peerId);
-      deviceManager.sendTo(peerId, createPacket('link.remotemic.started', { token, port: AUDIO_RELAY_PORT + 2 }));
-    }
-
-    return { started: true, port: AUDIO_RELAY_PORT + 2 };
-  });
-
-  ipcMain.handle('accept-remote-mic-guest', (_e, connId: string) => {
-    remoteMicServer?.acceptGuest(connId);
-  });
-
-  ipcMain.handle('reject-remote-mic-guest', (_e, connId: string) => {
-    remoteMicServer?.rejectGuest(connId);
-  });
-
-  ipcMain.handle('set-remote-mic-muted', (_e, muted: boolean) => {
-    remoteMicServer?.setMuted(muted);
-  });
-
-  ipcMain.handle('kick-remote-mic-listener', (_e, connId: string) => {
-    remoteMicServer?.kickListener(connId);
-  });
-
-  ipcMain.handle('get-remote-mic-listeners', () => {
-    return remoteMicServer?.listenersSnapshot() ?? [];
-  });
-
-  ipcMain.handle('end-remote-mic', async () => {
-    if (!remoteMicServer) return;
-    for (const peerId of deviceManager.trustedConnectedDeviceIds()) {
-      deviceManager.sendTo(peerId, createPacket('link.remotemic.ended', {}));
-    }
-    await remoteMicServer.stop();
-    remoteMicServer = null;
-  });
-
+  // Mobile-host / PC-listen only — see remoteMicClient's declaration comment for why PC hosting
+  // was removed. Desktop keeps just the listener-side handlers below.
   ipcMain.handle('query-remote-mic-sessions', () => {
     for (const peerId of deviceManager.trustedConnectedDeviceIds()) {
       deviceManager.sendTo(peerId, createPacket('link.remotemic.query', {}));
@@ -1891,45 +2917,337 @@ app.whenReady().then(() => {
 
   ipcMain.handle('join-remote-mic-paired', (_e, host: string, token: string) => {
     remoteMicClient?.disconnect();
-    // AUDIO_RELAY_PORT + 2 is our Remote Mic port mapping
-    const client = new AudioRelayClient(host, AUDIO_RELAY_PORT + 2, tlsIdentity.cert, tlsIdentity.key);
+    // AUDIO_SINK_PORT + 2 is our Remote Mic port mapping
+    const client = new AudioSinkClient(host, AUDIO_SINK_PORT + 2, tlsIdentity.cert, tlsIdentity.key, identity.deviceName);
     wireRemoteMicClientEvents(client);
     remoteMicClient = client;
     const mode: JoinMode = { kind: 'token', token };
     client.connect(mode);
+    rebuildTrayMenu();
   });
 
   ipcMain.handle('join-remote-mic-guest', (_e, host: string) => {
     remoteMicClient?.disconnect();
-    const client = new AudioRelayClient(host, AUDIO_RELAY_PORT + 2, tlsIdentity.cert, tlsIdentity.key);
+    const client = new AudioSinkClient(host, AUDIO_SINK_PORT + 2, tlsIdentity.cert, tlsIdentity.key, identity.deviceName);
     wireRemoteMicClientEvents(client);
     remoteMicClient = client;
     client.connect({ kind: 'guest' });
+    rebuildTrayMenu();
   });
 
   // Was missing entirely — RemoteMicTab.tsx's handleDisconnectPhoneMic() calls
   // linkApi.leaveRemoteMic(), which invokes this channel; with no handler registered, Electron
   // throws "No handler registered for 'leave-remote-mic'" the moment the Disconnect button (or
   // any of the other paths that call it, e.g. onRemoteMicEnded/onRemoteMicClosed) fires. Mirrors
-  // 'leave-audio-relay' exactly.
+  // 'leave-audio-sink' exactly.
   ipcMain.handle('leave-remote-mic', () => {
     remoteMicClient?.disconnect();
     remoteMicClient = null;
+    rebuildTrayMenu();
   });
 
-  ipcMain.handle('get-audio-relay-status', () => {
+  // ===== Walkie Talkie (real-time group voice, WebRTC hub-and-spoke) =====
+  // main.ts's only role is a generic signaling relay — session membership, mixing, and all WebRTC
+  // negotiation happens in WalkieTalkieTab.tsx, shared between desktop and mobile. No audio ever
+  // passes through this process. Two transports for the exact same link.walkietalkie.* messages:
+  // already-paired devices ride the existing trusted connection (this block); an unpaired guest
+  // has no such connection, so it reaches the coordinator via WalkieTalkieSignalServer instead
+  // (manual IP + PIN, same guest-admission model as every other ephemeral Tools plugin) — see the
+  // walkie-talkie-guest-* handlers below.
+  ipcMain.handle('send-walkie-talkie-signal', (_e, deviceId: string, type: string, body: any) => {
+    deviceManager.sendTo(deviceId, createPacket(type, body || {}));
+  });
+
+  ipcMain.handle('broadcast-walkie-talkie-signal', (_e, type: string, body: any) => {
+    for (const peerId of deviceManager.trustedConnectedDeviceIds()) {
+      deviceManager.sendTo(peerId, createPacket(type, body || {}));
+    }
+  });
+
+  // --- Guest-facing (unpaired, manual IP + PIN) ---
+  ipcMain.handle('start-walkie-talkie-guest-listener', async () => {
+    if (walkieTalkieGuestServer) return { started: true, port: WALKIE_TALKIE_PORT };
+    const server = new WalkieTalkieSignalServer(tlsIdentity.cert, tlsIdentity.key, WALKIE_TALKIE_PORT, isBlocked);
+    server.on('error', (err) => console.error('[Link] Walkie Talkie guest listener error:', err.message));
+    server.on('guestPinPending', (connId, pin, remoteAddress, deviceName) => {
+      send('walkie-talkie-guest-pin-pending', connId, pin, remoteAddress, deviceName);
+    });
+    server.on('signal', (connId, type, body) => {
+      send('walkie-talkie-guest-signal', connId, type, body);
+    });
+    server.on('guestLeft', (connId) => {
+      send('walkie-talkie-guest-left', connId);
+    });
+    try {
+      await server.start();
+    } catch (err: any) {
+      console.error('[Link] Failed to start Walkie Talkie guest listener:', err.message);
+      return { started: false, error: err.message };
+    }
+    walkieTalkieGuestServer = server;
+    return { started: true, port: WALKIE_TALKIE_PORT };
+  });
+
+  ipcMain.handle('stop-walkie-talkie-guest-listener', async () => {
+    if (!walkieTalkieGuestServer) return;
+    await walkieTalkieGuestServer.stop().catch(() => {});
+    walkieTalkieGuestServer = null;
+  });
+
+  ipcMain.handle('accept-walkie-talkie-guest', (_e, connId: string) => {
+    walkieTalkieGuestServer?.acceptGuest(connId);
+  });
+
+  ipcMain.handle('reject-walkie-talkie-guest', (_e, connId: string) => {
+    walkieTalkieGuestServer?.rejectGuest(connId);
+  });
+
+  // Plain kick — disconnects an already-admitted guest without touching the Blocklist, so they
+  // can rejoin later. Mirrors kick-audio-sink-listener's "Kick" vs "Block" split.
+  ipcMain.handle('kick-walkie-talkie-guest', (_e, connId: string) => {
+    walkieTalkieGuestServer?.kickGuest(connId);
+  });
+
+  ipcMain.handle('block-walkie-talkie-guest', (_e, connId: string) => {
+    const remoteAddress = walkieTalkieGuestServer?.getPendingGuestRemoteAddress(connId)
+      ?? walkieTalkieGuestServer?.getGuestRemoteAddress(connId);
+    if (remoteAddress) blockUntrustedGuest(remoteAddress);
+    walkieTalkieGuestServer?.rejectGuest(connId);
+    walkieTalkieGuestServer?.kickGuest(connId);
+  });
+
+  // A PAIRED member being blocked isn't a "guest" the signal server knows about at all — it's an
+  // existing trusted device, so this is a plain device-id Blocklist entry (mirrors
+  // block-audio-sink-listener's paired-listener branch), not a walkieTalkieGuestServer call.
+  // Captures their current IP too (see isBlocked's comment) — without this, blocking them by
+  // deviceId wouldn't stop the same device from reconnecting as an untrusted-tool guest, which
+  // only ever checks by IP.
+  ipcMain.handle('block-walkie-talkie-member', (_e, deviceId: string, label: string) => {
+    addToBlocklist(deviceId, label, 'device', undefined, deviceManager.remoteAddressOf(deviceId));
+  });
+
+  ipcMain.handle('send-walkie-talkie-guest-signal', (_e, connId: string, type: string, body: any) => {
+    walkieTalkieGuestServer?.sendTo(connId, type, body || {});
+  });
+
+  // --- Guest-side (us joining someone else's session, unpaired, manual IP) ---
+  ipcMain.handle('join-walkie-talkie-guest', (_e, host: string) => {
+    walkieTalkieGuestClient?.disconnect();
+    const client = new WalkieTalkieSignalClient(host, WALKIE_TALKIE_PORT, tlsIdentity.cert, tlsIdentity.key, identity.deviceName);
+    client.on('pinComputed', (pin) => send('walkie-talkie-guest-pin-computed', pin));
+    client.on('signal', (type, body) => send('walkie-talkie-host-signal', type, body));
+    client.on('ended', (reason?: string) => { walkieTalkieGuestClient = null; send('walkie-talkie-host-ended', reason); });
+    client.on('closed', (reason) => { walkieTalkieGuestClient = null; send('walkie-talkie-host-closed', reason); });
+    client.on('error', (err) => send('walkie-talkie-host-error', err.message));
+    walkieTalkieGuestClient = client;
+    client.connect();
+  });
+
+  ipcMain.handle('leave-walkie-talkie-guest', () => {
+    walkieTalkieGuestClient?.disconnect();
+    walkieTalkieGuestClient = null;
+  });
+
+  ipcMain.handle('send-walkie-talkie-guest-message', (_e, type: string, body: any) => {
+    walkieTalkieGuestClient?.send(type, body || {});
+  });
+
+  // ===== Portal Mode (one-time file transfer to an untrusted/unpaired device) =====
+  // Guest-only (manual IP + PIN) for v1, matching the actual ask — PortalTransferServer/Client
+  // both already support a paired-token fast path too (mirroring Audio Sink's class shape
+  // exactly), left unwired here rather than removed, so adding "one-tap send to an already-paired
+  // device" later is a small addition, not a rewrite.
+  function walkDir(dir: string, baseDir: string): { localPath: string; relPath: string }[] {
+    let results: { localPath: string; relPath: string }[] = [];
+    try {
+      const list = fs.readdirSync(dir);
+      for (const file of list) {
+        const fullPath = path.join(dir, file);
+        const stat = fs.statSync(fullPath);
+        if (stat && stat.isDirectory()) {
+          results = results.concat(walkDir(fullPath, baseDir));
+        } else {
+          results.push({
+            localPath: fullPath,
+            relPath: path.relative(baseDir, fullPath).replace(/\\/g, '/')
+          });
+        }
+      }
+    } catch (e) {
+      console.error('[Link] Failed to walk directory:', e);
+    }
+    return results;
+  }
+
+  ipcMain.handle('pick-portal-files', async (_e, mode: 'file' | 'directory') => {
+    const properties: any[] = mode === 'file' ? ['openFile', 'multiSelections'] : ['openDirectory', 'multiSelections'];
+    const result = await dialog.showOpenDialog({ properties });
+    if (result.canceled || result.filePaths.length === 0) return [];
+    
+    let allFiles: { localPath: string; relPath: string }[] = [];
+    for (const filePath of result.filePaths) {
+      if (fs.existsSync(filePath)) {
+        const stat = fs.statSync(filePath);
+        if (stat.isDirectory()) {
+          allFiles = allFiles.concat(walkDir(filePath, path.dirname(filePath)));
+        } else {
+          allFiles.push({
+            localPath: filePath,
+            relPath: path.basename(filePath)
+          });
+        }
+      }
+    }
+    return allFiles;
+  });
+
+  // Destination folder for an incoming batch — asked fresh per transfer (not a fixed directory)
+  // so the receiving human decides where each batch actually lands. Defaults to the plain
+  // Downloads folder (not a Downloads/Link subfolder — that suggested a folder we don't actually
+  // create), and the dialog lets them redirect it anywhere.
+  ipcMain.handle('pick-portal-save-dir', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: app.getPath('downloads'),
+      title: 'Choose where to save the incoming files',
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle('start-portal-receive', async (_e, webMode?: boolean) => {
+    if (portalTransferServer) return { started: true, port: PORTAL_TRANSFER_PORT };
+
+    const saveDir = path.join(app.getPath('downloads'), 'Link');
+    const server = new PortalTransferServer(tlsIdentity.cert, tlsIdentity.key, PORTAL_TRANSFER_PORT, saveDir, identity.deviceName, isBlocked);
+    server.on('guestPinPending', (connId, pin, remoteAddress, deviceName) => {
+      send('portal-guest-pin-pending', connId, pin, remoteAddress, deviceName);
+    });
+    server.on('connectionAdmitted', (connId, deviceName) => {
+      send('portal-connection-admitted', connId, deviceName);
+    });
+    server.on('connectionClosed', (connId) => {
+      send('portal-connection-closed', connId);
+    });
+    server.on('transferStarted', (connId, name, size) => {
+      send('portal-transfer-started', connId, name, size);
+    });
+    server.on('transferProgress', (connId, received, size) => {
+      send('portal-transfer-progress', connId, received, size);
+    });
+    server.on('transferComplete', (connId, destPath) => {
+      send('portal-transfer-complete', connId, destPath);
+    });
+    server.on('error', (err) => {
+      console.error('[Link] Portal Transfer server error:', err.message);
+      send('portal-error', err.message);
+    });
+
+    try {
+      await server.start(webMode);
+    } catch (err: any) {
+      console.error('[Link] Failed to start Portal receive:', err.message);
+      return { started: false, error: err.message };
+    }
+    portalTransferServer = server;
+    return { started: true, port: PORTAL_TRANSFER_PORT, saveDir };
+  });
+
+  // Called first (before the save-dir dialog even opens) so the 30s PIN-confirm timeout doesn't
+  // race the human still picking a folder — see PortalTransferServer.holdGuest()'s comment.
+  ipcMain.handle('hold-portal-guest', (_e, connId: string) => {
+    portalTransferServer?.holdGuest(connId);
+  });
+
+  ipcMain.handle('accept-portal-guest', (_e, connId: string, saveDir?: string) => {
+    portalTransferServer?.acceptGuest(connId, saveDir);
+  });
+
+  ipcMain.handle('reject-portal-guest', (_e, connId: string) => {
+    portalTransferServer?.rejectGuest(connId);
+  });
+
+  ipcMain.handle('block-portal-guest', (_e, connId: string) => {
+    const info = portalTransferServer?.getPendingGuestBlockInfo(connId);
+    if (info && info.remoteAddress) {
+      blockUntrustedGuest(info.remoteAddress, info.deviceName);
+    }
+    portalTransferServer?.rejectGuest(connId);
+  });
+
+  ipcMain.handle('disconnect-portal-connection', (_e, connId: string) => {
+    portalTransferServer?.disconnectConnection(connId);
+  });
+
+  ipcMain.handle('end-portal-receive', async () => {
+    if (!portalTransferServer) return;
+    await portalTransferServer.stop();
+    portalTransferServer = null;
+  });
+
+  ipcMain.handle('set-portal-downloads', (_e, files: { name: string; localPath: string }[]) => {
+    portalTransferServer?.setAvailableDownloads(files);
+  });
+
+  ipcMain.handle('join-portal-guest', (_e, host: string, files: { localPath: string; relPath: string }[]) => {
+    if (portalTransferClient) {
+      portalTransferClient.sendFiles(files).catch((err: any) => {
+        console.error('[Link] Portal send failed:', err.message);
+        send('portal-error', err.message);
+      });
+      return;
+    }
+    const client = new PortalTransferClient(host, PORTAL_TRANSFER_PORT, tlsIdentity.cert, tlsIdentity.key, identity.deviceName);
+    client.on('pinComputed', (pin) => send('portal-pin-computed', pin));
+    client.on('admitted', (receiverDeviceName?: string) => {
+      send('portal-admitted', receiverDeviceName);
+      client.sendFiles(files).catch((err: any) => {
+        console.error('[Link] Portal send failed:', err.message);
+        send('portal-error', err.message);
+      });
+    });
+    client.on('fileStarted', (fileIndex, fileCount, name) => send('portal-file-started', fileIndex, fileCount, name));
+    client.on('progress', (sent, total) => send('portal-send-progress', sent, total));
+    client.on('complete', () => {
+      send('portal-send-complete');
+    });
+    client.on('ended', () => { portalTransferClient = null; send('portal-ended'); });
+    client.on('closed', (reason) => { portalTransferClient = null; send('portal-closed', reason); });
+    client.on('error', (err) => send('portal-error', err.message));
+    portalTransferClient = client;
+    client.connect({ kind: 'guest' });
+  });
+
+  ipcMain.handle('leave-portal-send', () => {
+    portalTransferClient?.disconnect();
+    portalTransferClient = null;
+  });
+
+  ipcMain.handle('get-audio-sink-status', () => {
     return {
-      hosting: !!audioRelayServer,
-      listening: !!audioRelayClient,
-      listeners: audioRelayServer?.listenersSnapshot() ?? [],
+      hosting: !!audioSinkServer,
+      listening: !!audioSinkClient,
+      hostLabel: audioSinkHostLabel,
+      listeners: audioSinkServer?.listenersSnapshot() ?? [],
     };
   });
 
   ipcMain.handle('get-remote-mic-status', () => {
     return {
-      hosting: !!remoteMicServer,
+      hosting: false,
       streaming: !!remoteMicClient,
-      listeners: remoteMicServer?.listenersSnapshot() ?? [],
+      listeners: [],
+    };
+  });
+
+  ipcMain.handle('get-portal-status', () => {
+    return {
+      receiving: !!portalTransferServer,
+      sending: !!portalTransferClient,
+      // See PortalTransferServer.hasActiveTransfer()'s comment — distinct from `receiving`, which
+      // reflects "Receive Files" mode being armed at all, not whether anything is actually
+      // transferring right now.
+      transferring: portalTransferServer?.hasActiveTransfer() ?? false,
     };
   });
 
@@ -1955,6 +3273,19 @@ app.whenReady().then(() => {
 
   createWindow();
   createTray();
+
+  let lastLocalIp = getLocalIpAddress();
+  setInterval(() => {
+    const currentLocalIp = getLocalIpAddress();
+    if (currentLocalIp !== lastLocalIp) {
+      console.log(`[Link] Local IP address changed from ${lastLocalIp} to ${currentLocalIp}`);
+      lastLocalIp = currentLocalIp;
+      mainWindow?.webContents.send('local-identity-updated', {
+        ...identity,
+        ipAddress: currentLocalIp,
+      });
+    }
+  }, 5000);
 });
 
 app.on('window-all-closed', () => {
@@ -1972,8 +3303,13 @@ app.on('window-all-closed', () => {
   }
   // Not awaited — app-quit cleanup, not a request that needs to complete before proceeding.
   // Without this, a held-open capture process (audio-capture.ps1) would be orphaned.
-  audioRelayServer?.stop().catch(() => {});
-  audioRelayClient?.disconnect();
+  audioSinkServer?.stop().catch(() => {});
+  audioSinkClient?.disconnect();
+  remoteMicClient?.disconnect();
+  portalTransferServer?.stop().catch(() => {});
+  portalTransferClient?.disconnect();
+  walkieTalkieGuestServer?.stop().catch(() => {});
+  walkieTalkieGuestClient?.disconnect();
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -1990,8 +3326,13 @@ app.on('before-quit', () => {
     try { inputUdpSocket.close(); } catch {}
     inputUdpSocket = null;
   }
-  audioRelayServer?.stop().catch(() => {});
-  audioRelayClient?.disconnect();
+  audioSinkServer?.stop().catch(() => {});
+  audioSinkClient?.disconnect();
+  remoteMicClient?.disconnect();
+  portalTransferServer?.stop().catch(() => {});
+  portalTransferClient?.disconnect();
+  walkieTalkieGuestServer?.stop().catch(() => {});
+  walkieTalkieGuestClient?.disconnect();
 });
 
 app.on('will-quit', () => {
@@ -2039,8 +3380,72 @@ function sendInitialSync(deviceId: string) {
 
 }
 
+function isSystemSensitivePath(targetPath: string): boolean {
+  if (!targetPath) return false;
+  try {
+    const resolved = path.resolve(targetPath).toLowerCase();
+
+    // Windows System directories
+    const winDir = (process.env.SystemRoot || 'C:\\Windows').toLowerCase();
+    if (resolved.startsWith(winDir)) return true;
+
+    const programFiles = (process.env['ProgramFiles'] || 'C:\\Program Files').toLowerCase();
+    if (resolved.startsWith(programFiles)) return true;
+
+    const programFilesX86 = (process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)').toLowerCase();
+    if (resolved.startsWith(programFilesX86)) return true;
+
+    const commonProgramFiles = (process.env['CommonProgramFiles'] || 'C:\\Program Files\\Common Files').toLowerCase();
+    if (resolved.startsWith(commonProgramFiles)) return true;
+
+    // Boot, System Volume, Recovery, Recycle Bin
+    if (resolved.includes(':\\$recycle.bin') || resolved.includes(':\\system volume information') || resolved.includes(':\\recovery')) {
+      return true;
+    }
+
+    // Crucial user credential / config stores
+    if (resolved.includes('\\.ssh') || resolved.includes('\\.aws') || resolved.includes('\\.kube') || resolved.includes('\\.gnupg')) {
+      return true;
+    }
+
+    // Web Browser User Data (Chrome, Edge, Firefox, Brave) - blocking credentials/session hijacking
+    if (
+      resolved.includes('\\appdata\\local\\google\\chrome\\user data') ||
+      resolved.includes('\\appdata\\local\\microsoft\\edge\\user data') ||
+      resolved.includes('\\appdata\\roaming\\mozilla\\firefox\\profiles')
+    ) {
+      return true;
+    }
+
+    // Unix sensitive directories
+    if (
+      resolved.startsWith('/etc') ||
+      resolved.startsWith('/boot') ||
+      resolved.startsWith('/var') ||
+      resolved.startsWith('/sys') ||
+      resolved.startsWith('/proc') ||
+      resolved.startsWith('/dev') ||
+      resolved.startsWith('/root') ||
+      resolved.includes('/.ssh')
+    ) {
+      return true;
+    }
+  } catch {
+    return true; // block on resolution error as a safe default
+  }
+  return false;
+}
+
 async function handleFsRequest(body: any): Promise<any> {
   const { action, path: targetPath, offset, length, isDirectory, newPath, buffer } = body;
+
+  // Intercept and block access to system-sensitive or user-credential directories
+  if (targetPath && isSystemSensitivePath(targetPath)) {
+    throw new Error('Access Denied: Path contains system-sensitive or credential data.');
+  }
+  if (newPath && isSystemSensitivePath(newPath)) {
+    throw new Error('Access Denied: Path contains system-sensitive or credential data.');
+  }
 
   // Loop prevention: Determine active drive letters used by Link mounts
   const activeLinkDrives = new Set<string>();
@@ -2216,17 +3621,36 @@ setInterval(() => {
   deviceManager?.runHeartbeatCycle(HEARTBEAT_TIMEOUT_MS);
 }, HEARTBEAT_INTERVAL_MS);
 
-// Periodic SMTC media sessions poll (every 3 seconds) to broadcast track/state updates to connected peers
+// Periodic SMTC media sessions poll, broadcasting track/state updates to connected peers.
+//
+// Self-scheduling instead of setInterval, deliberately. Every tick shells out to a brand new
+// PowerShell process, and setInterval does not wait for an async callback to settle — so once a
+// spawn took longer than the interval, the next poll started while the previous one was still
+// running. The exec timeout was itself equal to the interval (3s), so that overlap began as soon
+// as the machine was under any load at all, and each surviving process made the next spawn
+// slower: 20 PowerShell startups a minute turning into a pile-up that never drained. This is the
+// main reason the app felt fine on launch and progressively worse the longer it stayed open.
+//
+// Waiting for each tick to finish before scheduling the next guarantees at most one of these in
+// flight, and a full quiet interval between them.
+const MPRIS_POLL_MS = 3000;
 let lastMprisJson = '';
-setInterval(async () => {
-  if (deviceManager.trustedConnectedDeviceIds().length === 0) return;
+
+async function mprisPollTick() {
   try {
-    const sessions = await queryMprisSessions();
-    const currentJson = JSON.stringify(sessions);
-    if (currentJson !== lastMprisJson) {
-      lastMprisJson = currentJson;
-      broadcastToPermittedPeers('mpris', createMprisStatePacket(sessions));
+    if (deviceManager?.trustedConnectedDeviceIds().length) {
+      const sessions = await queryMprisSessions();
+      const currentJson = JSON.stringify(sessions);
+      if (currentJson !== lastMprisJson) {
+        lastMprisJson = currentJson;
+        broadcastToPermittedPeers('mpris', createMprisStatePacket(sessions));
+      }
     }
-  } catch (e) {}
-}, 3000);
+  } catch {
+    // A failed/timed-out probe just means no update this cycle.
+  } finally {
+    setTimeout(mprisPollTick, MPRIS_POLL_MS);
+  }
+}
+setTimeout(mprisPollTick, MPRIS_POLL_MS);
 

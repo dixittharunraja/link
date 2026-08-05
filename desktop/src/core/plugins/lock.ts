@@ -1,6 +1,5 @@
-// Lock Device plugin — port of kdeconnect-kde's plugins/lockdevice.
-// Enables locking the desktop device remotely and querying/reporting lock state.
-// See docs/PROTOCOL.md and reference/kdeconnect-kde/plugins/lockdevice.
+// Lock plugin.
+// Enables locking the desktop device remotely and querying/reporting lock state. See docs/PROTOCOL.md.
 
 import { exec } from 'child_process';
 import { LinkPacket, createPacket } from '../packet';

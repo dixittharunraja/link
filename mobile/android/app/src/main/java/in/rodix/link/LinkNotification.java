@@ -41,15 +41,15 @@ public class LinkNotification {
         if (notification == null) return false;
 
         // Filter out foreground services, ongoing events, local-only, or group-summary
-        // notifications (exactly like KDE Connect). Group summary is the important one for
-        // bundled notifications (WhatsApp, Gmail, etc. post a "3 new messages"-style summary
-        // alongside each individual notification) — without this, both the summary and the real
-        // notification get synced, showing up as two separate desktop notifications for what the
-        // user experiences as one new message.
+        // notifications. Group summary is the important one for bundled notifications
+        // (WhatsApp, Gmail, etc. post a "3 new messages"-style summary alongside each individual
+        // notification) — without this, both the summary and the real notification get synced,
+        // showing up as two separate desktop notifications for what the user experiences as one new message.
         if ((notification.flags & Notification.FLAG_FOREGROUND_SERVICE) != 0
                 || (notification.flags & Notification.FLAG_ONGOING_EVENT) != 0
                 || (notification.flags & Notification.FLAG_LOCAL_ONLY) != 0
-                || (notification.flags & Notification.FLAG_GROUP_SUMMARY) != 0) {
+                || (notification.flags & Notification.FLAG_GROUP_SUMMARY) != 0
+                || Notification.CATEGORY_CALL.equals(notification.category)) {
             return false;
         }
 

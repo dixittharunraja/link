@@ -91,7 +91,10 @@ const CommandsTab: React.FC<CommandsTabProps> = ({
             placeholder="Shell Command (e.g. nircmd.exe mutesysvolume 1)"
             value={cmdCommand}
             onChange={(e) => setCmdCommand(e.target.value)}
-            style={{ flexGrow: 1, minWidth: '250px' }}
+            // flexBasis rather than minWidth: min-width overrides max-width, so a hard 250px
+            // floor here would still overflow a narrower container. This prefers 250px, grows to
+            // fill the row, and is free to shrink when there isn't room.
+            style={{ flexGrow: 1, flexBasis: '250px', minWidth: 0 }}
           />
           <button id="addCommandBtn" onClick={handleAdd}>
             Register Command

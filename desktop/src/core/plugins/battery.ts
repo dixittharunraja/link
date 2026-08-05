@@ -1,8 +1,6 @@
-// Battery plugin — faithful port of kdeconnect-kde's plugins/battery/batteryplugin.cpp.
-// Body fields (isCharging, currentCharge, batteryQuantity, thresholdEvent) match upstream
-// exactly. Node has no built-in battery API, so we poll via PowerShell/WMI (Win32_Battery) —
-// upstream uses Solid's OS-level chargeStateChanged/chargePercentChanged signals directly;
-// polling is the closest equivalent available to us on this platform.
+// Battery plugin.
+// Body fields (isCharging, currentCharge, batteryQuantity, thresholdEvent) match protocol.
+// Node has no built-in battery API, so we poll via PowerShell/WMI (Win32_Battery).
 
 import { exec } from 'child_process';
 import { LinkPacket, createPacket } from '../packet';
@@ -71,6 +69,9 @@ function queryBattery(): Promise<BatterySnapshot | null> {
 export class BatteryWatcher {
   private lastSnapshot: BatterySnapshot | null = null;
   private interval: NodeJS.Timeout | null = null;
+  // Each poll spawns a PowerShell process; setInterval won't wait for the async callback, so a
+  // probe that outlives its interval would let probes stack up rather than skip a beat.
+  private polling = false;
 
   constructor(private onChange: (snapshot: BatterySnapshot) => void, pollIntervalMs = 30000) {
     this.poll();
@@ -78,6 +79,16 @@ export class BatteryWatcher {
   }
 
   private async poll() {
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      await this.pollOnce();
+    } finally {
+      this.polling = false;
+    }
+  }
+
+  private async pollOnce() {
     const current = await queryBattery();
     if (!current) return; // no battery on this machine
 

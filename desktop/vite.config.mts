@@ -11,6 +11,15 @@ export default defineConfig({
     outDir: resolve(__dirname, 'dist/renderer'),
     emptyOutDir: true,
     target: 'es2022',
+    chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+          qrcode: ['qrcode'],
+        },
+      },
+    },
   },
   server: {
     port: 5173,

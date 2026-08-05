@@ -21,16 +21,29 @@ public class LinkDevicePermissions {
         return new File(context.getFilesDir(), FILE_NAME);
     }
 
-    /** Mirrors desktop's checkDevicePermission() — defaults to allowed if unset. */
+    /** Mirrors desktop's checkDevicePermission() — defaults to false (denied/off) if unset. */
     public static boolean check(Context context, String deviceId, String permKey) {
         try {
             JSONObject all = getAll(context);
             JSONObject devPerms = all.optJSONObject(deviceId);
             if (devPerms != null && devPerms.has(permKey)) {
-                return devPerms.optBoolean(permKey, true);
+                return devPerms.optBoolean(permKey, false);
             }
         } catch (Exception ignored) {}
-        return true;
+        return false;
+    }
+
+    public static void deletePermissionsForDevice(Context context, String deviceId) {
+        try {
+            JSONObject all = getAll(context);
+            if (all.has(deviceId)) {
+                all.remove(deviceId);
+                setAll(context, all);
+                android.util.Log.i("LinkDevicePermissions", "[Link] Deleted all stored permissions for device " + deviceId.substring(0, Math.min(8, deviceId.length())));
+            }
+        } catch (Exception e) {
+            android.util.Log.e("LinkDevicePermissions", "Failed to delete permissions for device", e);
+        }
     }
 
     // In-memory cache, invalidated only by setAll (or process restart) — never by time. check()
@@ -73,25 +86,31 @@ public class LinkDevicePermissions {
     // is left untouched for already-paired devices predating this change.
     private static final String[] ALL_PERMISSION_KEYS = {
         "fileaccess", "lock", "runcommand", "presenter", "flashlight", "touchpad", "digitizer",
-        "systemvolume", "mpris", "telephony", "notification", "dnd", "clipboard",
+        "systemvolume", "mpris", "telephony", "notification", "notificationMirroring", "dnd", "clipboard", "remoteinput",
     };
 
-    /** Called once, right when a NEW pairing completes — writes an explicit all-denied
-     * permissions record for that device, so the user has to deliberately opt each permission in
-     * via the Permissions dialog rather than every gated feature being silently available by
-     * default the moment a new device pairs. Mirrors desktop's
-     * initializeDeniedPermissionsForNewDevice() in main.ts. */
+    /** Called on NEW pairing and also run on existing devices at app startup (via cache
+     * invalidation check in LinkPlugin.initCapabilities) to ensure old all-denied permissions
+     * are upgraded to new defaults. Sensitive operations (file access, command execution)
+     * default to DENIED requiring opt-in. Common communication features (flashlight, DND,
+     * media, lock) default to ALLOWED for better UX. */
     public static void initializeDeniedPermissionsForNewDevice(Context context, String deviceId) {
         try {
             JSONObject all = getAll(context);
-            JSONObject denied = new JSONObject();
+            JSONObject existing = all.optJSONObject(deviceId);
+            JSONObject perms = new JSONObject();
+
             for (String key : ALL_PERMISSION_KEYS) {
-                denied.put(key, false);
+                if (existing != null && existing.has(key)) {
+                    perms.put(key, existing.getBoolean(key));
+                } else {
+                    perms.put(key, false);
+                }
             }
-            all.put(deviceId, denied);
+            all.put(deviceId, perms);
             setAll(context, all);
         } catch (Exception e) {
-            android.util.Log.e("LinkDevicePermissions", "Failed to initialize default-denied permissions", e);
+            android.util.Log.e("LinkDevicePermissions", "Failed to initialize permissions for device", e);
         }
     }
 

@@ -17,18 +17,20 @@ public class LinkDeviceManager {
     public interface Listener {
         void onDeviceConnected(LinkIdentity.Identity identity, boolean trusted);
         void onDeviceDisconnected(String deviceId);
-        void onIncomingPairRequest(String deviceId, String verificationKey);
+        void onIncomingPairRequest(String deviceId, String deviceName, String deviceType, String verificationKey);
         void onPairingSuccessful(String deviceId);
         void onPairingFailed(String deviceId, String reason);
         void onUnpaired(String deviceId);
         void onTrustMismatch(String deviceId);
         void onPacket(String deviceId, LinkPacket packet);
+        void onTrustListUpdated();
     }
 
     private static class ManagedPeer {
         LinkTransport.PeerConnection conn;
         LinkPairingHandler pairing;
         volatile boolean trusted;
+        LinkIdentity.Identity identity;
     }
 
     private LinkIdentity.Identity myIdentity;
@@ -36,8 +38,9 @@ public class LinkDeviceManager {
     private final java.security.PrivateKey myKey;
     private final LinkTrustStore trustStore;
     private final Listener listener;
-    private final Context context; // Trusted Pool (Wave 2) — for LinkPool's Context-based storage.
+    private final Context context; // Trusted Pool — for LinkPool's Context-based storage.
     private final Map<String, ManagedPeer> peers = new ConcurrentHashMap<>();
+    private java.util.Timer membershipGossipTimer;
 
     public void updateMyIdentity(LinkIdentity.Identity newIdentity) {
         this.myIdentity = newIdentity;
@@ -55,19 +58,6 @@ public class LinkDeviceManager {
         this.myKey = myKey;
         this.trustStore = trustStore;
         this.listener = listener;
-        refreshMyPoolIdentity();
-    }
-
-    /** Stamp this device's current pool membership onto myIdentity, so every NEW connection
-     *  advertises it. Mirrors desktop device-manager.ts refreshMyPoolIdentity(). */
-    private void refreshMyPoolIdentity() {
-        if (LinkPool.hasKey(context)) {
-            myIdentity.ownerKeyFingerprint = LinkPool.fingerprint(context);
-            myIdentity.membershipCert = LinkPool.getMembership(context);
-        } else {
-            myIdentity.ownerKeyFingerprint = null;
-            myIdentity.membershipCert = null;
-        }
     }
 
     private String myCertFingerprint() {
@@ -138,13 +128,7 @@ public class LinkDeviceManager {
                     }
                 }
 
-                // Auto-mesh (Trusted Pool, item 8): a device we never manually paired with but
-                // that presents a valid membership cert signed by OUR OWN owner key is one of our
-                // own pool devices — trust it with no second PIN. Mirrors device-manager.ts.
                 boolean trusted = existing != null;
-                if (!trusted && tryAutoTrust(conn, identity)) {
-                    trusted = true;
-                }
                 LinkPairingHandler.PairState initial = trusted
                         ? LinkPairingHandler.PairState.PAIRED
                         : LinkPairingHandler.PairState.NOT_PAIRED;
@@ -161,7 +145,7 @@ public class LinkDeviceManager {
 
                             @Override
                             public void onIncomingPairRequest() {
-                                listener.onIncomingPairRequest(identity.deviceId, pairingHandlerVerificationKey(identity.deviceId));
+                                listener.onIncomingPairRequest(identity.deviceId, identity.deviceName, identity.deviceType, pairingHandlerVerificationKey(identity.deviceId));
                             }
 
                             @Override
@@ -184,10 +168,9 @@ public class LinkDeviceManager {
                                     } catch (Exception ignored) {
                                     }
                                 }
-                                // Item 7: bootstrap the freshly-paired device into the pool (hand
-                                // over owner key + issue its membership cert). See device-manager.ts.
-                                enrollAfterPairing(conn, identity);
                                 listener.onPairingSuccessful(identity.deviceId);
+                                broadcastPoolSync();
+                                sendPoolSync(conn);
                             }
 
                             @Override
@@ -198,8 +181,6 @@ public class LinkDeviceManager {
                                 listener.onUnpaired(identity.deviceId);
                             }
                         });
-                // Carry any in-flight pairing state over from the connection being replaced —
-                // see LinkPairingHandler.snapshot()/restore() for why this matters.
                 if (existingPeer != null) {
                     pairing.restore(existingPeer.pairing.snapshot());
                 }
@@ -208,35 +189,133 @@ public class LinkDeviceManager {
                 peer.conn = conn;
                 peer.pairing = pairing;
                 peer.trusted = trusted;
+                peer.identity = identity;
                 peers.put(identity.deviceId, peer);
 
                 listener.onDeviceConnected(identity, trusted);
+                if (trusted) {
+                    try {
+                        org.json.JSONObject body = new org.json.JSONObject();
+                        body.put("state", "Paired");
+                        conn.send(new LinkPacket("link.pairing-state", body));
+                    } catch (Exception ignored) {}
+                    sendPoolSync(conn);
+                }
             }
 
             @Override
             public void onPacket(LinkPacket packet) {
+                String deviceId = findDeviceIdByConnection(conn);
                 ManagedPeer peer = findPeerByConnection(conn);
                 if (peer == null) return;
 
+                if (packet.type.equals("link.pairing-state")) {
+                    String state = packet.body != null ? packet.body.optString("state", "") : "";
+                    if (state.equals("Paired")) {
+                        if (!peer.trusted) {
+                            deviceId = findDeviceIdByConnection(conn);
+                            String deviceTag = deviceId != null ? deviceId.substring(0, Math.min(8, deviceId.length())) : "?";
+                            android.util.Log.i("LinkPool", "[Link] Peer " + deviceTag + " thinks they are paired, but we don't trust them. Sending unpair.");
+                            try {
+                                org.json.JSONObject body = new org.json.JSONObject();
+                                body.put("pair", false);
+                                conn.send(new LinkPacket(LinkPairingHandler.PACKET_TYPE_PAIR, body));
+                            } catch (Exception ignored) {}
+                            new Thread(() -> {
+                                try { Thread.sleep(500); } catch (Exception ignored) {}
+                                conn.close();
+                            }).start();
+                        }
+                    }
+                    return;
+                }
+
+                if (packet.type.equals("link.pool.sync")) {
+                    try {
+                        org.json.JSONArray trustList = packet.body != null ? packet.body.optJSONArray("trustList") : null;
+                        if (trustList != null) {
+                            boolean updated = false;
+                            for (int i = 0; i < trustList.length(); i++) {
+                                org.json.JSONObject dev = trustList.getJSONObject(i);
+                                String devId = dev.optString("deviceId", "");
+                                if (devId.isEmpty() || devId.equals(myIdentity.deviceId)) continue;
+                                if (!trustStore.isPaired(devId)) {
+                                    android.util.Log.i("LinkPool", "[Link] Auto-learning trust for pool peer " + dev.optString("deviceName", "") + " (" + devId.substring(0, Math.min(8, devId.length())) + ")");
+                                    byte[] certBytes = null;
+                                    String certPem = dev.optString("certPem", "");
+                                    if (!certPem.isEmpty()) {
+                                        String clean = certPem.replace("-----BEGIN CERTIFICATE-----", "")
+                                                .replace("-----END CERTIFICATE-----", "")
+                                                .replaceAll("\\s", "");
+                                        certBytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT);
+                                    }
+                                    if (certBytes != null) {
+                                        trustStore.pair(new LinkTrustStore.TrustedDevice(
+                                                devId,
+                                                dev.optString("deviceName", ""),
+                                                certBytes,
+                                                dev.optInt("protocolVersion", 1),
+                                                System.currentTimeMillis()
+                                        ));
+                                        String lastKnownIp = dev.optString("lastKnownIp", "");
+                                        if (!lastKnownIp.isEmpty()) {
+                                            trustStore.updateLastKnownIp(devId, lastKnownIp);
+                                        }
+                                        updated = true;
+                                    }
+                                } else {
+                                    String lastKnownIp = dev.optString("lastKnownIp", "");
+                                    if (!lastKnownIp.isEmpty()) {
+                                        LinkTrustStore.TrustedDevice existing = trustStore.get(devId);
+                                        if (existing != null && !lastKnownIp.equals(existing.lastKnownIp)) {
+                                            android.util.Log.i("LinkPool", "[Link] Updating IP for pool peer " + dev.optString("deviceName", "") + " (" + devId.substring(0, Math.min(8, devId.length())) + ") to " + lastKnownIp);
+                                            trustStore.updateLastKnownIp(devId, lastKnownIp);
+                                            updated = true;
+                                        }
+                                    }
+                                }
+                            }
+                            if (updated) {
+                                listener.onTrustListUpdated();
+                                broadcastPoolSync();
+                            }
+                        }
+                    } catch (Exception e) {
+                        android.util.Log.w("LinkPool", "[Link] failed to parse link.pool.sync: " + e.getMessage());
+                    }
+                    return;
+                }
+
+                if (packet.type.equals("link.pool.remove")) {
+                    try {
+                        String targetDeviceId = packet.body.optString("deviceId", "");
+                        if (!targetDeviceId.isEmpty() && trustStore.isPaired(targetDeviceId)) {
+                            android.util.Log.i("LinkPool", "[Link] Peer " + deviceId.substring(0, Math.min(8, deviceId.length())) + " requested removal of " + targetDeviceId.substring(0, Math.min(8, targetDeviceId.length())) + " from pool.");
+                            unpair(targetDeviceId);
+
+                            // Propagate to other trusted connected devices (excluding the sender and the target)
+                            for (String otherId : trustedConnectedDeviceIds()) {
+                                if (!otherId.equals(deviceId) && !otherId.equals(targetDeviceId)) {
+                                    sendTo(otherId, packet);
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        android.util.Log.w("LinkPool", "Failed to parse link.pool.remove: " + e.getMessage());
+                    }
+                    return;
+                }
+
                 if (packet.type.equals(LinkPairingHandler.PACKET_TYPE_PAIR)) {
+                    android.util.Log.i("LinkPool", "Received link.pair packet, wantsPair=" + packet.body.optBoolean("pair", false));
                     peer.pairing.packetReceived(packet);
                     return;
                 }
 
                 if (!peer.trusted) return; // ignore feature packets from unpaired devices
 
-                // Pool control packets (items 7 & 9) — handled internally, never surfaced as
-                // ordinary feature packets. Mirror device-manager.ts.
-                if (packet.type.equals(LinkPool.PACKET_TYPE_POOL_ENROLL)) {
-                    applyEnrollment(packet.body);
-                    return;
-                }
-                if (packet.type.equals(LinkPool.PACKET_TYPE_POOL_REVOKE)) {
-                    applyRevocation(LinkPool.Revocation.fromJson(packet.body.optJSONObject("revocation")), conn);
-                    return;
-                }
 
-                String deviceId = findDeviceIdByConnection(conn);
+
                 if (deviceId != null) listener.onPacket(deviceId, packet);
             }
 
@@ -284,6 +363,11 @@ public class LinkDeviceManager {
         if (peer != null) peer.pairing.acceptPairing();
     }
 
+    public void cancelPairing(String deviceId) {
+        ManagedPeer peer = peers.get(deviceId);
+        if (peer != null) peer.pairing.cancelPairing();
+    }
+
     public void rejectPairing(String deviceId) {
         ManagedPeer peer = peers.get(deviceId);
         if (peer != null) peer.pairing.cancelPairing();
@@ -292,170 +376,25 @@ public class LinkDeviceManager {
     public void unpair(String deviceId) {
         ManagedPeer peer = peers.get(deviceId);
         if (peer != null) {
+            try {
+                org.json.JSONObject body = new org.json.JSONObject();
+                body.put("pair", false);
+                peer.conn.send(new LinkPacket(LinkPairingHandler.PACKET_TYPE_PAIR, body));
+            } catch (Exception ignored) {}
             peer.pairing.unpair();
-            peer.conn.close(); // Force close the socket immediately
+            peer.conn.closeGracefully(); // Close gracefully to allow pending packets to send
+            peers.remove(deviceId);
         }
         trustStore.unpair(deviceId);
+        listener.onUnpaired(deviceId);
     }
 
-    // ===== Trusted Pool (Wave 2) — mirrors device-manager.ts; see that file for the design =====
-
-    /** Item 8: verify a peer's membership cert against OUR owner key + its actual TLS cert. */
-    private boolean tryAutoTrust(LinkTransport.PeerConnection conn, LinkIdentity.Identity identity) {
-        if (!LinkPool.hasKey(context)) return false;
-        if (identity.membershipCert == null || identity.ownerKeyFingerprint == null) return false;
-        if (conn.peerCert == null) return false;
-        if (LinkPool.isRevoked(context, identity.deviceId)) return false;
-        if (!identity.ownerKeyFingerprint.equals(LinkPool.fingerprint(context))) return false;
-        LinkPool.OwnerKeyPair owner = LinkPool.getOwner(context);
-        if (owner == null) return false;
-        try {
-            String peerCertFp = LinkTls.fingerprint(conn.peerCert);
-            if (!LinkPool.verifyMembershipCert(identity.membershipCert, owner.publicKeyDerB64,
-                    identity.deviceId, peerCertFp)) return false;
-            trustStore.pair(new LinkTrustStore.TrustedDevice(identity.deviceId, identity.deviceName,
-                    conn.peerCert.getEncoded(), identity.protocolVersion, System.currentTimeMillis()));
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
+    public void closeConnection(String deviceId) {
+        ManagedPeer peer = peers.get(deviceId);
+        if (peer != null) peer.conn.close();
     }
 
-    /** Item 7: after a manual pair, deterministically decide who enrolls whom and do it. */
-    private void enrollAfterPairing(LinkTransport.PeerConnection conn, LinkIdentity.Identity identity) {
-        if (conn.peerCert == null) return;
-        String myFp = LinkPool.fingerprint(context);          // null if I'm not in a pool
-        String peerFp = identity.ownerKeyFingerprint;         // null if the peer isn't
-        if (myFp != null && peerFp != null) return;           // both in a pool: same=noop, diff=no-merge
-        if (myFp == null && peerFp != null) return;           // peer enrolls me; wait for its packet
-        if (myFp == null && peerFp == null) {
-            // Neither in a pool → this pairing CREATES one; creator = larger deviceId (both agree).
-            if (myIdentity.deviceId.compareTo(identity.deviceId) > 0) {
-                LinkPool.OwnerKeyPair owner = LinkPool.generateOwnerKeyPair();
-                LinkPool.MembershipCert myMembership =
-                        LinkPool.issueMembershipCert(owner, myIdentity.deviceId, myCertFingerprint(), 1);
-                LinkPool.setCredentials(context, owner, myMembership);
-                refreshMyPoolIdentity();
-                sendEnroll(conn, identity);
-            }
-            return;
-        }
-        // myFp != null && peerFp == null → I enroll the peer.
-        sendEnroll(conn, identity);
-    }
 
-    private void sendEnroll(LinkTransport.PeerConnection conn, LinkIdentity.Identity identity) {
-        LinkPool.OwnerKeyPair owner = LinkPool.getOwner(context);
-        if (owner == null || conn.peerCert == null) return;
-        try {
-            String peerCertFp = LinkTls.fingerprint(conn.peerCert);
-            LinkPool.MembershipCert membership =
-                    LinkPool.issueMembershipCert(owner, identity.deviceId, peerCertFp, 1);
-            JSONObject ownerJson = new JSONObject();
-            ownerJson.put("publicKeyDerB64", owner.publicKeyDerB64);
-            ownerJson.put("privateKeyDerB64", owner.privateKeyDerB64);
-            JSONObject body = new JSONObject();
-            body.put("owner", ownerJson);
-            body.put("membership", membership.toJson());
-            conn.send(new LinkPacket(LinkPool.PACKET_TYPE_POOL_ENROLL, body));
-        } catch (Exception ignored) {}
-    }
-
-    private void applyEnrollment(JSONObject body) {
-        if (LinkPool.hasKey(context)) return; // already in a pool — ignore
-        if (body == null) return;
-        JSONObject ownerJson = body.optJSONObject("owner");
-        LinkPool.MembershipCert membership = LinkPool.MembershipCert.fromJson(body.optJSONObject("membership"));
-        if (ownerJson == null || membership == null) return;
-        LinkPool.OwnerKeyPair owner = new LinkPool.OwnerKeyPair(
-                ownerJson.optString("publicKeyDerB64"), ownerJson.optString("privateKeyDerB64"));
-        if (!LinkPool.verifyMembershipCert(membership, owner.publicKeyDerB64, myIdentity.deviceId, myCertFingerprint())) {
-            return; // not a valid cert for THIS device
-        }
-        LinkPool.setCredentials(context, owner, membership);
-        refreshMyPoolIdentity();
-        closeUntrustedConnections();
-    }
-
-    private void closeUntrustedConnections() {
-        for (ManagedPeer peer : new java.util.ArrayList<>(peers.values())) {
-            if (!peer.trusted) peer.conn.close();
-        }
-    }
-
-    private void applyRevocation(LinkPool.Revocation rev, LinkTransport.PeerConnection from) {
-        if (rev == null) return;
-        LinkPool.OwnerKeyPair owner = LinkPool.getOwner(context);
-        if (owner == null || !LinkPool.verifyRevocation(rev, owner.publicKeyDerB64)) return;
-        if (!LinkPool.addRevocation(context, rev)) return; // already seen — stop the flood
-
-        if (rev.deviceId.equals(myIdentity.deviceId)) {
-            // We were removed from the pool. Wipe credentials, drop everyone.
-            LinkPool.clear(context);
-            refreshMyPoolIdentity();
-            for (Map.Entry<String, ManagedPeer> e : new java.util.ArrayList<>(peers.entrySet())) {
-                trustStore.unpair(e.getKey());
-                e.getValue().trusted = false;
-                e.getValue().conn.close();
-            }
-            return;
-        }
-
-        ManagedPeer target = peers.get(rev.deviceId);
-        trustStore.unpair(rev.deviceId);
-        if (target != null) {
-            target.trusted = false;
-            target.conn.close();
-            listener.onUnpaired(rev.deviceId);
-        }
-        // Flood onward to every OTHER trusted pool member.
-        try {
-            JSONObject body = new JSONObject();
-            body.put("revocation", rev.toJson());
-            for (ManagedPeer peer : peers.values()) {
-                if (peer.trusted && peer.conn != from) {
-                    peer.conn.send(new LinkPacket(LinkPool.PACKET_TYPE_POOL_REVOKE, body));
-                }
-            }
-        } catch (Exception ignored) {}
-    }
-
-    /** Remove another device from the pool: owner-sign a revocation, apply + gossip it. */
-    public void removeFromPool(String deviceId) {
-        LinkPool.OwnerKeyPair owner = LinkPool.getOwner(context);
-        if (owner != null) {
-            LinkPool.Revocation rev = LinkPool.signRevocation(owner, deviceId);
-            LinkPool.addRevocation(context, rev);
-            try {
-                JSONObject body = new JSONObject();
-                body.put("revocation", rev.toJson());
-                for (ManagedPeer peer : peers.values()) {
-                    if (peer.trusted) peer.conn.send(new LinkPacket(LinkPool.PACKET_TYPE_POOL_REVOKE, body));
-                }
-            } catch (Exception ignored) {}
-        }
-        unpair(deviceId);
-    }
-
-    /** Leave the pool ourselves: self-sign a revocation so others drop us, wipe credentials. */
-    public void exitPool() {
-        LinkPool.OwnerKeyPair owner = LinkPool.getOwner(context);
-        if (owner != null) {
-            LinkPool.Revocation rev = LinkPool.signRevocation(owner, myIdentity.deviceId);
-            try {
-                JSONObject body = new JSONObject();
-                body.put("revocation", rev.toJson());
-                for (ManagedPeer peer : peers.values()) {
-                    if (peer.trusted) peer.conn.send(new LinkPacket(LinkPool.PACKET_TYPE_POOL_REVOKE, body));
-                }
-            } catch (Exception ignored) {}
-            LinkPool.clear(context);
-            refreshMyPoolIdentity();
-        }
-        for (String id : new java.util.ArrayList<>(peers.keySet())) {
-            unpair(id);
-        }
-    }
 
     public void sendTo(String deviceId, LinkPacket packet) {
         ManagedPeer peer = peers.get(deviceId);
@@ -486,6 +425,31 @@ public class LinkDeviceManager {
         return peer != null ? peer.conn.remoteAddress : null;
     }
 
+    /** Reverse of remoteAddressOf — identifies the sender of an unauthenticated fast-path packet
+     * (e.g. the raw UDP presenter/touchpad relay) by matching source IP against the currently
+     * trusted+connected peer list. Mirrors desktop main.ts's deviceIdForAddress(). */
+    public String deviceIdForAddress(String ipAddress) {
+        if (ipAddress == null) return null;
+        for (Map.Entry<String, ManagedPeer> entry : peers.entrySet()) {
+            ManagedPeer peer = entry.getValue();
+            if (peer.trusted && ipAddress.equals(peer.conn.remoteAddress)) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
+    public String anyDeviceIdForAddress(String ipAddress) {
+        if (ipAddress == null) return null;
+        for (Map.Entry<String, ManagedPeer> entry : peers.entrySet()) {
+            ManagedPeer peer = entry.getValue();
+            if (peer.conn != null && ipAddress.equals(peer.conn.remoteAddress)) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
     /** The pinned certificate fingerprint for a paired device — for verifying a payload connection's cert matches. */
     public String pinnedFingerprintOf(String deviceId) {
         LinkTrustStore.TrustedDevice trusted = trustStore.get(deviceId);
@@ -499,6 +463,13 @@ public class LinkDeviceManager {
 
     public boolean hasPeer(String deviceId) {
         return peers.containsKey(deviceId);
+    }
+
+    public void updatePeerName(String deviceId, String newName) {
+        ManagedPeer peer = peers.get(deviceId);
+        if (peer != null && peer.conn != null && peer.conn.peerIdentity != null) {
+            peer.conn.peerIdentity.deviceName = newName;
+        }
     }
 
     public static class ConnectedPeerInfo {
@@ -547,5 +518,46 @@ public class LinkDeviceManager {
 
     public LinkTrustStore getTrustStore() {
         return trustStore;
+    }
+
+    private org.json.JSONArray getPoolSyncList() {
+        org.json.JSONArray list = new org.json.JSONArray();
+        for (LinkTrustStore.TrustedDevice d : trustStore.list()) {
+            try {
+                org.json.JSONObject obj = new org.json.JSONObject();
+                obj.put("deviceId", d.deviceId);
+                obj.put("deviceName", d.deviceName);
+                // Convert DER cert bytes to PEM string for transmission
+                String pem = "-----BEGIN CERTIFICATE-----\n" +
+                        android.util.Base64.encodeToString(d.certDer, android.util.Base64.DEFAULT) +
+                        "-----END CERTIFICATE-----";
+                obj.put("certPem", pem);
+                obj.put("protocolVersion", d.protocolVersion);
+                obj.put("lastKnownIp", d.lastKnownIp != null ? d.lastKnownIp : "");
+                list.put(obj);
+            } catch (Exception ignored) {}
+        }
+        return list;
+    }
+
+    private void sendPoolSync(LinkTransport.PeerConnection conn) {
+        try {
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("trustList", getPoolSyncList());
+            conn.send(new LinkPacket("link.pool.sync", body));
+        } catch (Exception ignored) {}
+    }
+
+    public void broadcastPoolSync() {
+        try {
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("trustList", getPoolSyncList());
+            LinkPacket packet = new LinkPacket("link.pool.sync", body);
+            for (ManagedPeer peer : peers.values()) {
+                if (peer.trusted) {
+                    peer.conn.send(packet);
+                }
+            }
+        } catch (Exception ignored) {}
     }
 }

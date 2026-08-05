@@ -1,8 +1,7 @@
-// Pausemusic plugin — faithful port of kdeconnect-kde's plugins/pausemusic/pausemusicplugin-win.cpp.
-// LOCAL-ONLY: no wire packet of its own (see docs/features.txt) — reacts to the already-received
+// Pausemusic plugin.
+// LOCAL-ONLY: no wire packet of its own — reacts to the already-received
 // `telephony` packet and drives the same global-media-key path the `mpris` plugin already uses,
-// pausing on ringing/talking and resuming only what it paused once the call ends. Upstream is
-// config-driven (conditionTalking, actionPause, actionMute, actionResume, actionResume-after);
+// pausing on ringing/talking and resuming only what it paused once the call ends.
 // this SCOPES DOWN to the core always-pause/always-resume behavior — no per-action toggles, no
 // mute-instead-of-pause option.
 

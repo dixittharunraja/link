@@ -55,7 +55,20 @@ export async function queryMprisSessions(): Promise<MprisSessionState[]> {
   try {
     const stdout = await runScript(['get']);
     if (!stdout || stdout === '[]') return [];
-    return JSON.parse(stdout) as MprisSessionState[];
+    try {
+      return JSON.parse(stdout) as MprisSessionState[];
+    } catch {
+      // PowerShell ConvertTo-Json doesn't escape quotes inside string properties.
+      // Repair unescaped double quotes inside JSON string values.
+      const repaired = stdout.replace(/("title":\s*")([^]*?)("(?=,\s*"artist"))/g, (_m, p1, p2, p3) => {
+        return p1 + p2.replace(/"/g, '\\"') + p3;
+      }).replace(/("artist":\s*")([^]*?)("(?=,\s*"album"))/g, (_m, p1, p2, p3) => {
+        return p1 + p2.replace(/"/g, '\\"') + p3;
+      }).replace(/("album":\s*")([^]*?)("(?=,\s*"isPlaying"))/g, (_m, p1, p2, p3) => {
+        return p1 + p2.replace(/"/g, '\\"') + p3;
+      });
+      return JSON.parse(repaired) as MprisSessionState[];
+    }
   } catch (e) {
     console.error('[Link] Error querying MPRIS sessions:', e);
     return [];

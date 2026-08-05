@@ -1,220 +1,75 @@
 LINK PROJECT BACKLOG
 ====================
 
-============================================================================
-TRUSTED POOL TRANSFORMATION — DONE & VERIFIED ON HARDWARE (Waves 1 + 2 complete)
-============================================================================
-Turned the flat, 1-to-1 "Trusted Devices" list into a single auto-meshing
-"Trusted Pool" of the owner's own devices. Trust flows through a shared OWNER KEY
-(a per-person Ed25519 root of trust), NOT peer-to-peer / transitive introduction.
-STATUS: the full connection/enroll/auto-mesh flow was tested and confirmed working
-on real hardware (desktop <-> Android) after the pairing-engine update — pairing any
-one pool member auto-meshes the newcomer with the rest, no second PIN. All Wave 1 + 2
-items below are done. Only the explicitly-DEFERRED hardening remains (see end).
-The item-by-item detail is kept below as the implementation record.
-
-MODEL & DECISIONS (settled in discussion — do not re-litigate without reason):
-  - Scope: single person / family, ONE pool of MY devices. "Zero hidden trust" —
-    pool members are mutually, explicitly trusted. Friends' devices are NEVER put
-    in the pool; casual sharing (single file, audio relay) stays in the isolated
-    Tools plugins, which never write to the trust store. So pairing has ONE meaning:
-    "adopt this device into my pool." No cross-pool merge case to worry about.
-  - Owner key: every full member holds the owner PRIVATE key, so a new device can
-    join by pairing with ANY existing member ("pool" semantics — join via anyone,
-    then auto-connect to all). No master/slave: the device that first created the
-    pool is just an equal member afterward and can itself be removed by any other.
-  - Enrollment: a new device does ONE normal PIN pairing with any existing member
-    (the single human gate). That member then issues it an owner-signed MEMBERSHIP
-    CERT (binds its TLS identity to the pool) and hands over the owner key, over the
-    already-PIN-verified encrypted channel. Other members auto-trust it by verifying
-    its membership cert against the owner public key they already hold — no 2nd PIN.
-  - Auto-mesh: membership is self-proving, so an offline member catches up on its own
-    when it next meets the new device (no roster sync needed for enrollment).
-  - Permissions: KEEP default-deny on join (initializeDeniedPermissionsForNewDevice).
-    Auto-mesh grants trust+connectivity only; per-feature sync stays opt-in. On a
-    successful pair, nudge BOTH sides to the Permissions tab to choose what to sync.
-  - Removal: SINGLE user-facing action (no benign-vs-stolen choice, to avoid
-    confusing the user). Implemented as a soft, owner-signed REVOCATION gossiped
-    across the pool: everyone drops the device and refuses its membership going
-    forward; the device itself wipes its pool state if online. Same mechanism for
-    "Exit Pool" (remove self) and "Remove device" (remove another) — rest of pool
-    stays intact either way. No user-facing "re-key everyone" button for now.
-  - Backstop for the one honest gap (a removed device still physically holds the
-    owner key, so a compromised+UNLOCKED device could re-enroll): store the owner
-    key ENCRYPTED AT REST (Android Keystore / OS secure storage / pool passphrase),
-    so a locked stolen device can't mint. A rare "reset pool" (full re-key) can be
-    added later if ever truly needed — not part of this scope.
-
-PLAN — WAVE 1 (UI / mental model only; NO crypto; safe on current flat trust store):
-  [x] 1. Post-pairing nudge: onPairingSuccessful now alerts "<name> joined your
-         connections. Open its Permissions (the gear icon) to choose what to sync."
-         Fires on both sides (shared App.tsx). Text uses "connections" (item 2's
-         settled naming) rather than "pool".
-  [x] 2. Renamed the sidebar/page from "Devices" -> "Connections" (settled on
-         "Connections" over "Pool" for less technical users); the card inside it
-         stays "Trusted Devices" (DevicesTab.tsx).
-  [x] 3. Simplified from "remove the button + add a separate menu" to just renaming
-         the existing per-device "Disconnect" button -> "Remove" in place, still
-         wired to the existing onUnpair. Same user-facing action, less UI surface.
-  [x] 4. Added "Exit Connection" button (right end of the "Trusted Devices" card
-         title). Stand-in until Wave 2's owner-key engine exists: unpairs from every
-         currently trusted device (closest equivalent to "leave the pool" achievable
-         with today's flat 1-to-1 trust store). Replace with a single signed "I'm
-         leaving" broadcast once membership is owner-key-based (item 9).
-
-PLAN — WAVE 2 (the owner-key engine; the actual trust change):
-  [x] 5a. CRYPTO CORE DONE + PROVEN. New pure crypto/storage module on both platforms:
-         desktop core/pool.ts, Android LinkPool.java. Ed25519 owner keypair (Node
-         crypto / BouncyCastle lightweight — BC needed since java.security Ed25519 is
-         API 33+, minSdk 23). Membership cert = owner-signed binding of {deviceId,
-         TLS certFingerprint, ownerKeyFp, issuedAt, epoch}; signed-message is an
-         explicit UTF-8 field concat (buildMembershipMessage), domain-separated
-         ("link-pool-membership-v1"), byte-identical across platforms. Keys stored as
-         SPKI/PKCS8 DER base64 (portable). Desktop side unit-tested: sign/verify
-         roundtrip passes, all tamper cases (wrong deviceId/certFp/owner/forged-sig)
-         correctly rejected. Storage: owner-key.json, plaintext 0600 — SAME posture as
-         the existing plaintext key.pem (encrypted-at-rest is separate hardening, not a
-         regression). >>> UNVERIFIED: the cross-platform sign/verify interop (a cert
-         issued on desktop verifying on Android and vice versa) can't be tested here —
-         needs a real A(desktop)<->C(android) device test. Format was built to standard
-         SPKI/PKCS8 + raw RFC-8032 Ed25519 + identical message bytes to maximize interop.
-  [x] 5b. Owner keypair generation is triggered as part of the enroll protocol (item 7):
-         the pool CREATOR (larger deviceId when neither side is in a pool yet) calls
-         generateOwnerKeyPair() on first pair. No separate startup trigger needed.
-  [x] 6. DONE (desktop build-verified). Added optional ownerKeyFingerprint +
-         membershipCert to DeviceIdentity (identity.ts) / LinkIdentity.Identity (mutable,
-         non-final; serialized in toJson/fromJson). refreshMyPoolIdentity() stamps them
-         onto the shared identity object so every NEW connection advertises current
-         membership; the identity is sent via toJson() at send-time on that same
-         reference, so enroll/exit updates propagate to subsequent connections.
-  [x] 7. DONE (desktop build-verified; Java mirrored). Enroll protocol on pairingSuccessful
-         (link.pool.enroll packet). Deterministic who-enrolls-whom off the already-exchanged
-         identities (one side has key -> enrolls other; neither -> larger deviceId creates
-         pool + enrolls; both same -> noop; both differ -> no-merge). Enroller mints the
-         newcomer's membership cert + hands over the owner keypair over the PIN-verified
-         trusted connection. Receiver verifies the cert is genuinely for it, stores creds,
-         then closes untrusted connections so they re-handshake and auto-mesh mutually.
-  [x] 8. DONE (desktop build-verified + LOGIC PROVEN via simulation: A auto-trusts C
-         without ever pairing; different-pool certs rejected; certs non-transferable
-         between devices). tryAutoTrust() in attach/onIdentity verifies a peer's cert
-         against our own owner key + the peer's ACTUAL presented TLS cert + not-revoked,
-         before falling through to manual pairing.
-  [x] 9. DONE (desktop build-verified + revocation sign/verify proven). Owner-signed
-         revocation gossiped across the pool (link.pool.revoke), flood-with-dedup. Remove
-         device = sign+gossip revocation then unpair; Exit Pool = self-sign revocation,
-         gossip, wipe own credentials, unpair all. Revoked deviceIds are refused by
-         tryAutoTrust so they can't re-mesh. Wired to the existing Remove/Exit buttons
-         (removeFromPool/exitPool IPC + plugin methods; renderer falls back to unpair on
-         an older backend). NOTE: soft-revocation only (per the settled single-option
-         decision) — a compromised+UNLOCKED device still holds the owner key; the
-         encrypted-at-rest backstop (deferred) covers the locked-device case.
-
-  >>> VERIFIED ON HARDWARE: the cross-platform Ed25519 sign/verify interop and the full
-      pair -> enroll -> auto-mesh flow (desktop <-> Android) were confirmed working after
-      the pairing-engine update. The connection flow works.
-  >>> STILL DEFERRED (hardening, not blocking, and genuinely optional for this scope):
-      - Owner-key encryption-at-rest (Android Keystore / pool passphrase) — the backstop
-        for a compromised+UNLOCKED device; currently plaintext, same posture as key.pem.
-      - A "reset pool" full re-key for the compromised-unlocked-device case.
-      - Upgrading already-connected UNTRUSTED peers to trusted without waiting for a
-        reconnect (currently relies on discovery re-connecting them, which converges).
-
-Reconcile the README afterward — today it overclaims automatic mesh trust the code
-doesn't do. Scope it to this owner-key design (or describe the actual model) so docs
-don't oversell the security posture.
-============================================================================
-
-
 ACTIVE VERSION 1 BACKLOG
 ------------------------
 [ ] Build installer + bundle WinFsp & rclone
    - Status: Not started. will do after completion of version 1 and its testing.
    - Task: Configured electron-builder for NSIS installers, implemented automated segment splitting for Cloudflare deployment, and placed APK and split installers directly in the website directory.
+   - ADDED REQUIREMENT (investigated via real hardware debugging — see docs/status.txt's Discovery
+     entry for the full writeup, including the actual bug this was chasing, which turned out to
+     be an unrelated Android-side broadcast-address bug, not this): the installer's already-
+     elevated install step should also fix Windows' network-trust classification, since a network
+     classified "Public" (very common — e.g. any phone-hosted Wi-Fi hotspot defaults to Public)
+     makes Windows apply stricter handling to unsolicited INBOUND broadcast/multicast UDP than a
+     plain per-app inbound-allow firewall rule can override (this app already has one for
+     Electron/Node.js, confirmed present/enabled, confirmed still insufficient on its own). This
+     is a real, independently-worth-having hardening item — CONFIRMED NOT the cause of the specific
+     "phone can't discover PC" bug hit this session (reclassifying to Private had zero effect on
+     that symptom; the real cause was Android-side, see status.txt) — but worth fixing anyway for
+     whatever future case it does affect, since it's a genuine platform quirk.
+   - During install (already-elevated, same UAC prompt every Windows install already needs — no
+     new user-facing friction): enable the Network Discovery firewall rule group and/or nudge the
+     active connection's network category, with a one-line explanation ("Link needs local network
+     access to find your paired devices") — same pattern as any other LAN app (game clients,
+     printer software) already uses. Must never be silent/without disclosure, and must never be
+     something the running app tries to do on every launch — a one-time install-time step only.
+   - DEV-ONLY interim workaround (not shippable, for testing before the installer exists): manually
+     set the active connection to the Private profile — `Set-NetConnectionProfile -InterfaceAlias
+     "<name>" -NetworkCategory Private` in an elevated PowerShell, or via Settings -> Network &
+     Internet -> Wi-Fi -> (network) -> Network profile type -> Private.
 
-[ ] Inline reply from the DESKTOP native toast notification (BLOCKED ON the installer above)
-   - Today: notification mirroring works and inline reply works from OUR in-app UI (the reply
-     plumbing is complete end-to-end: NotificationBody.requestReplyId -> 'send-notification-reply'
-     IPC -> 'link.notification.reply' packet). The native Windows pop-up toast has NO reply field.
-   - Why it can't be done yet: Electron's built-in inline reply (hasReply / replyPlaceholder /
-     the 'reply' event) and action buttons are macOS-ONLY. On Windows you must build a raw Windows
-     Toast XML (Electron's `toastXml` option) with <input type="text"> + <action>, AND register a
-     COM notification activator under a persistent AppUserModelID (AUMID) so Windows can hand the
-     typed reply text back to the app — including when it's backgrounded. That AUMID + activator
-     must be registered at INSTALL time via a Start Menu shortcut stamped with the AUMID (this is
-     exactly how WhatsApp/Slack/Discord get interactive toasts; Store/MSIX apps get it free via
-     package identity). A dev/unpackaged electron.exe has no persistent shortcut/activator, so the
-     reply can't route back — hence this is blocked on the installer item existing first.
-   - When unblocked: register the shortcut AUMID + a notification activator (e.g. via
-     electron-windows-interactive-notifications or equivalent), then emit an interactive `toastXml`
-     and route the returned reply string into the EXISTING 'send-notification-reply' path — no
-     protocol/packet changes needed, it reuses requestReplyId as-is.
-
-[~] Audio Relay + Remote Mic (Tools -> Audio Relay / Remote Mic) — desktop-and-Android-host /
-   any-device-listener for both directions, built across this and earlier sessions per
-   docs/flow.txt's design (guest sessions via manual IP + reused pairing PIN, ephemeral — no
-   trust-store writes; already-paired devices get a direct one-tap join, no PIN). Remote Mic is a
-   second, symmetric instance of the same protocol/server/client stack (own port, AUDIO_RELAY_PORT+2)
-   rather than a separate feature built from scratch — the shared AudioRelayClient
-   (audio-relay-client.ts) is reused by both features' listener flow on desktop.
-   - Wire protocol migrated from TCP/WebSocket-carried raw PCM to a dedicated UDP audio channel
-     (WS control port + 1, both features) once real latency testing showed the earlier TCP path
-     couldn't go low enough: `[4-byte seq][12-byte nonce][AES-256-GCM ciphertext+tag]`, decrypted
-     payload's first byte is the codec tag (no AAD). Reorder-tolerant buffering + cipher caching on
-     the receive side; a single shared, monotonically-advancing send-pacing cursor (bounded to
-     within 100ms of real time in both directions) replaced an earlier per-chunk timer design that
-     could reorder audio across chunk boundaries.
-   - Opus codec integrated on both platforms (frame size settled at 10ms after real on-device
-     testing: 5ms hit a genuine Android MediaCodec JNI-crossing throughput ceiling — pops + higher
-     latency, not a tunable bug). Desktop encode/decode via `@evan/opus` (N-API, ABI-stable across
-     Node/Electron, prebuilt binaries — switched to after `@discordjs/opus` had no prebuilt binary
-     for this project's Node ABI). Android via MediaCodec, with a synthesized "OpusHead" CSD
-     structure (RFC 7845 §5.1) for the decoder — Android's Opus path is NOT yet independently
-     verified on real hardware, unlike desktop's which was empirically SNR-validated.
-   - Desktop: WASAPI loopback capture (audio-capture.ps1) for Audio Relay hosting; Web Audio API
-     playback for listening, including sink-device (output target) selection.
-   - Android: full host + listen on both features. Audio Relay capture via
-     AudioPlaybackCaptureConfiguration/AudioRecord under a per-session MediaProjection grant
-     (real caveats, unchanged: consent required every session, no persistent grant, system dialog
-     worded around screen capture even though only audio is captured; apps that set
-     ALLOW_CAPTURE_BY_NONE — Spotify/Netflix/YouTube/most streaming apps — cannot be captured this
-     way). Remote Mic capture is the phone's own microphone (no MediaProjection needed). Listener
-     side plays back natively via AudioTrack (buffer floor found at 20ms — below that,
-     AudioTrack.write()'s blocking call stalls the UDP receive thread, a distinct
-     backpressure-latency signature from the earlier pop-causing bugs).
-   - Per-device kick: host can drop a single connected listener (Audio Relay + Remote Mic, both
-     platforms) without ending the whole session — closes just that listener's socket with code
-     1000 and removes it from the admitted-listeners map; other listeners are unaffected. UI: a
-     small "Kick" button beside each entry in the listener list (both tabs use identical styling).
-   - Fixed a real bug in this work: on the listener/client side (desktop main.ts's
-     audioRelayClient/remoteMicClient, Android's sAudioRelayClient), a socket 'ended'/'closed' event
-     was forwarded to the renderer/JS but never cleared the backing client variable — so
-     get-audio-relay-status / get-remote-mic-status kept reporting "still connected" after a kick or
-     a host-ended session, until the whole app restarted. Now cleared in the same handler that
-     forwards the event.
-   - Device names shown in listener/host UI now resolve through the real trust-store display name
-     (deviceManager.trustStore / LinkTrustStore) rather than a generic "Paired device (id)" string,
-     on both platforms and both features.
-   - Verification status: Audio Relay fully verified end-to-end (both directions) on real hardware
-     pre-UDP-migration; the UDP/Opus migration and Remote Mic have real-hardware testing but with
-     ongoing bug-fixing this session (protocol mismatches, stale closures, missing IPC handlers) —
-     treat as verified-with-known-fixes-applied rather than freshly re-proven from scratch.
-   - Not done yet: persistent OS-level notification for an active session (Mute/Unmute + End
-     Session if hosting, Mute/Unmute + Disconnect if listening) — requested, not yet scoped/built.
-     Real on-device verification of the Android Opus MediaCodec path is also still outstanding.
+[ ] Auto-update check (BLOCKED ON the installer above — needs a real published installer to check
+   against and swap in, not just a dev build)
+   - Deliberately MANUAL/opt-in, not silent/forced — settled in discussion: this app is explicitly
+     privacy-focused (zero internet dependency for any actual LAN feature — discovery is local UDP
+     broadcast, every connection after that is a direct device-to-device TLS socket, no cloud relay
+     ever). A background auto-updater phoning home on a schedule cuts against that promise, and a
+     user who wants to stay on an older, already-audited build should be able to just do that. So:
+     internet is touched ONLY at the moment the user deliberately checks for/fetches an update —
+     never in the background, never tied to any core feature working.
+   - Desktop: `electron-updater` (same maintainer as electron-builder, drops in cleanly on top of
+     the NSIS installer above) with a `generic` HTTP provider pointed at wherever
+     rodix/public/installers already serves the installer + SHA256SUMS.txt today — no new hosting
+     infrastructure needed. Checks on manual user action (a "Check for Updates" button/menu item),
+     shows what's new, user confirms before anything downloads or installs.
+   - Android: no true silent auto-update is possible for a side-loaded (non-Play-Store) APK —
+     Android has no background self-update mechanism for apps installed outside a store. The
+     realistic version: check a version endpoint, download the new APK if the user confirms, then
+     hand off to Android's own install-package flow (needs the REQUEST_INSTALL_PACKAGES
+     permission), which still requires the user to tap through the system install prompt manually.
+     An in-app nudge that saves a trip to the website, not a real "auto" update.
 
 
 VERSION 2 BACKLOG
 -----------------
 
 - [ ] File system weight reduction: Build a tailored, lightweight FUSE mounting helper (or cgofuse custom Go bridge) to replace the ~50MB rclone dependency with a minimal native bridge.
-- [ ] Android reverse direction: Rebuild the phone browsing the PC's files on the same WSS protocol.
-- [ ] File system configuration UI: Allow the user to select their desired drive letter (A-Z) and toggle options in the desktop interface.
-- [ ] Portal Mode (File Transfer): one-time file transfer to a friend, no pairing — see
-      docs/flow.txt for the finalized design (manual IP + reused pairing PIN, same ephemeral
-      guest-session model as Audio Relay above, NOT a QR-code portal as originally scoped here).
-      Not started — ToolsTab's "File Transfer" entry is still a placeholder.
+      ADDED REQUIREMENT (found this session): fix the write-progress "fake instant completion"
+      glitch that rclone's `--vfs-cache-mode full` causes — every write goes to the PC's own local
+      disk cache first (near-instant, hence Explorer showing impossible >1GB/s "completed" almost
+      immediately), then the actual upload to the phone happens later as a separate, invisible
+      background operation (rclone's `--vfs-write-back` delay). The file DOES eventually arrive
+      correctly (confirmed — not data loss), but Explorer's progress/speed during the copy is
+      pure fiction, and checking the phone (or reloading the mount) before the real background
+      upload finishes looks exactly like the file vanished. Root cause is architectural, not a
+      one-flag fix: rclone's cache mode is global, not per-operation, so there's no way to keep
+      fast cached reads (the whole reason `full` mode was chosen — a lighter mode caused repeated
+      real re-GETs when Explorer/media apps probe file metadata) while also making writes honest
+      about real transfer speed. A custom mount implementation can fix this properly by only
+      caching READS locally and always passing WRITES straight through to the live WSS connection
+      synchronously — something rclone's own VFS layer doesn't let us configure separately.
 - [ ] TV casting / media streaming integration: Embed support for casting media files or streaming content to local DLNA/Chromecast targets.
-- [ ] Mobile Game Controller (Joystick): Map phone touchscreen buttons and gyroscope tilt controls to a virtual joystick driver (XInput/DirectInput) on Windows to use the phone as a gamepad.
 - [ ] Mouse Without Borders plugin: Implement Desktop-to-Desktop screen-edge KVM input switching, sharing mouse and keyboard seamlessly across paired computers.
-- [ ] Use mobile as Joystick
-
+- [ ] DJ Controller - mobile
+- [ ] Joystick TV target support: Implement native input emulation on Android TV. Currently, TV correctly renders in target (host) mode to display the connection QR code and controller list, but the Android Java backend (LinkPlugin.java) lacks the UDP gamepad event parser and OS-level virtual input injection layer (e.g. via accessibility service or key injection) needed to map phone inputs to TV gameplay.

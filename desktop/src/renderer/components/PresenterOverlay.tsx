@@ -47,7 +47,7 @@ const PresenterOverlay: React.FC<PresenterOverlayProps> = ({ deviceId, onClose }
 
   return (
     <div id="presenterSurface" className="landscape-overlay" style={{ height: '100vw', width: '100vh' }}>
-      <div style={{ fontFamily: 'var(--font-display)', fontSize: '20px', fontWeight: 'bold', color: '#fff' }}>
+      <div style={{ width: '100%', fontFamily: 'var(--font-display)', fontSize: '20px', fontWeight: 'bold', color: '#fff', paddingTop: '0px', paddingLeft: '0px' }}>
         Presenter
       </div>
 

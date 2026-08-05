@@ -34,10 +34,14 @@ import org.json.JSONObject;
             strings = { "android.permission.POST_NOTIFICATIONS" }
         ),
         // Audio Relay Android-as-host: AudioPlaybackCaptureConfiguration + AudioRecord require
-        // this in addition to the separate MediaProjection consent dialog (see startAudioRelay()).
+        // this in addition to the separate MediaProjection consent dialog (see startAudioSink()).
         @Permission(
             alias = "microphone",
             strings = { Manifest.permission.RECORD_AUDIO }
+        ),
+        @Permission(
+            alias = "camera",
+            strings = { Manifest.permission.CAMERA }
         )
     }
 )
@@ -45,7 +49,13 @@ public class LinkPlugin extends Plugin {
     private static final String TAG = "LinkPlugin";
     // link.digitizer.session/link.digitizer added — Android already sends these (sendDigitizerSession/
     // sendDigitizerEvent) but never declared the capability, so peers had no way to discover support.
-    private static final String[] CAPABILITIES = {"link.clipboard", "link.clipboard.connect", "link.battery", "link.findmyphone.request", "link.runcommand", "link.runcommand.request", "link.presenter", "link.systemvolume", "link.systemvolume.request", "link.lock", "link.lock.request", "link.connectivity_report", "link.touchpad.request", "link.mpris", "link.mpris.request", "link.telephony", "link.notification", "link.notification.reply", "link.flashlight", "link.dnd", "link.rename", "link.rename.request", "link.digitizer.session", "link.digitizer"};
+    // link.remoteinput.send added — handleRemoteInput() (see LinkPlugin's packet dispatch below)
+    // already executes these, but the capability itself was never declared, so a desktop peer had
+    // no way to discover this phone can receive keyboard/D-Pad remote-input packets.
+    // Joystick has no capability entry here — it has no TLS packet type at all, deliberately (see
+    // desktop's joystick.ts header comment). Its whole protocol, including the join handshake,
+    // rides the raw UDP:1717 line channel, IP-identified only, same as an Audio Sink guest.
+    private static final String[] CAPABILITIES = {"link.clipboard", "link.clipboard.connect", "link.battery", "link.findmydevice.request", "link.runcommand", "link.runcommand.request", "link.presenter", "link.systemvolume", "link.systemvolume.request", "link.lock", "link.lock.request", "link.connectivity", "link.touchpad.request", "link.mpris", "link.mpris.request", "link.telephony", "link.notification", "link.notification.reply", "link.flashlight", "link.dnd", "link.rename", "link.rename.request", "link.digitizer.session", "link.digitizer", "link.remoteinput.send"};
 
     // Mirrors desktop main.ts's ENABLED_PLUGINS kill-switch for the systematic re-verification
     // pass: everything in test.txt starts disabled so core connection (discovery/pairing/trust/
@@ -54,7 +64,8 @@ public class LinkPlugin extends Plugin {
     // Volume, and MPRIS have graduated out of this — confirmed working, so their gates were
     // removed entirely rather than left toggled on here.
     private static final java.util.Set<String> ENABLED_PLUGINS = new java.util.HashSet<>(java.util.Arrays.asList(
-        "Clipboard"
+        "Clipboard", "Battery", "Flashlight", "DND", "Connectivity", "Lock", "Notification", "RunCommand",
+        "Presenter", "Digitizer", "Touchpad", "Telephony", "MPRIS", "Joystick"
     ));
     // Package-private (not private) so SendClipboardActivity, in the same package, can reuse it.
     static boolean isEnabled(String name) {
@@ -69,6 +80,23 @@ public class LinkPlugin extends Plugin {
     private void broadcastToPermittedPeers(String permKey, LinkPacket packet) {
         for (String peerId : deviceManager.trustedConnectedDeviceIds()) {
             if (!LinkDevicePermissions.check(getContext(), peerId, permKey)) continue;
+            deviceManager.sendTo(peerId, packet);
+        }
+    }
+
+    // Broadcast to ALL pool members, but check notification permission for each
+    private void broadcastNotificationsToPool(LinkPacket packet) {
+        for (String peerId : deviceManager.trustedConnectedDeviceIds()) {
+            // Check if this device has permission to send notifications to peer
+            if (LinkDevicePermissions.check(getContext(), peerId, "notificationMirroring")) {
+                deviceManager.sendTo(peerId, packet);
+            }
+        }
+    }
+
+    // Broadcast to ALL pool members without permission gates (for other mesh-wide sync)
+    private void broadcastToAllPeers(LinkPacket packet) {
+        for (String peerId : deviceManager.trustedConnectedDeviceIds()) {
             deviceManager.sendTo(peerId, packet);
         }
     }
@@ -91,6 +119,17 @@ public class LinkPlugin extends Plugin {
     // that got closed by the tie-break almost immediately. That was the actual cause of the
     // infinite "Discovered peer ... Connecting..." loop every ~3s after a reload.
     private static LinkDiscovery.Watcher sDiscoveryWatcher;
+    private static final java.util.Map<String, JSObject> sDiscoveredPeers = new java.util.concurrent.ConcurrentHashMap<>();
+    // Lets requestPairing() (below) block until a specific deviceId's identity handshake actually
+    // completes, after triggering a connect for a purely-discovered-but-never-auto-connected
+    // peer — see requestPairing()'s comment for why this is needed (mirrors desktop's
+    // 'deviceConnected' event-based wait in main.ts's 'request-pairing' handler).
+    private static final java.util.Map<String, java.util.concurrent.CountDownLatch> sPendingConnectWaits = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.Map<String, PendingIpWait> sPendingIpConnectWaits = new java.util.concurrent.ConcurrentHashMap<>();
+    private static class PendingIpWait {
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        String resolvedDeviceId;
+    }
     private LinkClipboard.Watcher clipboardWatcher;
     private volatile long lastKnownClipboardTimestamp = 0;
     private LinkBattery.Watcher batteryWatcher;
@@ -109,15 +148,26 @@ public class LinkPlugin extends Plugin {
     // host's relay server forever, never disconnected, while the reloaded UI opened a SECOND
     // connection for the same device. Host-side "Listeners" list showed the same paired device
     // twice as a direct result.
-    private static LinkAudioRelayClient sAudioRelayClient;
-    // Android-as-host counterpart to sAudioRelayClient above — same static-field reattach reason.
+    private static LinkAudioSinkClient sAudioSinkClient;
+    private static String sAudioSinkHostLabel = "";
+    // Android-as-host counterpart to sAudioSinkClient above — same static-field reattach reason.
     // No non-static instance field is needed alongside it (nothing else in this class needs a
-    // non-static handle), mirroring how sAudioRelayClient also has none.
-    private static LinkAudioRelayServer sAudioRelayServer;
+    // non-static handle), mirroring how sAudioSinkClient also has none.
+    private static LinkAudioSinkServer sAudioSinkServer;
     private static LinkRemoteMicServer sRemoteMicServer;
+    private static LinkPortalTransferServer sPortalTransferServer;
+    private static LinkPortalTransferClient sPortalTransferClient;
+    // Walkie Talkie's guest-facing signaling — see LinkWalkieTalkieSignalServer.java's header
+    // comment. Only relevant for an unpaired participant (manual IP + PIN); already-paired members
+    // use the existing trusted connection instead (handleWalkieTalkieSignalPacket above).
+    private static LinkWalkieTalkieSignalServer sWalkieTalkieGuestServer;
+    private static LinkWalkieTalkieSignalClient sWalkieTalkieGuestClient;
+    private static LinkJoystickClient sJoystickClient;
     private LinkPacket lastTelephonyPacket = null;
     private String lastCallState = "";
     private String lastIncomingNumber = null;
+    private Runnable trustedReconnectRunnable;
+    private java.util.List<String> lastLocalIps = new java.util.ArrayList<>();
     // See telephonyReceiver's RINGING branch: some carriers/devices fire the very first RINGING
     // broadcast with EXTRA_INCOMING_NUMBER still null, followed almost immediately by a second one
     // with the real number. Broadcasting immediately on the first caused every call to visibly
@@ -159,9 +209,27 @@ public class LinkPlugin extends Plugin {
     public static final String EXTRA_MUTE_DEVICE_ID = "deviceId";
     static final int NOTIFICATION_ID = 9991; // package-visible: shared with LinkForegroundService
     private static final String CHANNEL_ID = "link_foreground_channel";
+
+    // Active Audio Relay / Remote Mic session notification — separate from NOTIFICATION_ID above
+    // (which is the generic always-on "Link is active" connectivity notification and never goes
+    // away). This one only exists while a session is actually running, on its own channel/id, so
+    // it can be posted/updated/cancelled independently without disturbing the connectivity one.
+    private static final int SESSION_NOTIFICATION_ID = 9992;
+    private static final String SESSION_CHANNEL_ID = "link_session_channel";
+    public static final String ACTION_SESSION_MUTE_TOGGLE = "in.rodix.link.ACTION_SESSION_MUTE_TOGGLE";
+    public static final String ACTION_SESSION_END = "in.rodix.link.ACTION_SESSION_END";
+    public static final String EXTRA_SESSION_KIND = "sessionKind";
+    // The three sessions this notification can represent — checked in this priority order if more
+    // than one happens to be active at once (a real but rare edge case: e.g. hosting Audio Relay
+    // while also hosting Remote Mic). Only one is ever shown at a time to keep the notification
+    // simple; this is a documented simplification, not a correctness bug.
+    private static final String SESSION_KIND_AUDIOSINK_HOST = "audiosink_host";
+    private static final String SESSION_KIND_AUDIOSINK_LISTEN = "audiosink_listen";
+    private static final String SESSION_KIND_REMOTEMIC_HOST = "remotemic_host";
     private final java.util.Map<String, LinkRepliableNotification> pendingReplies = new java.util.concurrent.ConcurrentHashMap<>();
 
     private LinkSpeedTest speedTest;
+    private String lastMprisState = null; // Cache to avoid broadcasting unchanged state
     private final android.os.Handler mprisPollHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable mprisPollRunnable = new Runnable() {
         @Override
@@ -193,6 +261,10 @@ public class LinkPlugin extends Plugin {
     private void broadcastMprisState() {
         if (deviceManager == null) return;
         LinkPacket packet = LinkMpris.createLocalStatePacket(getContext());
+        String currentState = packet.body.toString(); // Serialize to JSON string for comparison
+        // Only broadcast if state actually changed — prevents UI flicker from polling same state every 3s
+        if (currentState.equals(lastMprisState)) return;
+        lastMprisState = currentState;
         // Outbound gate — a peer denied 'mpris' shouldn't passively learn what's currently
         // playing just because someone else (permitted) triggered this broadcast.
         broadcastToPermittedPeers("mpris", packet);
@@ -248,21 +320,45 @@ public class LinkPlugin extends Plugin {
                 }
                 sDiscoveryWatcher = null;
             }
-            if (sAudioRelayClient != null) {
+            if (sAudioSinkClient != null) {
                 try {
-                    sAudioRelayClient.disconnect();
+                    sAudioSinkClient.disconnect();
                 } catch (Exception e) {
-                    android.util.Log.e(TAG, "Error disconnecting previous AudioRelayClient", e);
+                    android.util.Log.e(TAG, "Error disconnecting previous AudioSinkClient", e);
                 }
-                sAudioRelayClient = null;
+                sAudioSinkClient = null;
             }
-            if (sAudioRelayServer != null) {
+            if (sAudioSinkServer != null) {
                 try {
-                    sAudioRelayServer.stop();
+                    sAudioSinkServer.stop();
                 } catch (Exception e) {
-                    android.util.Log.e(TAG, "Error stopping previous AudioRelayServer", e);
+                    android.util.Log.e(TAG, "Error stopping previous AudioSinkServer", e);
                 }
-                sAudioRelayServer = null;
+                sAudioSinkServer = null;
+            }
+            if (sPortalTransferClient != null) {
+                sPortalTransferClient.disconnect();
+                sPortalTransferClient = null;
+            }
+            if (sPortalTransferServer != null) {
+                try {
+                    sPortalTransferServer.stop();
+                } catch (Exception e) {
+                    android.util.Log.e(TAG, "Error stopping previous PortalTransferServer", e);
+                }
+                sPortalTransferServer = null;
+            }
+            if (sWalkieTalkieGuestClient != null) {
+                sWalkieTalkieGuestClient.disconnect();
+                sWalkieTalkieGuestClient = null;
+            }
+            if (sWalkieTalkieGuestServer != null) {
+                try {
+                    sWalkieTalkieGuestServer.stop();
+                } catch (Exception e) {
+                    android.util.Log.e(TAG, "Error stopping previous WalkieTalkieSignalServer", e);
+                }
+                sWalkieTalkieGuestServer = null;
             }
 
             myIdentity = LinkIdentity.loadOrCreate(getContext(), CAPABILITIES, CAPABILITIES);
@@ -285,6 +381,28 @@ public class LinkPlugin extends Plugin {
                     trustStore, new LinkDeviceManager.Listener() {
                 @Override
                 public void onDeviceConnected(LinkIdentity.Identity identity, boolean trusted) {
+                    if (LinkBlocklist.isBlocked(getContext(), identity.deviceId)) {
+                        deviceManager.closeConnection(identity.deviceId);
+                        return;
+                    }
+                    if (trusted) {
+                        try {
+                            if (!LinkDevicePermissions.getAll(getContext()).has(identity.deviceId)) {
+                                android.util.Log.i(TAG, "[Link] Auto-initializing denied permissions for newly connected pool device: " + identity.deviceId);
+                                LinkDevicePermissions.initializeDeniedPermissionsForNewDevice(getContext(), identity.deviceId);
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                    java.util.concurrent.CountDownLatch pending = sPendingConnectWaits.remove(identity.deviceId);
+                    if (pending != null) pending.countDown();
+                    String remoteIpMatch = deviceManager.remoteAddressOf(identity.deviceId);
+                    if (remoteIpMatch != null) {
+                        PendingIpWait ipWait = sPendingIpConnectWaits.remove(remoteIpMatch);
+                        if (ipWait != null) {
+                            ipWait.resolvedDeviceId = identity.deviceId;
+                            ipWait.latch.countDown();
+                        }
+                    }
                     JSObject data = new JSObject();
                     data.put("deviceId", identity.deviceId);
 
@@ -298,12 +416,19 @@ public class LinkPlugin extends Plugin {
 
                     data.put("deviceName", displayName);
                     data.put("trusted", trusted);
-                    // Was missing deviceType/incomingCapabilities/outgoingCapabilities entirely —
-                    // App.tsx's onDeviceConnected handler falls back to an empty capabilities array
-                    // when these are absent, which meant every capability-gated button (Ring, Lock,
-                    // Presenter, Touchpad, Digitizer, ...) was silently hidden for every peer
-                    // whenever viewed from mobile's own control panel, regardless of what that peer
-                    // actually supports.
+                    String remoteIp = deviceManager.remoteAddressOf(identity.deviceId);
+                    if (remoteIp != null) {
+                        data.put("ipAddress", remoteIp);
+                        if (trusted) {
+                            LinkTrustStore trustStore = deviceManager != null ? deviceManager.getTrustStore() : new LinkTrustStore(getContext());
+                            LinkTrustStore.TrustedDevice existing = trustStore.get(identity.deviceId);
+                            boolean ipChanged = existing != null && !remoteIp.equals(existing.lastKnownIp);
+                            trustStore.updateLastKnownIp(identity.deviceId, remoteIp);
+                            if (ipChanged && deviceManager != null) {
+                                deviceManager.broadcastPoolSync();
+                            }
+                        }
+                    }
                     data.put("deviceType", identity.deviceType);
                     try {
                         data.put("incomingCapabilities", new com.getcapacitor.JSArray(identity.incomingCapabilities));
@@ -332,9 +457,15 @@ public class LinkPlugin extends Plugin {
                 }
 
                 @Override
-                public void onIncomingPairRequest(String deviceId, String verificationKey) {
+                public void onIncomingPairRequest(String deviceId, String deviceName, String deviceType, String verificationKey) {
+                    if (LinkBlocklist.isBlocked(getContext(), deviceId)) {
+                        deviceManager.rejectPairing(deviceId);
+                        return;
+                    }
                     JSObject data = new JSObject();
                     data.put("deviceId", deviceId);
+                    data.put("deviceName", deviceName);
+                    data.put("deviceType", deviceType);
                     data.put("verificationKey", verificationKey);
                     notifyListeners("incomingPairRequest", data);
                 }
@@ -358,6 +489,7 @@ public class LinkPlugin extends Plugin {
 
                 @Override
                 public void onUnpaired(String deviceId) {
+                    LinkDevicePermissions.deletePermissionsForDevice(getContext(), deviceId);
                     JSObject data = new JSObject();
                     data.put("deviceId", deviceId);
                     notifyListeners("unpaired", data);
@@ -369,6 +501,14 @@ public class LinkPlugin extends Plugin {
                     data.put("deviceId", deviceId);
                     notifyListeners("trustMismatch", data);
                 }
+
+                @Override
+                public void onTrustListUpdated() {
+                    if (trustedReconnectRunnable != null) {
+                        new android.os.Handler(android.os.Looper.getMainLooper()).post(trustedReconnectRunnable);
+                    }
+                }
+
 
                 @Override
                 public void onPacket(String deviceId, LinkPacket packet) {
@@ -384,8 +524,8 @@ public class LinkPlugin extends Plugin {
                         handleClipboardPacket(deviceId, packet);
                     } else if (LinkBattery.isBatteryPacket(packet)) {
                         handleBatteryPacket(deviceId, packet);
-                    } else if (LinkFindMyPhone.isFindMyPhonePacket(packet)) {
-                        handleFindMyPhonePacket(deviceId, packet);
+                    } else if (LinkFindMyDevice.isFindMyDevicePacket(packet)) {
+                        handleFindMyDevicePacket(deviceId, packet);
                     } else if (LinkRunCommand.isCommandListPacket(packet)) {
                         handleRunCommandListPacket(deviceId, packet);
                     } else if (packet.type.equals(LinkSystemVolume.PACKET_TYPE_SYSTEMVOLUME)) {
@@ -400,6 +540,12 @@ public class LinkPlugin extends Plugin {
                         handleFlashlightPacket(deviceId, packet);
                     } else if (packet.type.equals(LinkDND.PACKET_TYPE_DND)) {
                         handleDndPacket(deviceId, packet);
+                    } else if (packet.type.equals(LinkPresenter.PACKET_TYPE_PRESENTER)) {
+                        handlePresenterPacket(deviceId, packet);
+                    } else if (packet.getType().equals("link.digitizer.session")) {
+                        handleDigitizerSessionPacket(deviceId, packet);
+                    } else if (packet.getType().equals("link.digitizer")) {
+                        handleDigitizerPacket(deviceId, packet);
                     } else if (LinkLock.isLockPacket(packet)) {
                         handleLockPacket(deviceId, packet);
                     } else if (LinkLock.isLockRequestPacket(packet)) {
@@ -420,18 +566,24 @@ public class LinkPlugin extends Plugin {
                         handleSpeedTestRequestPacket(deviceId, packet);
                     } else if ("link.speedtest.response".equals(packet.type)) {
                         handleSpeedTestResponsePacket(packet);
-                    } else if ("link.audiorelay.started".equals(packet.type)) {
-                        handleAudioRelayStartedPacket(deviceId, packet);
-                    } else if ("link.audiorelay.ended".equals(packet.type)) {
-                        handleAudioRelayEndedPacket(deviceId);
-                    } else if ("link.audiorelay.query".equals(packet.type)) {
-                        handleAudioRelayQueryPacket(deviceId);
-                    } else if ("link.remotemic.started".equals(packet.type)) {
-                        handleRemoteMicStartedPacket(deviceId, packet);
-                    } else if ("link.remotemic.ended".equals(packet.type)) {
-                        handleRemoteMicEndedPacket(deviceId);
+                    } else if ("link.audiosink.started".equals(packet.type)) {
+                        handleAudioSinkStartedPacket(deviceId, packet);
+                    } else if ("link.audiosink.ended".equals(packet.type)) {
+                        handleAudioSinkEndedPacket(deviceId);
+                    } else if ("link.audiosink.query".equals(packet.type)) {
+                        handleAudioSinkQueryPacket(deviceId);
                     } else if ("link.remotemic.query".equals(packet.type)) {
                         handleRemoteMicQueryPacket(deviceId);
+                    } else if (LinkRemoteInput.isRemoteInputPacket(packet)) {
+                        if (LinkDevicePermissions.check(getContext(), deviceId, "remoteinput")) {
+                            LinkRemoteInput.handleRemoteInput(getContext(), packet);
+                        } else {
+                            android.util.Log.w(TAG, "Blocked remoteinput packet from " + deviceId + " — permission denied");
+                        }
+                    } else if (packet.type != null && packet.type.startsWith("link.walkietalkie.")) {
+                        handleWalkieTalkieSignalPacket(deviceId, packet);
+                    } else if ("link.fs.response".equals(packet.type)) {
+                        handleFsResponsePacket(packet);
                     }
                 }
             });
@@ -459,32 +611,7 @@ public class LinkPlugin extends Plugin {
 
                 @Override
                 public void onLocalFileChange(String filename, byte[] data) {
-                    lastKnownClipboardTimestamp = clipboardWatcher.currentTimestamp();
-                    if (!isEnabled("Clipboard")) return;
-                    for (String peerId : deviceManager.trustedConnectedDeviceIds()) {
-                        if (!LinkDevicePermissions.canSendClipboardTo(getContext(), peerId)) continue;
-                        try {
-                            LinkPayloadTransfer.UploadHandle upload = LinkPayloadTransfer.startUpload(
-                                    deviceManager.getMyCert(), deviceManager.getMyKey(), data,
-                                    new LinkPayloadTransfer.UploadListener() {
-                                        @Override
-                                        public void onComplete() {
-                                            android.util.Log.i(TAG, "Clipboard file upload completed");
-                                        }
-
-                                        @Override
-                                        public void onError(Exception e) {
-                                            android.util.Log.e(TAG, "Clipboard file upload failed", e);
-                                        }
-                                    });
-                            LinkPacket packet = LinkClipboard.createClipboardFilePacket(filename);
-                            packet.payloadTransferInfo = new org.json.JSONObject();
-                            packet.payloadTransferInfo.put("port", upload.port);
-                            deviceManager.sendTo(peerId, packet);
-                        } catch (Exception e) {
-                            android.util.Log.e(TAG, "Failed to upload clipboard file", e);
-                        }
-                    }
+                    // File clipboard sync disabled
                 }
             });
 
@@ -507,6 +634,13 @@ public class LinkPlugin extends Plugin {
 
                         LinkPacket np = LinkNotification.createPostedPacket(getContext(), sbn, appName, replyId);
                         broadcastToPermittedPeers("notification", np);
+
+                        // Mesh-wide notification sync: broadcast to pool members with notificationMirroring permission
+                        String deviceName = myIdentity != null ? myIdentity.deviceName : "Unknown Device";
+                        LinkPacket meshNotif = LinkNotificationBroadcast.createNotificationBroadcastPacket(sbn, deviceName);
+                        if (meshNotif != null) {
+                            broadcastNotificationsToPool(meshNotif);
+                        }
                     }
                 }
 
@@ -578,7 +712,7 @@ public class LinkPlugin extends Plugin {
                                     lastTelephonyPacket = np2;
                                     broadcastToPermittedPeers("telephony", np2);
                                 };
-                                telephonyHandler.postDelayed(pendingRingingBroadcast, 350);
+                                telephonyHandler.postDelayed(pendingRingingBroadcast, 800);
                             } else if (android.telephony.TelephonyManager.EXTRA_STATE_RINGING.equals(state)) {
                                 LinkPacket np = LinkTelephony.createCallPacket("ringing", number, contactName, contactPhoto);
                                 lastTelephonyPacket = np;
@@ -634,19 +768,92 @@ public class LinkPlugin extends Plugin {
                 getContext().registerReceiver(muteRemoteRingerReceiver, muteFilter);
             }
 
+            // Mute/Unmute + End Session/Disconnect buttons on the active Audio Relay/Remote Mic
+            // session notification (see updateSessionNotification()). Never sent by another app —
+            // NOT_EXPORTED, only this app's own PendingIntents fire it.
+            android.content.BroadcastReceiver sessionActionReceiver = new android.content.BroadcastReceiver() {
+                @Override
+                public void onReceive(android.content.Context context, android.content.Intent intent) {
+                    String kind = intent.getStringExtra(EXTRA_SESSION_KIND);
+                    boolean isEnd = ACTION_SESSION_END.equals(intent.getAction());
+                    if (SESSION_KIND_AUDIOSINK_HOST.equals(kind)) {
+                        if (isEnd) {
+                            stopAudioSinkHosting();
+                        } else if (sAudioSinkServer != null) {
+                            sAudioSinkServer.setMuted(!sAudioSinkServer.isMuted());
+                        }
+                    } else if (SESSION_KIND_AUDIOSINK_LISTEN.equals(kind)) {
+                        if (isEnd) {
+                            if (sAudioSinkClient != null) sAudioSinkClient.disconnect();
+                            sAudioSinkClient = null;
+                        } else if (sAudioSinkClient != null) {
+                            sAudioSinkClient.toggleLocalMute();
+                        }
+                    } else if (SESSION_KIND_REMOTEMIC_HOST.equals(kind)) {
+                        if (isEnd) {
+                            stopRemoteMicHosting();
+                        } else if (sRemoteMicServer != null) {
+                            sRemoteMicServer.setMuted(!sRemoteMicServer.isMuted());
+                        }
+                    }
+                    updateSessionNotification();
+                }
+            };
+            android.content.IntentFilter sessionFilter = new android.content.IntentFilter();
+            sessionFilter.addAction(ACTION_SESSION_MUTE_TOGGLE);
+            sessionFilter.addAction(ACTION_SESSION_END);
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                getContext().registerReceiver(sessionActionReceiver, sessionFilter, android.content.Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                getContext().registerReceiver(sessionActionReceiver, sessionFilter);
+            }
+
             deviceManager.startServer(LinkTransport.LINK_PORT);
             android.util.Log.i(TAG, "server started on port " + LinkTransport.LINK_PORT);
 
+            startInputUdpServer();
+
             discoveryWatcher = new LinkDiscovery.Watcher(getContext(), myIdentity, (ip, peer) -> {
-                // Broadcasts repeat every ~5s while a peer stays undiscovered — without this
-                // guard, a single slow/hung connect attempt (weak Wi-Fi, brief firewall stall)
-                // used to get re-fired on every subsequent broadcast, stacking up overlapping
-                // attempts to the same peer instead of just letting the one in flight finish or
-                // time out. Combined with connectToPeer() now having an explicit timeout, a failed
-                // attempt clears itself and the very next broadcast can retry cleanly.
+                if (LinkBlocklist.isBlocked(getContext(), peer.deviceId) || LinkBlocklist.isBlocked(getContext(), ip)) {
+                    return;
+                }
+
+                LinkTrustStore discoveryStore = new LinkTrustStore(getContext());
+                boolean isPaired = discoveryStore.isPaired(peer.deviceId);
+
+                // Invisible to strangers: if an unpaired device has visibility OFF, hide it completely.
+                if (!isPaired && !peer.visibility) {
+                    return;
+                }
+
+                String displayName = peer.deviceName != null ? peer.deviceName : peer.deviceId.substring(0, Math.min(8, peer.deviceId.length()));
+                if (isPaired) {
+                    LinkTrustStore.TrustedDevice dev = discoveryStore.get(peer.deviceId);
+                    if (dev != null && dev.deviceName != null) {
+                        displayName = dev.deviceName;
+                    }
+                }
+
+                JSObject info = new JSObject();
+                info.put("deviceId", peer.deviceId);
+                info.put("deviceName", displayName);
+                info.put("deviceType", peer.deviceType != null ? peer.deviceType : "desktop");
+                info.put("ipAddress", ip);
+                info.put("trusted", isPaired);
+                info.put("connected", deviceManager.hasPeer(peer.deviceId));
+                sDiscoveredPeers.put(peer.deviceId, info);
+                notifyListeners("deviceDiscovered", info);
+
+                if (!isPaired) {
+                    return; // Do NOT auto-connect untrusted devices over TCP!
+                }
+
+                // Auto-connect to trusted peers whenever we hear them
+                // CRITICAL: Prevent simultaneous bidirectional connection attempts — only larger deviceId connects
                 if (!deviceManager.hasPeer(peer.deviceId) && canAttemptConnect(peer.deviceId)
+                        && myIdentity.deviceId.compareTo(peer.deviceId) > 0
                         && connectingDeviceIds.add(peer.deviceId)) {
-                    android.util.Log.i(TAG, "Discovered peer " + peer.deviceName + " at " + ip + ". Connecting...");
+                    android.util.Log.i(TAG, "Discovered trusted peer " + peer.deviceName + " at " + ip + ". Connecting...");
                     new Thread(() -> {
                         try {
                             deviceManager.connectTo(ip, LinkTransport.LINK_PORT);
@@ -659,11 +866,70 @@ public class LinkPlugin extends Plugin {
                         }
                     }, "link-connect-discovered").start();
                 }
+            }, expiredDeviceId -> {
+                sDiscoveredPeers.remove(expiredDeviceId);
+                JSObject data = new JSObject();
+                data.put("deviceId", expiredDeviceId);
+                notifyListeners("deviceExpired", data);
+
+                if (deviceManager != null) {
+                    for (LinkDeviceManager.ConnectedPeerInfo info : deviceManager.connectedPeers()) {
+                        if (info.identity.deviceId.equals(expiredDeviceId) && !info.trusted) {
+                            android.util.Log.i(TAG, "Closing stale connection to undiscoverable peer " + expiredDeviceId.substring(0, Math.min(8, expiredDeviceId.length())));
+                            deviceManager.closeConnection(expiredDeviceId);
+                            break;
+                        }
+                    }
+                }
             });
             android.content.SharedPreferences prefs = getContext().getSharedPreferences("link_prefs", android.content.Context.MODE_PRIVATE);
-            boolean visibility = prefs.getBoolean("discovery_visibility", true);
+            boolean visibility = prefs.getBoolean("discovery_visibility", false);
             discoveryWatcher.start(visibility);
             sDiscoveryWatcher = discoveryWatcher;
+
+            // Periodic trusted reconnect: attempt to connect to all trusted devices at their last known IP,
+            // every 10s. Works even when visibility is OFF and therefore no UDP broadcasts are sent.
+            this.trustedReconnectRunnable = new Runnable() {
+                @Override
+                public void run() {
+                    if (deviceManager == null) return;
+
+                    java.util.List<String> currentIps = getMyLocalIps();
+                    if (!currentIps.equals(lastLocalIps)) {
+                        lastLocalIps = currentIps;
+                        scanSubnet();
+                    }
+                    java.util.List<String[]> targets = new java.util.ArrayList<>(); // {deviceId, ip}
+                    for (LinkTrustStore.TrustedDevice dev : new LinkTrustStore(getContext()).list()) {
+                        if (dev.lastKnownIp != null && !dev.lastKnownIp.isEmpty()) {
+                            targets.add(new String[]{dev.deviceId, dev.lastKnownIp});
+                        }
+                    }
+
+                    for (int i = 0; i < targets.size(); i++) {
+                        final String targetDeviceId = targets.get(i)[0];
+                        final String targetIp = targets.get(i)[1];
+                        if (deviceManager.hasPeer(targetDeviceId) || !canAttemptConnect(targetDeviceId)) continue;
+                        final int delay = i * 250;
+                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                            if (deviceManager == null || deviceManager.hasPeer(targetDeviceId) || !connectingDeviceIds.add(targetDeviceId)) return;
+                            new Thread(() -> {
+                                try {
+                                    deviceManager.connectTo(targetIp, LinkTransport.LINK_PORT);
+                                    clearConnectBackoff(targetDeviceId);
+                                } catch (Exception e) {
+                                    recordConnectFailure(targetDeviceId);
+                                } finally {
+                                    connectingDeviceIds.remove(targetDeviceId);
+                                }
+                            }, "link-trusted-reconnect").start();
+                        }, delay);
+                    }
+                    new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(this, 10000);
+                }
+            };
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(this.trustedReconnectRunnable);
+
 
             // Volume broadcast receiver to sync local volume changes to peers
             android.content.BroadcastReceiver volumeReceiver = new android.content.BroadcastReceiver() {
@@ -764,6 +1030,12 @@ public class LinkPlugin extends Plugin {
         }
     }
 
+    @Override
+    protected void handleOnResume() {
+        super.handleOnResume();
+        notifyListeners("appResumed", new JSObject());
+    }
+
     // Each packet type gets its own private handler below (previously one 290-line if-else chain
     // inside the deviceManager Listener's onPacket) — purely organizational, same instance fields/
     // methods accessible either way, identical dispatch order/logic, so behavior is unchanged.
@@ -774,30 +1046,7 @@ public class LinkPlugin extends Plugin {
         if (!isEnabled("Clipboard")) return;
         // No receive-side gate — Clipboard is sending-only now (see canSendClipboardTo): the
         // peer already decided whether to share via their own outbound permission-for-us.
-        if (LinkClipboard.PACKET_TYPE_CLIPBOARD_FILE.equals(packet.type)) {
-            new Thread(() -> {
-                try {
-                    String senderHost = deviceManager.remoteAddressOf(deviceId);
-                    String expectedFingerprint = deviceManager.pinnedFingerprintOf(deviceId);
-                    if (senderHost == null || expectedFingerprint == null) return;
-                    org.json.JSONObject transferInfo = packet.payloadTransferInfo;
-                    if (transferInfo == null || !transferInfo.has("port")) {
-                        throw new Exception("clipboard.file packet missing port");
-                    }
-                    int port = transferInfo.getInt("port");
-                    String filename = packet.body.getString("filename");
-                    byte[] data = LinkPayloadTransfer.downloadPayload(
-                            senderHost, port, deviceManager.getMyCert(), deviceManager.getMyKey(), expectedFingerprint);
-                    clipboardWatcher.applyRemoteFile(getContext(), filename, data);
-                    android.util.Log.i(TAG, "CLIPBOARD FILE RECEIVED: " + filename + " (" + data.length + " bytes)");
-                    JSObject jsData = new JSObject();
-                    jsData.put("deviceId", deviceId);
-                    notifyListeners("clipboardReceived", jsData);
-                } catch (Exception e) {
-                    android.util.Log.e(TAG, "Failed to receive clipboard file", e);
-                }
-            }, "link-clipboard-file-receive").start();
-        } else {
+        if (!LinkClipboard.PACKET_TYPE_CLIPBOARD_FILE.equals(packet.type)) {
             String text = LinkClipboard.extractIncomingText(packet, lastKnownClipboardTimestamp);
             if (text != null) {
                 clipboardWatcher.applyRemote(text);
@@ -821,21 +1070,23 @@ public class LinkPlugin extends Plugin {
         notifyListeners("batteryReceived", data);
     }
 
-    private void handleFindMyPhonePacket(String deviceId, LinkPacket packet) {
+    private void handleFindMyDevicePacket(String deviceId, LinkPacket packet) {
         // No kill-switch or per-device permission gate — ring is inherently available to any
         // connected, trusted device, same as rename.
         boolean cancel = packet.body.optBoolean("cancel", false);
-        android.util.Log.i(TAG, "FIND MY PHONE (cancel=" + cancel + ") triggered by " + deviceId);
+        android.util.Log.i(TAG, "FIND MY DEVICE (cancel=" + cancel + ") triggered by " + deviceId);
         JSObject data = new JSObject();
         data.put("deviceId", deviceId);
         if (cancel) {
-            LinkFindMyPhone.stopRinging(getContext());
+            LinkFindMyDevice.stopRinging(getContext());
             activeRingerDeviceId = null;
             notifyListeners("findMyPhoneStopped", data);
+            notifyListeners("findMyDeviceStopped", data);
         } else {
             activeRingerDeviceId = deviceId;
-            LinkFindMyPhone.ring(getContext());
+            LinkFindMyDevice.ring(getContext());
             notifyListeners("findMyPhoneTriggered", data);
+            notifyListeners("findMyDeviceTriggered", data);
         }
     }
 
@@ -886,6 +1137,7 @@ public class LinkPlugin extends Plugin {
         data.put("deviceId", deviceId);
         org.json.JSONArray caps = packet.body.optJSONArray("capabilities");
         if (caps == null) caps = new org.json.JSONArray();
+        android.util.Log.d(TAG, "Received capabilities from " + deviceId + ": " + caps.toString());
         peerCapabilities.put(deviceId, caps); // cache for WebView-reload re-hydration
         data.put("capabilities", caps);
         notifyListeners("peerCapabilitiesReceived", data);
@@ -907,18 +1159,22 @@ public class LinkPlugin extends Plugin {
     }
 
     private void handleFlashlightPacket(String deviceId, LinkPacket packet) {
-        // This is the real executor — the actual enforcement point for "does this peer get to
-        // control my flashlight."
-        if (!LinkDevicePermissions.check(getContext(), deviceId, "flashlight")) {
-            android.util.Log.i(TAG, "Blocked flashlight packet from " + deviceId + " (Permission disabled)");
+        boolean enabled = packet.body.optBoolean("enabled", false);
+        boolean isCommand = packet.body.optBoolean("isCommand", false);
+
+        if (isCommand) {
+            // This is a command from a peer trying to control THIS device's flashlight
+            if (!LinkDevicePermissions.check(getContext(), deviceId, "flashlight")) {
+                android.util.Log.i(TAG, "Blocked flashlight command from " + deviceId + " (Permission disabled)");
+                return;
+            }
+            LinkFlashlight.setTorchMode(getContext(), enabled);
+            // Do NOT notify UI of command execution — the torch callback listener will handle
+            // broadcasting the real state change to peers when the torch actually changes.
             return;
         }
-        boolean enabled = packet.body.optBoolean("enabled", false);
-        LinkFlashlight.setTorchMode(getContext(), enabled);
-        LinkPacket np = LinkFlashlight.createStatusPacket(enabled);
-        // Outbound gate — a peer denied 'flashlight' shouldn't passively learn the resulting
-        // state just because someone else (permitted) triggered it.
-        broadcastToPermittedPeers("flashlight", np);
+
+        // This is a state broadcast from a peer — display it on the UI
         JSObject data = new JSObject();
         data.put("deviceId", deviceId);
         data.put("enabled", enabled);
@@ -926,25 +1182,90 @@ public class LinkPlugin extends Plugin {
     }
 
     private void handleDndPacket(String deviceId, LinkPacket packet) {
-        if (!LinkDevicePermissions.check(getContext(), deviceId, "dnd")) {
-            android.util.Log.i(TAG, "Blocked DND packet from " + deviceId + " (Permission disabled)");
+        boolean enabled = packet.body.optBoolean("enabled", false);
+        boolean isCommand = packet.body.optBoolean("isCommand", false);
+
+        if (isCommand) {
+            // This is a command from a peer trying to control THIS device's DND
+            if (!LinkDevicePermissions.check(getContext(), deviceId, "dnd")) {
+                android.util.Log.i(TAG, "Blocked DND command from " + deviceId + " (Permission disabled)");
+                return;
+            }
+            // Without the OS-level "Do Not Disturb access" grant, we can't execute the command
+            if (!LinkDND.isDndGranted(getContext())) {
+                android.util.Log.i(TAG, "Cannot execute DND command from " + deviceId + " — app lacks 'Do Not Disturb access' permission in Android Settings");
+                return;
+            }
+            LinkDND.setDnd(getContext(), enabled);
+            // Do NOT notify UI of command execution — the receiver listener will handle
+            // broadcasting the real state change to peers when DND actually changes.
             return;
         }
-        // Without the OS-level "Do Not Disturb access" grant, setDnd() can't actually do
-        // anything — silently drop instead of broadcasting a state nobody can act on. A's UI
-        // just never sees this peer's DND controls at all, same as if the peer never supported
-        // DND — it doesn't need to know why. The disclaimer to grant this lives on THIS
-        // device's own Permissions tab, not in anything sent to peers.
-        if (!LinkDND.isDndGranted(getContext())) return;
-        boolean enabled = packet.body.optBoolean("enabled", false);
-        LinkDND.setDnd(getContext(), enabled);
-        LinkPacket np = LinkDND.createStatusPacket(getContext());
-        broadcastToPermittedPeers("dnd", np);
+
+        // This is a state broadcast from a peer — display it on the UI
+        // The peer's state is displayable regardless of whether THIS device has DND access
         JSObject data = new JSObject();
         data.put("deviceId", deviceId);
-        data.put("enabled", LinkDND.isDndEnabled(getContext()));
+        data.put("enabled", enabled);
         data.put("granted", LinkDND.isDndGranted(getContext()));
         notifyListeners("dndStateReceived", data);
+    }
+
+    // Mobile-to-mobile presenter: this device is the TARGET being controlled by a peer (e.g.
+    // another phone). Mirrors desktop main.ts's showPresenterDot/hidePresenterDot — permission
+    // gate first, then forward dx/dy (or stop) to the JS layer, which renders the in-app
+    // full-screen pointer-dot overlay (mobile has no OS-level always-on-top window like Electron's
+    // BrowserWindow, so the overlay lives inside this app's own WebView instead).
+    private void handlePresenterPacket(String deviceId, LinkPacket packet) {
+        if (!LinkDevicePermissions.check(getContext(), deviceId, "presenter")) {
+            android.util.Log.i(TAG, "Blocked Presenter packet from " + deviceId + " (Permission disabled)");
+            return;
+        }
+        boolean stop = packet.body.optBoolean("stop", false);
+        if (stop) {
+            // Hide both overlay implementations unconditionally — harmless no-op on whichever
+            // one isn't currently active (permission may have changed mid-session).
+            LinkPresenterOverlay.hide();
+        }
+        JSObject data = new JSObject();
+        data.put("deviceId", deviceId);
+        if (stop) {
+            data.put("stop", true);
+        } else {
+            data.put("dx", packet.body.optDouble("dx", 0));
+            data.put("dy", packet.body.optDouble("dy", 0));
+        }
+        notifyListeners("presenterPositionReceived", data);
+    }
+
+    private void handleDigitizerSessionPacket(String deviceId, LinkPacket packet) {
+        if (!LinkDevicePermissions.check(getContext(), deviceId, "digitizer")) {
+            android.util.Log.i(TAG, "Blocked Digitizer session from " + deviceId + " (Permission disabled)");
+            return;
+        }
+        String action = packet.getBody().optString("action");
+        int width = packet.getBody().optInt("width", 0);
+        int height = packet.getBody().optInt("height", 0);
+
+        JSObject data = new JSObject();
+        data.put("deviceId", deviceId);
+        data.put("action", action);
+        data.put("width", width);
+        data.put("height", height);
+        notifyListeners("digitizerSessionReceived", data);
+    }
+
+    private void handleDigitizerPacket(String deviceId, LinkPacket packet) {
+        if (!LinkDevicePermissions.check(getContext(), deviceId, "digitizer")) {
+            return;
+        }
+        JSObject data = new JSObject();
+        data.put("deviceId", deviceId);
+        data.put("x", packet.getBody().optInt("x", 0));
+        data.put("y", packet.getBody().optInt("y", 0));
+        data.put("touching", packet.getBody().optBoolean("touching", false));
+        data.put("active", packet.getBody().optBoolean("active", true));
+        notifyListeners("digitizerEventReceived", data);
     }
 
     private void handleLockPacket(String deviceId, LinkPacket packet) {
@@ -1023,6 +1344,9 @@ public class LinkPlugin extends Plugin {
         if (newName != null) {
             LinkTrustStore store = new LinkTrustStore(getContext());
             store.rename(deviceId, newName);
+            if (deviceManager != null) {
+                deviceManager.updatePeerName(deviceId, newName);
+            }
             JSObject data = new JSObject();
             data.put("deviceId", deviceId);
             data.put("newName", newName);
@@ -1053,6 +1377,7 @@ public class LinkPlugin extends Plugin {
     }
 
     private void handleMprisRequestPacket(String deviceId, LinkPacket packet) {
+        String action = packet.body.optString("action");
         if (!LinkDevicePermissions.check(getContext(), deviceId, "mpris")) {
             android.util.Log.i(TAG, "Blocked MPRIS request from " + deviceId + " (Permission disabled)");
             return;
@@ -1091,7 +1416,7 @@ public class LinkPlugin extends Plugin {
         speedTest.handleResponse(packet);
     }
 
-    private void handleAudioRelayStartedPacket(String deviceId, LinkPacket packet) {
+    private void handleAudioSinkStartedPacket(String deviceId, LinkPacket packet) {
         String token = packet.body.optString("token", null);
         String host = deviceManager != null ? deviceManager.remoteAddressOf(deviceId) : null;
         if (token == null || host == null) return;
@@ -1099,13 +1424,13 @@ public class LinkPlugin extends Plugin {
         data.put("deviceId", deviceId);
         data.put("token", token);
         data.put("host", host);
-        notifyListeners("audioRelayPairedSessionStarted", data);
+        notifyListeners("audioSinkPairedSessionStarted", data);
     }
 
-    private void handleAudioRelayEndedPacket(String deviceId) {
+    private void handleAudioSinkEndedPacket(String deviceId) {
         JSObject data = new JSObject();
         data.put("deviceId", deviceId);
-        notifyListeners("audioRelayPairedSessionEnded", data);
+        notifyListeners("audioSinkPairedSessionEnded", data);
     }
 
     /** Real display name for a peer, for labeling Audio Relay/Remote Mic listeners — those server
@@ -1120,42 +1445,54 @@ public class LinkPlugin extends Plugin {
         return deviceId;
     }
 
-    /** Mirrors desktop main.ts's link.audiorelay.query handler exactly: if we're currently
+    /** Mirrors desktop main.ts's blockUntrustedGuest() — see its comment for the full reasoning.
+     *  Blocking an untrusted-tool guest (Audio Sink/Remote Mic/Walkie Talkie/Joystick/File
+     *  Transfer) by bare IP always produced a generic "Guest (ip)" entry, visually different from
+     *  blocking the same physical device via reject+block on a pairing request. If this IP
+     *  resolves to a device this app can actually identify — paired, or just visible via LAN
+     *  discovery even though never paired — block it by deviceId with its real name/type instead,
+     *  so the Blocklist entry looks identical regardless of which surface the block came from. */
+    private void blockUntrustedGuest(String remoteAddress, String selfReportedName) {
+        String cleanIp = remoteAddress != null ? remoteAddress.replace("::ffff:", "").split(":")[0] : null;
+        if (cleanIp == null) return;
+
+        String pairedId = deviceManager != null ? deviceManager.deviceIdForAddress(cleanIp) : null;
+        if (pairedId != null) {
+            String name = getDeviceDisplayName(pairedId);
+            LinkBlocklist.add(getContext(), pairedId, name != null ? name : (selfReportedName != null ? selfReportedName : "Guest (" + cleanIp + ")"), "device", null, cleanIp);
+            return;
+        }
+
+        for (JSObject peer : sDiscoveredPeers.values()) {
+            if (cleanIp.equals(peer.getString("ipAddress"))) {
+                String deviceId = peer.getString("deviceId");
+                String deviceName = peer.getString("deviceName");
+                String deviceType = peer.getString("deviceType");
+                LinkBlocklist.add(getContext(), deviceId, deviceName != null ? deviceName : (selfReportedName != null ? selfReportedName : "Guest (" + cleanIp + ")"), "device", deviceType, cleanIp);
+                return;
+            }
+        }
+
+        LinkBlocklist.add(getContext(), cleanIp, selfReportedName != null ? selfReportedName : "Guest (" + cleanIp + ")", "ip");
+    }
+
+    /** Mirrors desktop main.ts's link.audiosink.query handler exactly: if we're currently
      *  hosting, mint a fresh one-time token for the asking peer and reply — same mechanism used
      *  when a session first starts (see the token-issuing loop in onMediaProjectionResult()), just
      *  triggered by a peer opening its Audio Relay tab late instead of at session-start time. */
-    private void handleAudioRelayQueryPacket(String deviceId) {
-        if (sAudioRelayServer == null || deviceManager == null) return;
-        if (!LinkDevicePermissions.check(getContext(), deviceId, "audiorelay")) return;
-        String token = sAudioRelayServer.issueToken(deviceId, getDeviceDisplayName(deviceId));
+    private void handleAudioSinkQueryPacket(String deviceId) {
+        if (sAudioSinkServer == null || deviceManager == null) return;
+        String token = sAudioSinkServer.issueToken(deviceId, getDeviceDisplayName(deviceId));
         try {
             JSONObject body = new JSONObject();
             body.put("token", token);
             body.put("port", LinkTransport.AUDIO_RELAY_PORT);
-            deviceManager.sendTo(deviceId, new LinkPacket("link.audiorelay.started", body));
+            deviceManager.sendTo(deviceId, new LinkPacket("link.audiosink.started", body));
         } catch (Exception ignored) {}
-    }
-
-    private void handleRemoteMicStartedPacket(String deviceId, LinkPacket packet) {
-        String token = packet.body.optString("token", null);
-        String host = deviceManager != null ? deviceManager.remoteAddressOf(deviceId) : null;
-        if (token == null || host == null) return;
-        JSObject data = new JSObject();
-        data.put("deviceId", deviceId);
-        data.put("token", token);
-        data.put("host", host);
-        notifyListeners("remoteMicPairedSessionStarted", data);
-    }
-
-    private void handleRemoteMicEndedPacket(String deviceId) {
-        JSObject data = new JSObject();
-        data.put("deviceId", deviceId);
-        notifyListeners("remoteMicPairedSessionEnded", data);
     }
 
     private void handleRemoteMicQueryPacket(String deviceId) {
         if (sRemoteMicServer == null || deviceManager == null) return;
-        if (!LinkDevicePermissions.check(getContext(), deviceId, "audiorelay")) return;
         String token = sRemoteMicServer.issueToken(deviceId, getDeviceDisplayName(deviceId));
         try {
             JSONObject body = new JSONObject();
@@ -1165,8 +1502,266 @@ public class LinkPlugin extends Plugin {
         } catch (Exception ignored) {}
     }
 
+    // ===== Walkie Talkie (real-time multi-party voice, WebRTC full mesh) =====
+    // Pure signaling relay, same as main.ts's — session membership + SDP/ICE negotiation logic all
+    // lives in WalkieTalkieTab.tsx (shared with desktop). This class never parses `body`, just
+    // forwards it as an opaque JSON string; getUserMedia/RTCPeerConnection run in the WebView
+    // itself (Capacitor's BridgeWebChromeClient already grants RECORD_AUDIO for getUserMedia), so
+    // no native audio code exists on this side of the feature at all. No per-device permission
+    // gate — same as Joystick: pairing itself is the trust decision for this ephemeral session
+    // tool, not a standing capability to grant/deny separately.
+    private void handleWalkieTalkieSignalPacket(String deviceId, LinkPacket packet) {
+        JSObject data = new JSObject();
+        data.put("deviceId", deviceId);
+        data.put("type", packet.type);
+        data.put("body", packet.body != null ? packet.body.toString() : "{}");
+        notifyListeners("walkieTalkieSignal", data);
+    }
+
+    @PluginMethod
+    public void sendWalkieTalkieSignal(PluginCall call) {
+        String deviceId = call.getString("deviceId");
+        String type = call.getString("type");
+        String bodyStr = call.getString("body", "{}");
+        if (deviceManager != null && deviceId != null && type != null) {
+            try {
+                deviceManager.sendTo(deviceId, new LinkPacket(type, new JSONObject(bodyStr)));
+            } catch (Exception ignored) {}
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void broadcastWalkieTalkieSignal(PluginCall call) {
+        String type = call.getString("type");
+        String bodyStr = call.getString("body", "{}");
+        if (deviceManager != null && type != null) {
+            for (String peerId : deviceManager.trustedConnectedDeviceIds()) {
+                try {
+                    deviceManager.sendTo(peerId, new LinkPacket(type, new JSONObject(bodyStr)));
+                } catch (Exception ignored) {}
+            }
+        }
+        call.resolve();
+    }
+
+    // --- Guest-facing (an unpaired participant reaches us via manual IP + PIN instead) ---
+    @PluginMethod
+    public void startWalkieTalkieGuestListener(PluginCall call) {
+        if (sWalkieTalkieGuestServer != null) {
+            JSObject ret = new JSObject();
+            ret.put("started", true);
+            ret.put("port", LinkTransport.WALKIE_TALKIE_PORT);
+            call.resolve(ret);
+            return;
+        }
+        if (deviceManager == null) {
+            JSObject ret = new JSObject();
+            ret.put("started", false);
+            ret.put("error", "Not initialized");
+            call.resolve(ret);
+            return;
+        }
+        try {
+            LinkWalkieTalkieSignalServer server = new LinkWalkieTalkieSignalServer(
+                getContext(), deviceManager.getMyCert(), deviceManager.getMyKey(), LinkTransport.WALKIE_TALKIE_PORT,
+                new LinkWalkieTalkieSignalServer.Listener() {
+                    @Override
+                    public void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName) {
+                        JSObject data = new JSObject();
+                        data.put("connId", connId);
+                        data.put("pin", pin);
+                        data.put("remoteAddress", remoteAddress);
+                        data.put("deviceName", deviceName);
+                        notifyListeners("walkieTalkieGuestPinPending", data);
+                    }
+                    @Override
+                    public void onSignal(String connId, String type, String bodyJson) {
+                        JSObject data = new JSObject();
+                        data.put("connId", connId);
+                        data.put("type", type);
+                        data.put("body", bodyJson);
+                        notifyListeners("walkieTalkieGuestSignal", data);
+                    }
+                    @Override
+                    public void onGuestLeft(String connId) {
+                        JSObject data = new JSObject();
+                        data.put("connId", connId);
+                        notifyListeners("walkieTalkieGuestLeft", data);
+                    }
+                    @Override
+                    public void onError(String message) {
+                        android.util.Log.e(TAG, "Walkie Talkie guest listener error: " + message);
+                    }
+                },
+                idOrIp -> LinkBlocklist.isBlocked(getContext(), idOrIp));
+            server.start();
+            sWalkieTalkieGuestServer = server;
+        } catch (Exception e) {
+            JSObject ret = new JSObject();
+            ret.put("started", false);
+            ret.put("error", e.getMessage());
+            call.resolve(ret);
+            return;
+        }
+        JSObject ret = new JSObject();
+        ret.put("started", true);
+        ret.put("port", LinkTransport.WALKIE_TALKIE_PORT);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void stopWalkieTalkieGuestListener(PluginCall call) {
+        if (sWalkieTalkieGuestServer != null) {
+            try { sWalkieTalkieGuestServer.stop(); } catch (Exception ignored) {}
+            sWalkieTalkieGuestServer = null;
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void acceptWalkieTalkieGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sWalkieTalkieGuestServer != null && connId != null) sWalkieTalkieGuestServer.acceptGuest(connId);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void rejectWalkieTalkieGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sWalkieTalkieGuestServer != null && connId != null) sWalkieTalkieGuestServer.rejectGuest(connId);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void blockWalkieTalkieGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sWalkieTalkieGuestServer != null && connId != null) {
+            String ip = sWalkieTalkieGuestServer.getPendingGuestRemoteAddress(connId);
+            if (ip != null) blockUntrustedGuest(ip, null);
+            sWalkieTalkieGuestServer.rejectGuest(connId);
+            sWalkieTalkieGuestServer.kickGuest(connId);
+        }
+        call.resolve();
+    }
+
+    // Plain kick — disconnects an already-admitted guest without touching the Blocklist, so they
+    // can rejoin later. Mirrors main.ts's kick-walkie-talkie-guest handler (desktop-hosting side);
+    // this is the same method for when a PHONE is the one hosting instead.
+    @PluginMethod
+    public void kickWalkieTalkieGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sWalkieTalkieGuestServer != null && connId != null) sWalkieTalkieGuestServer.kickGuest(connId);
+        call.resolve();
+    }
+
+    // A PAIRED member being blocked isn't a "guest" the signal server knows about at all — it's an
+    // existing trusted device, so this is a plain device-id Blocklist entry, mirroring main.ts's
+    // block-walkie-talkie-member handler (desktop-hosting side). Captures their current IP too
+    // (see LinkBlocklist.isBlocked's cross-check) — without this, blocking them by deviceId
+    // wouldn't stop the same device from reconnecting as an untrusted-tool guest, which only ever
+    // checks by IP.
+    @PluginMethod
+    public void blockWalkieTalkieMember(PluginCall call) {
+        String deviceId = call.getString("deviceId");
+        String label = call.getString("label", deviceId);
+        if (deviceId != null) {
+            String ip = deviceManager != null ? deviceManager.remoteAddressOf(deviceId) : null;
+            LinkBlocklist.add(getContext(), deviceId, label, "device", null, ip);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void sendWalkieTalkieGuestSignal(PluginCall call) {
+        String connId = call.getString("connId");
+        String type = call.getString("type");
+        String bodyStr = call.getString("body", "{}");
+        if (sWalkieTalkieGuestServer != null && connId != null && type != null) {
+            sWalkieTalkieGuestServer.sendTo(connId, type, bodyStr);
+        }
+        call.resolve();
+    }
+
+    // --- Guest-side (us joining someone else's session via manual IP, unpaired) ---
+    @PluginMethod
+    public void joinWalkieTalkieGuest(PluginCall call) {
+        String host = call.getString("host");
+        if (deviceManager == null || host == null) {
+            call.resolve();
+            return;
+        }
+        if (sWalkieTalkieGuestClient != null) sWalkieTalkieGuestClient.disconnect();
+        LinkWalkieTalkieSignalClient client = new LinkWalkieTalkieSignalClient(new LinkWalkieTalkieSignalClient.Listener() {
+            @Override
+            public void onPinComputed(String pin) {
+                JSObject data = new JSObject();
+                data.put("pin", pin);
+                notifyListeners("walkieTalkieGuestPinComputed", data);
+            }
+            @Override
+            public void onAdmitted() {
+                // No dedicated event needed — the host follows admission with a join-accepted
+                // signal (same as the trusted-mesh flow), which onSignal already forwards.
+            }
+            @Override
+            public void onSignal(String type, String bodyJson) {
+                JSObject data = new JSObject();
+                data.put("type", type);
+                data.put("body", bodyJson);
+                notifyListeners("walkieTalkieHostSignal", data);
+            }
+            @Override
+            public void onEnded(String reason) {
+                sWalkieTalkieGuestClient = null;
+                JSObject data = new JSObject();
+                data.put("reason", reason);
+                notifyListeners("walkieTalkieHostEnded", data);
+            }
+            @Override
+            public void onClosed(String reason) {
+                sWalkieTalkieGuestClient = null;
+                JSObject data = new JSObject();
+                data.put("reason", reason);
+                notifyListeners("walkieTalkieHostClosed", data);
+            }
+            @Override
+            public void onError(String message) {
+                JSObject data = new JSObject();
+                data.put("message", message);
+                notifyListeners("walkieTalkieHostError", data);
+            }
+        });
+        sWalkieTalkieGuestClient = client;
+        client.connect(host, LinkTransport.WALKIE_TALKIE_PORT, deviceManager.getMyCert(), deviceManager.getMyKey(), myIdentity != null ? myIdentity.deviceName : "Guest");
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void leaveWalkieTalkieGuest(PluginCall call) {
+        if (sWalkieTalkieGuestClient != null) {
+            sWalkieTalkieGuestClient.disconnect();
+            sWalkieTalkieGuestClient = null;
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void sendWalkieTalkieGuestMessage(PluginCall call) {
+        String type = call.getString("type");
+        String bodyStr = call.getString("body", "{}");
+        if (sWalkieTalkieGuestClient != null && type != null) {
+            sWalkieTalkieGuestClient.send(type, bodyStr);
+        }
+        call.resolve();
+    }
+
     private void sendInitialSync(String deviceId) {
         if (deviceManager == null) return;
+        // Ensure permissions are upgraded to new defaults (especially for devices paired
+        // before communication features defaulted to ALLOWED). This is a no-op for freshly
+        // paired devices, but upgrades existing devices to have DND/flashlight/etc. enabled.
+        LinkDevicePermissions.initializeDeniedPermissionsForNewDevice(getContext(), deviceId);
         // 0. Effective capabilities — lets the peer's UI know upfront exactly which of our gated
         // features it's currently allowed to use, before any state packets below even arrive.
         deviceManager.sendTo(deviceId, LinkCapabilities.createCapabilitiesPacket(getContext(), deviceId));
@@ -1201,8 +1796,9 @@ public class LinkPlugin extends Plugin {
         if (LinkDevicePermissions.check(getContext(), deviceId, "flashlight")) {
             deviceManager.sendTo(deviceId, LinkFlashlight.createStatusPacket(LinkFlashlight.isTorchOn()));
         }
-        // 7. DND
-        if (LinkDND.isDndGranted(getContext()) && LinkDevicePermissions.check(getContext(), deviceId, "dnd")) {
+        // 7. DND — send state if permission allows (grant check only matters for execution,
+        // not for advertising state)
+        if (LinkDevicePermissions.check(getContext(), deviceId, "dnd")) {
             deviceManager.sendTo(deviceId, LinkDND.createStatusPacket(getContext()));
         }
         // 8. Lock state
@@ -1265,101 +1861,137 @@ public class LinkPlugin extends Plugin {
         String deviceId = call.getString("deviceId");
         boolean enabled = call.getBoolean("enabled", false);
         if (deviceManager != null && deviceId != null) {
-            deviceManager.sendTo(deviceId, LinkFlashlight.createStatusPacket(enabled));
+            deviceManager.sendTo(deviceId, LinkFlashlight.createCommandPacket(enabled));
         }
         call.resolve();
     }
 
     // ===== Audio Relay (host + listener) =====
     @PluginMethod
-    public void joinAudioRelayGuest(PluginCall call) {
+    public void joinAudioSinkGuest(PluginCall call) {
         String host = call.getString("host");
         if (host == null || deviceManager == null) {
             call.reject("Missing host, or not initialized");
             return;
         }
-        startAudioRelayListener(host, null);
+        startAudioSinkListener(host, null);
         call.resolve();
     }
 
     @PluginMethod
-    public void joinAudioRelayPaired(PluginCall call) {
+    public void joinAudioSinkPaired(PluginCall call) {
         String host = call.getString("host");
         String token = call.getString("token");
         if (host == null || token == null || deviceManager == null) {
             call.reject("Missing host/token, or not initialized");
             return;
         }
-        startAudioRelayListener(host, token);
+        startAudioSinkListener(host, token);
         call.resolve();
     }
 
     @PluginMethod
-    public void leaveAudioRelay(PluginCall call) {
-        if (sAudioRelayClient != null) {
-            sAudioRelayClient.disconnect();
-            sAudioRelayClient = null;
+    public void leaveAudioSink(PluginCall call) {
+        if (sAudioSinkClient != null) {
+            sAudioSinkClient.disconnect();
+            sAudioSinkClient = null;
         }
+        sAudioSinkHostLabel = "";
+        updateSessionNotification();
         call.resolve();
     }
 
     @PluginMethod
-    public void setAudioRelayListenerVolume(PluginCall call) {
+    public void setAudioSinkListenerVolume(PluginCall call) {
         Double volume = call.getDouble("volume");
-        if (sAudioRelayClient != null && volume != null) {
-            sAudioRelayClient.setVolume(volume.floatValue());
+        if (sAudioSinkClient != null && volume != null) {
+            sAudioSinkClient.setVolume(volume.floatValue());
         }
         call.resolve();
     }
 
-    /** Called once when the Audio Relay tab opens — the one-shot 'link.audiorelay.started'
+    /** Called once when the Audio Relay tab opens — the one-shot 'link.audiosink.started'
      *  broadcast a host sends only ever reaches a peer that was connected AND had this screen
      *  open at that exact moment, with no way to catch up otherwise. Handled symmetrically by
-     *  handleAudioRelayQueryPacket() above when THIS device is the one being asked. */
+     *  handleAudioSinkQueryPacket() above when THIS device is the one being asked. */
     @PluginMethod
-    public void queryAudioRelaySessions(PluginCall call) {
+    public void queryAudioSinkSessions(PluginCall call) {
         if (deviceManager != null) {
             for (String peerId : deviceManager.trustedConnectedDeviceIds()) {
-                deviceManager.sendTo(peerId, new LinkPacket("link.audiorelay.query", new JSONObject()));
+                deviceManager.sendTo(peerId, new LinkPacket("link.audiosink.query", new JSONObject()));
             }
         }
         call.resolve();
     }
 
     @PluginMethod
-    public void acceptAudioRelayGuest(PluginCall call) {
-        String connId = call.getString("connId");
-        if (sAudioRelayServer != null && connId != null) sAudioRelayServer.acceptGuest(connId);
-        call.resolve();
-    }
-
-    @PluginMethod
-    public void rejectAudioRelayGuest(PluginCall call) {
-        String connId = call.getString("connId");
-        if (sAudioRelayServer != null && connId != null) sAudioRelayServer.rejectGuest(connId);
-        call.resolve();
-    }
-
-    @PluginMethod
-    public void setAudioRelayMuted(PluginCall call) {
+    public void setAudioSinkMuted(PluginCall call) {
         Boolean muted = call.getBoolean("muted");
-        if (sAudioRelayServer != null && muted != null) sAudioRelayServer.setMuted(muted);
+        if (sAudioSinkServer != null && muted != null) sAudioSinkServer.setMuted(muted);
+        updateSessionNotification();
         call.resolve();
     }
 
     @PluginMethod
-    public void kickAudioRelayListener(PluginCall call) {
+    public void acceptAudioSinkGuest(PluginCall call) {
         String connId = call.getString("connId");
-        if (sAudioRelayServer != null && connId != null) sAudioRelayServer.kickListener(connId);
+        if (sAudioSinkServer != null && connId != null) sAudioSinkServer.acceptGuest(connId);
         call.resolve();
     }
 
     @PluginMethod
-    public void getAudioRelayListeners(PluginCall call) {
+    public void rejectAudioSinkGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sAudioSinkServer != null && connId != null) sAudioSinkServer.rejectGuest(connId);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void blockAudioSinkGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sAudioSinkServer != null && connId != null) {
+            String remoteAddress = sAudioSinkServer.getPendingGuestRemoteAddress(connId);
+            if (remoteAddress != null) {
+                blockUntrustedGuest(remoteAddress, null);
+            }
+            sAudioSinkServer.rejectGuest(connId);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void kickAudioSinkListener(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sAudioSinkServer != null && connId != null) sAudioSinkServer.kickListener(connId);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void blockAudioSinkListener(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sAudioSinkServer != null && connId != null) {
+            LinkAudioSinkServer.ListenerBlockInfo info = sAudioSinkServer.getListenerBlockInfo(connId);
+            if (info != null) {
+                if (info.deviceId != null) {
+                    // Captures their current IP too (mirrors desktop's isBlocked fix) — without
+                    // this, blocking a paired listener by deviceId wouldn't stop the same device
+                    // from reconnecting as an untrusted-tool guest, which only ever checks by IP.
+                    LinkBlocklist.add(getContext(), info.deviceId, getDeviceDisplayName(info.deviceId), "device", null, info.remoteAddress);
+                } else {
+                    blockUntrustedGuest(info.remoteAddress, null);
+                }
+            }
+            sAudioSinkServer.kickListener(connId);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void getAudioSinkListeners(PluginCall call) {
         JSObject ret = new JSObject();
         com.getcapacitor.JSArray arr = new com.getcapacitor.JSArray();
-        if (sAudioRelayServer != null) {
-            for (LinkAudioRelayServer.ListenerInfo l : sAudioRelayServer.listenersSnapshot()) {
+        if (sAudioSinkServer != null) {
+            for (LinkAudioSinkServer.ListenerInfo l : sAudioSinkServer.listenersSnapshot()) {
                 JSObject o = new JSObject();
                 o.put("id", l.id);
                 o.put("label", l.label);
@@ -1370,21 +2002,22 @@ public class LinkPlugin extends Plugin {
         call.resolve(ret);
     }
 
-    // Was missing from the mobile bridge entirely — AudioRelayTab.tsx queries this on every
+    // Was missing from the mobile bridge entirely — AudioSinkTab.tsx queries this on every
     // mount to restore "currently hosting"/"currently listening" state (e.g. after the tab was
     // closed and reopened), so without it the UI always fell back to the fresh idle screen even
-    // mid-session. Mirrors desktop main.ts's 'get-audio-relay-status' handler: mobile is never a
+    // mid-session. Mirrors desktop main.ts's 'get-audio-sink-status' handler: mobile is never a
     // listener for its own hosted Audio Relay session (this device only ever hosts OR joins
     // someone else's, never both), so "listening" here can't currently be true, but the shape
     // matches the desktop response for a consistent contract either way.
     @PluginMethod
-    public void getAudioRelayStatus(PluginCall call) {
+    public void getAudioSinkStatus(PluginCall call) {
         JSObject ret = new JSObject();
-        ret.put("hosting", sAudioRelayServer != null);
-        ret.put("listening", sAudioRelayClient != null);
+        ret.put("hosting", sAudioSinkServer != null);
+        ret.put("listening", sAudioSinkClient != null);
+        ret.put("hostLabel", sAudioSinkHostLabel);
         com.getcapacitor.JSArray arr = new com.getcapacitor.JSArray();
-        if (sAudioRelayServer != null) {
-            for (LinkAudioRelayServer.ListenerInfo l : sAudioRelayServer.listenersSnapshot()) {
+        if (sAudioSinkServer != null) {
+            for (LinkAudioSinkServer.ListenerInfo l : sAudioSinkServer.listenersSnapshot()) {
                 JSObject o = new JSObject();
                 o.put("id", l.id);
                 o.put("label", l.label);
@@ -1396,27 +2029,28 @@ public class LinkPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void endAudioRelay(PluginCall call) {
-        stopAudioRelayHosting();
+    public void endAudioSink(PluginCall call) {
+        stopAudioSinkHosting();
         call.resolve();
     }
 
-    /** Shared teardown for both the explicit "End Session" button (endAudioRelay above) and the
+    /** Shared teardown for both the explicit "End Session" button (endAudioSink above) and the
      *  OS revoking capture via its own "Stop casting" control (MediaProjection.Callback.onStop()
      *  in onMediaProjectionResult()) — neither path has anything more to do than this. */
-    private void stopAudioRelayHosting() {
-        if (sAudioRelayServer == null) return;
+    private void stopAudioSinkHosting() {
+        if (sAudioSinkServer == null) return;
         if (deviceManager != null) {
             for (String peerId : deviceManager.trustedConnectedDeviceIds()) {
-                deviceManager.sendTo(peerId, new LinkPacket("link.audiorelay.ended", new JSONObject()));
+                deviceManager.sendTo(peerId, new LinkPacket("link.audiosink.ended", new JSONObject()));
             }
         }
         try {
-            sAudioRelayServer.stop();
+            sAudioSinkServer.stop();
         } catch (Exception e) {
-            android.util.Log.e(TAG, "Error stopping AudioRelayServer", e);
+            android.util.Log.e(TAG, "Error stopping AudioSinkServer", e);
         }
-        sAudioRelayServer = null;
+        sAudioSinkServer = null;
+        updateSessionNotification();
     }
 
     /** Requires Android 10+ (AudioPlaybackCaptureConfiguration) — minSdkVersion is 23, so this
@@ -1426,7 +2060,7 @@ public class LinkPlugin extends Plugin {
      *  then need the small one afterward, and because building the capture config without
      *  RECORD_AUDIO already granted throws a SecurityException. */
     @PluginMethod
-    public void startAudioRelay(PluginCall call) {
+    public void startAudioSink(PluginCall call) {
         if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) {
             JSObject ret = new JSObject();
             ret.put("started", false);
@@ -1434,7 +2068,7 @@ public class LinkPlugin extends Plugin {
             call.resolve(ret);
             return;
         }
-        if (sAudioRelayServer != null) {
+        if (sAudioSinkServer != null) {
             JSObject ret = new JSObject();
             ret.put("started", true);
             ret.put("port", LinkTransport.AUDIO_RELAY_PORT);
@@ -1489,37 +2123,38 @@ public class LinkPlugin extends Plugin {
                 (android.media.projection.MediaProjectionManager) getContext().getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE);
             android.media.projection.MediaProjection projection = mgr.getMediaProjection(result.getResultCode(), result.getData());
 
-            LinkAudioRelayServer server = new LinkAudioRelayServer(
+            LinkAudioSinkServer server = new LinkAudioSinkServer(
                 getContext(), deviceManager.getMyCert(), deviceManager.getMyKey(), LinkTransport.AUDIO_RELAY_PORT,
-                new LinkAudioRelayServer.Listener() {
+                new LinkAudioSinkServer.Listener() {
                     @Override
-                    public void onGuestPinPending(String connId, String pin, String remoteAddress) {
+                    public void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName) {
                         JSObject data = new JSObject();
                         data.put("connId", connId);
                         data.put("pin", pin);
                         data.put("remoteAddress", remoteAddress);
-                        notifyListeners("audioRelayGuestPinPending", data);
+                        data.put("deviceName", deviceName);
+                        notifyListeners("audioSinkGuestPinPending", data);
                     }
                     @Override
                     public void onListenerJoined(String connId, String label) {
                         JSObject data = new JSObject();
                         data.put("connId", connId);
                         data.put("label", label);
-                        notifyListeners("audioRelayListenerJoined", data);
+                        notifyListeners("audioSinkListenerJoined", data);
                     }
                     @Override
                     public void onListenerLeft(String connId) {
                         JSObject data = new JSObject();
                         data.put("connId", connId);
-                        notifyListeners("audioRelayListenerLeft", data);
+                        notifyListeners("audioSinkListenerLeft", data);
                     }
                     @Override
                     public void onError(String message) {
                         JSObject data = new JSObject();
                         data.put("message", message);
-                        notifyListeners("audioRelayError", data);
+                        notifyListeners("audioSinkError", data);
                     }
-                });
+                }, idOrIp -> LinkBlocklist.isBlocked(getContext(), idOrIp));
             server.start();
 
             // Revocation via the OS "Stop casting" notification-shade control must tear down
@@ -1530,25 +2165,25 @@ public class LinkPlugin extends Plugin {
                 public void onStop() {
                     JSObject data = new JSObject();
                     data.put("message", "Capture stopped by the system");
-                    notifyListeners("audioRelayError", data);
-                    stopAudioRelayHosting();
+                    notifyListeners("audioSinkError", data);
+                    stopAudioSinkHosting();
                 }
             }, new android.os.Handler(android.os.Looper.getMainLooper()));
 
             server.startCapture(projection);
-            sAudioRelayServer = server;
+            sAudioSinkServer = server;
 
             for (String peerId : deviceManager.trustedConnectedDeviceIds()) {
-                if (!LinkDevicePermissions.check(getContext(), peerId, "audiorelay")) continue;
                 String token = server.issueToken(peerId, getDeviceDisplayName(peerId));
                 try {
                     JSONObject body = new JSONObject();
                     body.put("token", token);
                     body.put("port", LinkTransport.AUDIO_RELAY_PORT);
-                    deviceManager.sendTo(peerId, new LinkPacket("link.audiorelay.started", body));
+                    deviceManager.sendTo(peerId, new LinkPacket("link.audiosink.started", body));
                 } catch (Exception ignored) {}
             }
 
+            updateSessionNotification();
             JSObject ret = new JSObject();
             ret.put("started", true);
             ret.put("port", LinkTransport.AUDIO_RELAY_PORT);
@@ -1575,6 +2210,7 @@ public class LinkPlugin extends Plugin {
             android.util.Log.e(TAG, "Error stopping RemoteMicServer", e);
         }
         sRemoteMicServer = null;
+        updateSessionNotification();
     }
 
     @PluginMethod
@@ -1618,11 +2254,12 @@ public class LinkPlugin extends Plugin {
                 getContext(), deviceManager.getMyCert(), deviceManager.getMyKey(), LinkTransport.AUDIO_RELAY_PORT + 2,
                 new LinkRemoteMicServer.Listener() {
                     @Override
-                    public void onGuestPinPending(String connId, String pin, String remoteAddress) {
+                    public void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName) {
                         JSObject data = new JSObject();
                         data.put("connId", connId);
                         data.put("pin", pin);
                         data.put("remoteAddress", remoteAddress);
+                        data.put("deviceName", deviceName);
                         notifyListeners("remoteMicGuestPinPending", data);
                     }
                     @Override
@@ -1644,13 +2281,12 @@ public class LinkPlugin extends Plugin {
                         data.put("message", message);
                         notifyListeners("remoteMicError", data);
                     }
-                });
+                }, idOrIp -> LinkBlocklist.isBlocked(getContext(), idOrIp));
             server.start();
             server.startCapture();
             sRemoteMicServer = server;
 
             for (String peerId : deviceManager.trustedConnectedDeviceIds()) {
-                if (!LinkDevicePermissions.check(getContext(), peerId, "remotemic")) continue;
                 String token = server.issueToken(peerId, getDeviceDisplayName(peerId));
                 try {
                     JSONObject body = new JSONObject();
@@ -1660,6 +2296,7 @@ public class LinkPlugin extends Plugin {
                 } catch (Exception ignored) {}
             }
 
+            updateSessionNotification();
             JSObject ret = new JSObject();
             ret.put("started", true);
             ret.put("port", LinkTransport.AUDIO_RELAY_PORT + 2);
@@ -1681,6 +2318,34 @@ public class LinkPlugin extends Plugin {
     public void setRemoteMicMuted(PluginCall call) {
         Boolean muted = call.getBoolean("muted");
         if (sRemoteMicServer != null && muted != null) sRemoteMicServer.setMuted(muted);
+        updateSessionNotification();
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void acceptRemoteMicGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sRemoteMicServer != null && connId != null) sRemoteMicServer.acceptGuest(connId);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void rejectRemoteMicGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sRemoteMicServer != null && connId != null) sRemoteMicServer.rejectGuest(connId);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void blockRemoteMicGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sRemoteMicServer != null && connId != null) {
+            String remoteAddress = sRemoteMicServer.getPendingGuestRemoteAddress(connId);
+            if (remoteAddress != null) {
+                blockUntrustedGuest(remoteAddress, sRemoteMicServer.getPendingGuestDeviceName(connId));
+            }
+            sRemoteMicServer.rejectGuest(connId);
+        }
         call.resolve();
     }
 
@@ -1688,6 +2353,26 @@ public class LinkPlugin extends Plugin {
     public void kickRemoteMicListener(PluginCall call) {
         String connId = call.getString("connId");
         if (sRemoteMicServer != null && connId != null) sRemoteMicServer.kickListener(connId);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void blockRemoteMicListener(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sRemoteMicServer != null && connId != null) {
+            LinkRemoteMicServer.ListenerBlockInfo info = sRemoteMicServer.getListenerBlockInfo(connId);
+            if (info != null) {
+                if (info.deviceId != null) {
+                    // Captures their current IP too (mirrors desktop's isBlocked fix) — without
+                    // this, blocking a paired listener by deviceId wouldn't stop the same device
+                    // from reconnecting as an untrusted-tool guest, which only ever checks by IP.
+                    LinkBlocklist.add(getContext(), info.deviceId, getDeviceDisplayName(info.deviceId), "device", null, info.remoteAddress);
+                } else {
+                    blockUntrustedGuest(info.remoteAddress, null);
+                }
+            }
+            sRemoteMicServer.kickListener(connId);
+        }
         call.resolve();
     }
 
@@ -1740,21 +2425,307 @@ public class LinkPlugin extends Plugin {
         call.resolve();
     }
 
-    // Was missing entirely — bridge.ts's queryRemoteMicSessions() called straight into
-    // CapacitorLink.queryRemoteMicSessions() with no native @PluginMethod of that name to answer
-    // it, on every single mount of RemoteMicTab.tsx (mobile or desktop), unconditionally. Mirrors
-    // queryAudioRelaySessions(): asks every trusted peer "are you currently hosting?" via
-    // link.remotemic.query, answered on the receiving end by handleRemoteMicQueryPacket(). A
-    // no-op on a purely mobile-hosts/desktop-receives topology (no peer of a phone is ever a mic
-    // host today), but the call still needs to resolve rather than not exist at all.
+    // ===== Portal Mode (one-time file transfer to an untrusted/unpaired device) =====
+    // Guest-only for v1, matching the actual ask — mirrors desktop's main.ts scoping exactly (see
+    // that file's Portal Mode section comment). LinkPortalTransferServer/Client both already
+    // support a paired-token fast path too, left unwired here rather than removed.
+
+    /** Android's equivalent of Electron's dialog.showOpenDialog({multiSelections: true}) — no
+     *  direct filesystem-path picker exists, so this launches the standard document picker
+     *  (EXTRA_ALLOW_MULTIPLE) and hands back an array of content:// Uri strings for the renderer
+     *  to pass straight back into joinPortalGuest(), which re-parses each via Uri.parse() before
+     *  handing them off to LinkPortalTransferClient.sendFiles(). */
     @PluginMethod
-    public void queryRemoteMicSessions(PluginCall call) {
-        if (deviceManager != null) {
-            for (String peerId : deviceManager.trustedConnectedDeviceIds()) {
-                deviceManager.sendTo(peerId, new LinkPacket("link.remotemic.query", new JSONObject()));
+    public void pickPortalFiles(PluginCall call) {
+        android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);
+        intent.putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true);
+        intent.setType("*/*");
+        startActivityForResult(call, intent, "onPortalFilesPicked");
+    }
+
+    @com.getcapacitor.annotation.ActivityCallback
+    private void onPortalFilesPicked(PluginCall call, androidx.activity.result.ActivityResult result) {
+        if (call == null) return;
+        if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null) {
+            call.resolve(new JSObject());
+            return;
+        }
+        android.content.Intent data = result.getData();
+        java.util.List<android.net.Uri> uris = new java.util.ArrayList<>();
+        // EXTRA_ALLOW_MULTIPLE gives back a ClipData with one item per selected file when the user
+        // picks more than one; picking exactly one file still comes back as a plain getData() Uri
+        // instead (documented Android behavior, not a bug in this code).
+        if (data.getClipData() != null) {
+            android.content.ClipData clip = data.getClipData();
+            for (int i = 0; i < clip.getItemCount(); i++) {
+                android.net.Uri u = clip.getItemAt(i).getUri();
+                if (u != null) uris.add(u);
             }
+        } else if (data.getData() != null) {
+            uris.add(data.getData());
+        }
+        // Persist read access across the app process — without this, the grant only lasts for the
+        // immediate call and a later sendFiles() (e.g. after the user first entered the receiver's
+        // IP, which can take a while) could fail with a SecurityException.
+        com.getcapacitor.JSArray uriStrings = new com.getcapacitor.JSArray();
+        for (android.net.Uri uri : uris) {
+            try {
+                getContext().getContentResolver().takePersistableUriPermission(
+                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) {}
+            uriStrings.put(uri.toString());
+        }
+        JSObject ret = new JSObject();
+        ret.put("uris", uriStrings);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void startPortalReceive(PluginCall call) {
+        if (sPortalTransferServer != null) {
+            JSObject ret = new JSObject();
+            ret.put("started", true);
+            ret.put("port", LinkTransport.PORTAL_TRANSFER_PORT);
+            ret.put("saveDir", "Link");
+            call.resolve(ret);
+            return;
+        }
+        if (deviceManager == null) {
+            JSObject ret = new JSObject();
+            ret.put("started", false);
+            ret.put("error", "Not initialized");
+            call.resolve(ret);
+            return;
+        }
+        try {
+            LinkPortalTransferServer server = new LinkPortalTransferServer(
+                getContext(), deviceManager.getMyCert(), deviceManager.getMyKey(), LinkTransport.PORTAL_TRANSFER_PORT,
+                myIdentity != null ? myIdentity.deviceName : "Device",
+                new LinkPortalTransferServer.Listener() {
+                    @Override
+                    public void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName) {
+                        JSObject data = new JSObject();
+                        data.put("connId", connId);
+                        data.put("pin", pin);
+                        data.put("remoteAddress", remoteAddress);
+                        data.put("deviceName", deviceName);
+                        notifyListeners("portalGuestPinPending", data);
+                    }
+                    @Override
+                    public void onConnectionAdmitted(String connId, String deviceName) {
+                        JSObject data = new JSObject();
+                        data.put("connId", connId);
+                        data.put("deviceName", deviceName);
+                        notifyListeners("portalConnectionAdmitted", data);
+                    }
+                    @Override
+                    public void onConnectionClosed(String connId) {
+                        JSObject data = new JSObject();
+                        data.put("connId", connId);
+                        notifyListeners("portalConnectionClosed", data);
+                    }
+                    @Override
+                    public void onTransferStarted(String connId, String name, long size) {
+                        JSObject data = new JSObject();
+                        data.put("connId", connId);
+                        data.put("name", name);
+                        data.put("size", size);
+                        notifyListeners("portalTransferStarted", data);
+                    }
+                    @Override
+                    public void onTransferProgress(String connId, long received, long size) {
+                        JSObject data = new JSObject();
+                        data.put("connId", connId);
+                        data.put("received", received);
+                        data.put("size", size);
+                        notifyListeners("portalTransferProgress", data);
+                    }
+                    @Override
+                    public void onTransferComplete(String connId, String destPath) {
+                        JSObject data = new JSObject();
+                        data.put("connId", connId);
+                        data.put("destPath", destPath);
+                        notifyListeners("portalTransferComplete", data);
+                    }
+                    @Override
+                    public void onError(String message) {
+                        JSObject data = new JSObject();
+                        data.put("message", message);
+                        notifyListeners("portalError", data);
+                    }
+                }, idOrIp -> LinkBlocklist.isBlocked(getContext(), idOrIp));
+            server.start();
+            sPortalTransferServer = server;
+
+            JSObject ret = new JSObject();
+            ret.put("started", true);
+            ret.put("port", LinkTransport.PORTAL_TRANSFER_PORT);
+            ret.put("saveDir", "Link");
+            call.resolve(ret);
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed to start Portal receive", e);
+            JSObject ret = new JSObject();
+            ret.put("started", false);
+            ret.put("error", e.getMessage());
+            call.resolve(ret);
+        }
+    }
+
+    @PluginMethod
+    public void acceptPortalGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sPortalTransferServer != null && connId != null) sPortalTransferServer.acceptGuest(connId);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void rejectPortalGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sPortalTransferServer != null && connId != null) sPortalTransferServer.rejectGuest(connId);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void blockPortalGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sPortalTransferServer != null && connId != null) {
+            String ip = sPortalTransferServer.getPendingGuestRemoteAddress(connId);
+            String name = sPortalTransferServer.getPendingGuestDeviceName(connId);
+            if (ip != null) blockUntrustedGuest(ip, name);
+            sPortalTransferServer.rejectGuest(connId);
         }
         call.resolve();
+    }
+
+    @PluginMethod
+    public void endPortalReceive(PluginCall call) {
+        if (sPortalTransferServer != null) {
+            try { sPortalTransferServer.stop(); } catch (Exception ignored) {}
+            sPortalTransferServer = null;
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void joinPortalGuest(PluginCall call) {
+        String host = call.getString("host");
+        com.getcapacitor.JSArray uriStrings = call.getArray("uris");
+        if (host == null || deviceManager == null) {
+            call.resolve();
+            return;
+        }
+        java.util.List<android.net.Uri> fileUris = new java.util.ArrayList<>();
+        if (uriStrings != null) {
+            try {
+                for (int i = 0; i < uriStrings.length(); i++) {
+                    fileUris.add(android.net.Uri.parse(uriStrings.getString(i)));
+                }
+            } catch (Exception e) {
+                call.resolve();
+                return;
+            }
+        }
+
+        if (sPortalTransferClient != null && sPortalTransferClient.isConnected()) {
+            if (fileUris.size() > 0) {
+                new Thread(() -> {
+                    if (sPortalTransferClient != null) {
+                        sPortalTransferClient.sendFiles(getContext(), fileUris);
+                    }
+                }, "link-portal-send").start();
+            }
+            call.resolve();
+            return;
+        }
+
+        if (sPortalTransferClient != null) sPortalTransferClient.disconnect();
+        LinkPortalTransferClient client = new LinkPortalTransferClient(new LinkPortalTransferClient.Listener() {
+            @Override
+            public void onPinComputed(String pin) {
+                JSObject data = new JSObject();
+                data.put("pin", pin);
+                notifyListeners("portalPinComputed", data);
+            }
+            @Override
+            public void onAdmitted(String receiverDeviceName) {
+                JSObject admittedData = new JSObject();
+                admittedData.put("deviceName", receiverDeviceName);
+                notifyListeners("portalAdmitted", admittedData);
+                if (fileUris.size() > 0) {
+                    // Runs the actual send on a dedicated thread — sendFiles() blocks on file I/O and
+                    // WebSocketClient.send()'s underlying socket write, same reasoning as every other
+                    // blocking network call in this codebase (see e.g. connectToPeer()).
+                    new Thread(() -> {
+                        if (sPortalTransferClient != null) {
+                            sPortalTransferClient.sendFiles(getContext(), fileUris);
+                        }
+                    }, "link-portal-send").start();
+                }
+            }
+            @Override
+            public void onFileStarted(int fileIndex, int fileCount, String name) {
+                JSObject data = new JSObject();
+                data.put("fileIndex", fileIndex);
+                data.put("fileCount", fileCount);
+                data.put("name", name);
+                notifyListeners("portalFileStarted", data);
+            }
+            @Override
+            public void onProgress(long sent, long total) {
+                JSObject data = new JSObject();
+                data.put("sent", sent);
+                data.put("total", total);
+                notifyListeners("portalSendProgress", data);
+            }
+            @Override
+            public void onComplete() {
+                notifyListeners("portalSendComplete", new JSObject());
+            }
+            @Override
+            public void onEnded() {
+                sPortalTransferClient = null;
+                notifyListeners("portalEnded", new JSObject());
+            }
+            @Override
+            public void onClosed(String reason) {
+                sPortalTransferClient = null;
+                JSObject data = new JSObject();
+                data.put("reason", reason);
+                notifyListeners("portalClosed", data);
+            }
+            @Override
+            public void onError(String message) {
+                JSObject data = new JSObject();
+                data.put("message", message);
+                notifyListeners("portalError", data);
+                sPortalTransferClient = null;
+            }
+        });
+        sPortalTransferClient = client;
+        client.connect(host, LinkTransport.PORTAL_TRANSFER_PORT, deviceManager.getMyCert(), deviceManager.getMyKey(), null, myIdentity != null ? myIdentity.deviceName : "Guest");
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void leavePortalSend(PluginCall call) {
+        if (sPortalTransferClient != null) {
+            sPortalTransferClient.disconnect();
+            sPortalTransferClient = null;
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void getPortalStatus(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("receiving", sPortalTransferServer != null);
+        ret.put("sending", sPortalTransferClient != null);
+        // See LinkPortalTransferServer.hasActiveTransfer()'s comment — distinct from `receiving`,
+        // which reflects "Receive Files" mode being armed at all, not whether anything is
+        // actually transferring right now.
+        ret.put("transferring", sPortalTransferServer != null && sPortalTransferServer.hasActiveTransfer());
+        call.resolve(ret);
     }
 
     /** Settings -> Biometric Unlock: reports whether this device has usable biometric hardware
@@ -1772,7 +2743,7 @@ public class LinkPlugin extends Plugin {
 
     /** Shows the system fingerprint/face prompt and resolves once the user succeeds, cancels, or
      *  fails — never rejects, matching this codebase's convention of resolving with a
-     *  success/error shape (see e.g. startAudioRelay) rather than throwing across the JS bridge.
+     *  success/error shape (see e.g. startAudioSink) rather than throwing across the JS bridge.
      *  Must run on the UI thread (BiometricPrompt requirement); the callback then hops back onto
      *  it too since PluginCall.resolve() is safe from any thread but the Handler inside
      *  BiometricPrompt's callback already delivers on the main thread by contract. */
@@ -1837,23 +2808,27 @@ public class LinkPlugin extends Plugin {
     }
 
     /** token == null means the guest (PIN-confirmation) path; non-null means the already-paired
-     *  fast path. Both end up on the exact same LinkAudioRelayClient/relay server — see that
+     *  fast path. Both end up on the exact same LinkAudioSinkClient/relay server — see that
      *  class's header comment. */
-    private void startAudioRelayListener(String host, String token) {
-        if (sAudioRelayClient != null) {
-            sAudioRelayClient.disconnect();
+    private void startAudioSinkListener(String host, String token) {
+        if (sAudioSinkClient != null) {
+            sAudioSinkClient.disconnect();
         }
-        sAudioRelayClient = new LinkAudioRelayClient(getContext(), new LinkAudioRelayClient.Listener() {
+        sAudioSinkClient = new LinkAudioSinkClient(getContext(), new LinkAudioSinkClient.Listener() {
             @Override
             public void onPinComputed(String pin) {
                 JSObject data = new JSObject();
                 data.put("pin", pin);
-                notifyListeners("audioRelayPinComputed", data);
+                notifyListeners("audioSinkPinComputed", data);
             }
 
             @Override
-            public void onAdmitted() {
-                notifyListeners("audioRelayAdmitted", new JSObject());
+            public void onAdmitted(String hostName) {
+                sAudioSinkHostLabel = hostName != null ? hostName : "";
+                updateSessionNotification();
+                JSObject data = new JSObject();
+                data.put("hostName", hostName);
+                notifyListeners("audioSinkAdmitted", data);
             }
 
             @Override
@@ -1863,42 +2838,46 @@ public class LinkPlugin extends Plugin {
                 data.put("channels", channels);
                 data.put("bitsPerSample", bitsPerSample);
                 data.put("isFloat", isFloat);
-                notifyListeners("audioRelayFormat", data);
+                notifyListeners("audioSinkFormat", data);
             }
 
             @Override
             public void onHostMuted(boolean muted) {
                 JSObject data = new JSObject();
                 data.put("muted", muted);
-                notifyListeners("audioRelayHostMuted", data);
+                notifyListeners("audioSinkHostMuted", data);
             }
 
             @Override
             public void onEnded() {
-                // Clearing sAudioRelayClient here (not just forwarding to JS) is what makes
-                // getAudioRelayStatus report listening:false after a kick/host-end — otherwise the
+                // Clearing sAudioSinkClient here (not just forwarding to JS) is what makes
+                // getAudioSinkStatus report listening:false after a kick/host-end — otherwise the
                 // socket is already dead but the static field still points at it, so reopening the
                 // tool keeps showing "still connected" forever.
-                sAudioRelayClient = null;
-                notifyListeners("audioRelayEnded", new JSObject());
+                sAudioSinkClient = null;
+                sAudioSinkHostLabel = "";
+                updateSessionNotification();
+                notifyListeners("audioSinkEnded", new JSObject());
             }
 
             @Override
             public void onClosed(String reason) {
-                sAudioRelayClient = null;
+                sAudioSinkClient = null;
+                sAudioSinkHostLabel = "";
+                updateSessionNotification();
                 JSObject data = new JSObject();
                 data.put("reason", reason);
-                notifyListeners("audioRelayClosed", data);
+                notifyListeners("audioSinkClosed", data);
             }
 
             @Override
             public void onError(String message) {
                 JSObject data = new JSObject();
                 data.put("message", message);
-                notifyListeners("audioRelayError", data);
+                notifyListeners("audioSinkError", data);
             }
         });
-        sAudioRelayClient.connect(host, LinkTransport.AUDIO_RELAY_PORT, deviceManager.getMyCert(), deviceManager.getMyKey(), token);
+        sAudioSinkClient.connect(host, LinkTransport.AUDIO_RELAY_PORT, deviceManager.getMyCert(), deviceManager.getMyKey(), token, myIdentity != null ? myIdentity.deviceName : "Guest");
     }
 
     @PluginMethod
@@ -1906,11 +2885,7 @@ public class LinkPlugin extends Plugin {
         String deviceId = call.getString("deviceId");
         boolean enabled = call.getBoolean("enabled", false);
         if (deviceManager != null && deviceId != null) {
-            try {
-                org.json.JSONObject body = new org.json.JSONObject();
-                body.put("enabled", enabled);
-                deviceManager.sendTo(deviceId, new LinkPacket(LinkDND.PACKET_TYPE_DND, body));
-            } catch (Exception ignored) {}
+            deviceManager.sendTo(deviceId, LinkDND.createCommandPacket(enabled));
         }
         call.resolve();
     }
@@ -1945,19 +2920,68 @@ public class LinkPlugin extends Plugin {
         call.resolve();
     }
 
+    // Android's own Wi-Fi Hotspot (tethering) always brings its interface up on this subnet — a
+    // long-standing AOSP default, distinct from Windows' own 192.168.137.x ICS default (see
+    // desktop main.ts's WINDOWS_HOTSPOT_SUBNET_PREFIX for that side of the same class of bug).
+    // Relevant here for the reverse direction: this phone hosting Audio Sink/Remote Mic/etc. while
+    // ALSO connected to a Wi-Fi network — without preferring this subnet, a PC joined to the
+    // phone's hotspot could get handed the phone's regular Wi-Fi address instead, which it has no
+    // route to.
+    private static final String ANDROID_HOTSPOT_SUBNET_PREFIX = "192.168.43.";
+
+    /** Lower = tried first — mirrors desktop main.ts's localIpPriority. */
+    private static int localIpPriority(String address, String ifaceNameLower) {
+        if (address.startsWith(ANDROID_HOTSPOT_SUBNET_PREFIX)) return 0;
+        if (ifaceNameLower.contains("wlan") || ifaceNameLower.contains("wifi")) return 1;
+        return 2;
+    }
+
     private String getLocalIpAddress() {
         try {
+            String best = null;
+            int bestPriority = Integer.MAX_VALUE;
             for (java.net.NetworkInterface intf : java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())) {
+                String lowerName = intf.getName() == null ? "" : intf.getName().toLowerCase();
                 for (java.net.InetAddress addr : java.util.Collections.list(intf.getInetAddresses())) {
-                    if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
-                        return addr.getHostAddress();
+                    if (addr.isLoopbackAddress() || !(addr instanceof java.net.Inet4Address)) continue;
+                    int priority = localIpPriority(addr.getHostAddress(), lowerName);
+                    if (priority < bestPriority) {
+                        bestPriority = priority;
+                        best = addr.getHostAddress();
+                        if (bestPriority == 0) return best; // can't do better than the hotspot subnet
                     }
                 }
             }
+            if (best != null) return best;
         } catch (Exception ex) {
             android.util.Log.e(TAG, "Error getting IP address", ex);
         }
         return "127.0.0.1";
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        if (discoveryWatcher != null) {
+            discoveryWatcher.stop();
+            discoveryWatcher = null;
+        }
+        if (sDiscoveryWatcher != null) {
+            sDiscoveryWatcher.stop();
+            sDiscoveryWatcher = null;
+        }
+        sDiscoveredPeers.clear();
+        super.handleOnDestroy();
+    }
+
+    @PluginMethod
+    public void getDiscoveredDevices(PluginCall call) {
+        com.getcapacitor.JSArray arr = new com.getcapacitor.JSArray();
+        for (JSObject obj : sDiscoveredPeers.values()) {
+            arr.put(obj);
+        }
+        JSObject ret = new JSObject();
+        ret.put("devices", arr);
+        call.resolve(ret);
     }
 
     @PluginMethod
@@ -1973,7 +2997,7 @@ public class LinkPlugin extends Plugin {
     @PluginMethod
     public void getVisibility(PluginCall call) {
         android.content.SharedPreferences prefs = getContext().getSharedPreferences("link_prefs", android.content.Context.MODE_PRIVATE);
-        boolean visibility = prefs.getBoolean("discovery_visibility", true);
+        boolean visibility = prefs.getBoolean("discovery_visibility", false);
         JSObject data = new JSObject();
         data.put("enabled", visibility);
         call.resolve(data);
@@ -1984,8 +3008,24 @@ public class LinkPlugin extends Plugin {
         boolean enabled = call.getBoolean("enabled", true);
         android.content.SharedPreferences prefs = getContext().getSharedPreferences("link_prefs", android.content.Context.MODE_PRIVATE);
         prefs.edit().putBoolean("discovery_visibility", enabled).apply();
-        if (discoveryWatcher != null) {
-            discoveryWatcher.setVisibility(enabled);
+        // visibilityEnabled only controls whether this device BROADCASTS its identity over UDP.
+        // It does NOT affect receiving — we still listen for and connect to peers that broadcast
+        // to us. This makes the toggle mean "am I visible to others" not "can I see others".
+        LinkDiscovery.Watcher watcher = discoveryWatcher != null ? discoveryWatcher : sDiscoveryWatcher;
+        if (watcher != null) {
+            watcher.setVisibility(enabled);
+        }
+
+        // Proactively disconnect untrusted peers the instant visibility goes off, rather than
+        // passively waiting up to ~9-12s for each peer's own discovery-expiry timeout to notice
+        // the silence — see main.ts's set-visibility handler for the full reasoning (mirrors it
+        // exactly). Trusted/paired devices are left connected; pool membership is unaffected.
+        if (!enabled && deviceManager != null) {
+            for (LinkDeviceManager.ConnectedPeerInfo info : deviceManager.connectedPeers()) {
+                if (!info.trusted) {
+                    deviceManager.closeConnection(info.identity.deviceId);
+                }
+            }
         }
         call.resolve();
     }
@@ -1993,7 +3033,27 @@ public class LinkPlugin extends Plugin {
     @PluginMethod
     public void connectTo(PluginCall call) {
         String host = call.getString("host");
-        int port = call.getInt("port", LinkTransport.LINK_PORT);
+        Integer portVal = call.getInt("port");
+        int port = (portVal == null || portVal == 0) ? LinkTransport.LINK_PORT : portVal;
+
+        if ("127.0.0.1".equals(host) || "localhost".equals(host) || "::1".equals(host)) {
+            call.reject("A device cannot connect to itself.");
+            return;
+        }
+
+        try {
+            java.util.List<java.net.NetworkInterface> interfaces = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces());
+            for (java.net.NetworkInterface intf : interfaces) {
+                java.util.List<java.net.InetAddress> addrs = java.util.Collections.list(intf.getInetAddresses());
+                for (java.net.InetAddress addr : addrs) {
+                    if (addr.getHostAddress().equals(host)) {
+                        call.reject("A device cannot connect to itself.");
+                        return;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
         try {
             deviceManager.connectTo(host, port);
             call.resolve();
@@ -2004,9 +3064,114 @@ public class LinkPlugin extends Plugin {
 
     @PluginMethod
     public void requestPairing(PluginCall call) {
-        String pin = deviceManager.requestPairing(call.getString("deviceId"));
+        String deviceId = call.getString("deviceId");
+        String pin = deviceManager.requestPairing(deviceId);
+        if (pin != null) {
+            JSObject ret = new JSObject();
+            ret.put("verificationKey", pin);
+            call.resolve(ret);
+            return;
+        }
+
+        // Came back null — expected for a device that only exists in the "Nearby Discovered
+        // Devices" list: those are announced purely from UDP discovery broadcasts and
+        // deliberately never auto-connected over TCP (see discoveryWatcher above — auto-connect
+        // only fires for already-PAIRED devices), so there's no live connection yet for
+        // requestPairing() to compute a verification PIN against. Connect now using the IP we
+        // already know from discovery, then wait for the identity handshake to actually finish —
+        // connectTo() returns as soon as the raw TLS handshake completes, BEFORE identity packets
+        // are exchanged, so calling requestPairing() again immediately after would still race and
+        // come back null a second time.
+        JSObject discovered = sDiscoveredPeers.get(deviceId);
+        String ip = discovered != null ? discovered.getString("ipAddress") : null;
+        if (ip == null) {
+            JSObject ret = new JSObject();
+            ret.put("verificationKey", (Object) null);
+            call.resolve(ret);
+            return;
+        }
+
+        // @PluginMethod calls already run off the main/UI thread (see connectTo() above, which
+        // already blocks on deviceManager.connectTo() directly) — no separate thread needed here.
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        sPendingConnectWaits.put(deviceId, latch);
+        boolean connected = false;
+        try {
+            deviceManager.connectTo(ip, LinkTransport.LINK_PORT);
+            connected = latch.await(10, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed to connect before pairing", e);
+            sPendingConnectWaits.remove(deviceId);
+        }
+
         JSObject ret = new JSObject();
-        ret.put("verificationKey", pin);
+        ret.put("verificationKey", connected ? deviceManager.requestPairing(deviceId) : null);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestPairingByIp(PluginCall call) {
+        String ipListStr = call.getString("ip");
+        if (ipListStr == null) {
+            JSObject ret = new JSObject();
+            ret.put("pin", (Object) null);
+            call.resolve(ret);
+            return;
+        }
+
+        String[] ips = ipListStr.split(",");
+        for (int i = 0; i < ips.length; i++) {
+            ips[i] = ips[i].trim();
+        }
+
+        // Try existing device ID check for any of the IPs first
+        for (String singleIp : ips) {
+            String existingDeviceId = deviceManager.anyDeviceIdForAddress(singleIp);
+            if (existingDeviceId != null) {
+                JSObject ret = new JSObject();
+                ret.put("pin", deviceManager.requestPairing(existingDeviceId));
+                ret.put("deviceId", existingDeviceId);
+                call.resolve(ret);
+                return;
+            }
+        }
+
+        final PendingIpWait ipWait = new PendingIpWait();
+        for (String singleIp : ips) {
+            sPendingIpConnectWaits.put(singleIp, ipWait);
+        }
+
+        boolean connected = false;
+        try {
+            for (final String singleIp : ips) {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            deviceManager.connectTo(singleIp, LinkTransport.LINK_PORT);
+                        } catch (Exception e) {
+                            android.util.Log.e(TAG, "Failed to connect to " + singleIp + " before pairing", e);
+                            sPendingIpConnectWaits.remove(singleIp);
+                        }
+                    }
+                }).start();
+            }
+            connected = ipWait.latch.await(10, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed to connect before pairing by IP list", e);
+        } finally {
+            for (String singleIp : ips) {
+                sPendingIpConnectWaits.remove(singleIp);
+            }
+        }
+
+        JSObject ret = new JSObject();
+        if (connected && ipWait.resolvedDeviceId != null) {
+            ret.put("pin", deviceManager.requestPairing(ipWait.resolvedDeviceId));
+            ret.put("deviceId", ipWait.resolvedDeviceId);
+        } else {
+            ret.put("pin", (Object) null);
+        }
         call.resolve(ret);
     }
 
@@ -2017,30 +3182,95 @@ public class LinkPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void rejectPairing(PluginCall call) {
-        deviceManager.rejectPairing(call.getString("deviceId"));
+    public void cancelPairing(PluginCall call) {
+        String deviceId = call.getString("deviceId");
+        if (deviceManager != null && deviceId != null) {
+            deviceManager.cancelPairing(deviceId);
+        }
         call.resolve();
+    }
+
+    @PluginMethod
+    public void rejectPairing(PluginCall call) {
+        String deviceId = call.getString("deviceId");
+        deviceManager.rejectPairing(deviceId);
+        Boolean shouldBlock = call.getBoolean("shouldBlock");
+        if (Boolean.TRUE.equals(shouldBlock) && deviceId != null) {
+            String deviceName = call.getString("deviceName");
+            String label = deviceName != null ? deviceName : (deviceId.length() >= 8 ? deviceId.substring(0, 8) : deviceId);
+            // Captures their current IP too (see LinkBlocklist.isBlocked's cross-check) — without
+            // this, blocking them by deviceId wouldn't stop the same device from reconnecting as
+            // an untrusted-tool guest, which only ever checks by IP.
+            String ip = deviceManager != null ? deviceManager.remoteAddressOf(deviceId) : null;
+            LinkBlocklist.add(getContext(), deviceId, label, "device", call.getString("deviceType"), ip);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void getBlocklist(PluginCall call) {
+        JSObject ret = new JSObject();
+        try {
+            ret.put("entries", new com.getcapacitor.JSArray(LinkBlocklist.getAll(getContext()).toString()));
+        } catch (Exception ignored) {}
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void blockDevice(PluginCall call) {
+        String id = call.getString("id");
+        String label = call.getString("label");
+        String type = call.getString("type");
+        if (id != null) {
+            // Captures their current IP too (see LinkBlocklist.isBlocked's cross-check) — without
+            // this, blocking a device by deviceId wouldn't stop it from reconnecting as an
+            // untrusted-tool guest, which only ever checks by IP. Mirrors desktop's block-device.
+            String ip = "device".equals(type) && deviceManager != null ? deviceManager.remoteAddressOf(id) : null;
+            LinkBlocklist.add(getContext(), id, label != null ? label : id, type != null ? type : "device", null, ip);
+            if ("device".equals(type) && deviceManager != null) {
+                deviceManager.closeConnection(id);
+            }
+        }
+        getBlocklist(call);
+    }
+
+    @PluginMethod
+    public void unblockDevice(PluginCall call) {
+        String id = call.getString("id");
+        if (id != null) LinkBlocklist.remove(getContext(), id);
+        getBlocklist(call);
     }
 
     @PluginMethod
     public void unpair(PluginCall call) {
-        deviceManager.unpair(call.getString("deviceId"));
-        call.resolve();
-    }
-
-    // Trusted Pool (Wave 2): removing a device owner-signs + gossips a revocation; exit leaves the pool.
-    @PluginMethod
-    public void removeFromPool(PluginCall call) {
         String deviceId = call.getString("deviceId");
-        if (deviceManager != null && deviceId != null) deviceManager.removeFromPool(deviceId);
+        if (deviceManager != null && deviceId != null) {
+            try {
+                org.json.JSONObject body = new org.json.JSONObject();
+                body.put("deviceId", deviceId);
+                LinkPacket packet = new LinkPacket("link.pool.remove", body);
+                for (String otherId : deviceManager.trustedConnectedDeviceIds()) {
+                    if (!otherId.equals(deviceId)) {
+                        deviceManager.sendTo(otherId, packet);
+                    }
+                }
+            } catch (Exception ignored) {}
+            deviceManager.unpair(deviceId);
+        }
         call.resolve();
     }
 
     @PluginMethod
     public void exitPool(PluginCall call) {
-        if (deviceManager != null) deviceManager.exitPool();
+        if (deviceManager != null) {
+            LinkTrustStore store = new LinkTrustStore(getContext());
+            for (LinkTrustStore.TrustedDevice d : store.list()) {
+                deviceManager.unpair(d.deviceId);
+            }
+        }
         call.resolve();
     }
+
 
     @PluginMethod
     public void getTrustedDevices(PluginCall call) {
@@ -2051,6 +3281,7 @@ public class LinkPlugin extends Plugin {
                 JSObject obj = new JSObject();
                 obj.put("deviceId", d.deviceId);
                 obj.put("deviceName", d.deviceName);
+                if (d.lastKnownIp != null) obj.put("ipAddress", d.lastKnownIp);
                 obj.put("deviceType", "desktop"); // default assume desktop, updated dynamically on connect
                 obj.put("trusted", true);
                 obj.put("connected", false);
@@ -2072,6 +3303,9 @@ public class LinkPlugin extends Plugin {
     // IPC handler in main.ts.
     @PluginMethod
     public void resyncDevices(PluginCall call) {
+        if (trustedReconnectRunnable != null) {
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(trustedReconnectRunnable);
+        }
         if (deviceManager != null) {
             for (String deviceId : deviceManager.trustedConnectedDeviceIds()) {
                 // Push OUR state to the peer...
@@ -2147,7 +3381,7 @@ public class LinkPlugin extends Plugin {
 
                 boolean dndWasAllowed = oldPerm == null || oldPerm.optBoolean("dnd", true);
                 boolean dndNowAllowed = newPerm.optBoolean("dnd", true);
-                if (dndNowAllowed && !dndWasAllowed && LinkDND.isDndGranted(getContext())) {
+                if (dndNowAllowed && !dndWasAllowed) {
                     deviceManager.sendTo(deviceId, LinkDND.createStatusPacket(getContext()));
                 }
             }
@@ -2164,10 +3398,15 @@ public class LinkPlugin extends Plugin {
         try {
             com.getcapacitor.JSArray arr = new com.getcapacitor.JSArray();
             if (deviceManager != null) {
+                LinkTrustStore store = new LinkTrustStore(getContext());
                 for (LinkDeviceManager.ConnectedPeerInfo info : deviceManager.connectedPeers()) {
                     JSObject obj = new JSObject();
                     obj.put("deviceId", info.identity.deviceId);
-                    obj.put("deviceName", info.identity.deviceName);
+                    LinkTrustStore.TrustedDevice trustedDev = store.get(info.identity.deviceId);
+                    String name = (trustedDev != null && trustedDev.deviceName != null) ? trustedDev.deviceName : info.identity.deviceName;
+                    obj.put("deviceName", name);
+                    String remoteIp = deviceManager.remoteAddressOf(info.identity.deviceId);
+                    if (remoteIp != null) obj.put("ipAddress", remoteIp);
                     obj.put("deviceType", info.identity.deviceType);
                     obj.put("protocolVersion", info.identity.protocolVersion);
                     obj.put("incomingCapabilities", new com.getcapacitor.JSArray(info.identity.incomingCapabilities));
@@ -2216,34 +3455,38 @@ public class LinkPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void sendFindMyPhone(PluginCall call) {
+    public void sendFindMyDevice(PluginCall call) {
         String deviceId = call.getString("deviceId");
-        deviceManager.sendTo(deviceId, LinkFindMyPhone.createPacket());
+        deviceManager.sendTo(deviceId, LinkFindMyDevice.createPacket());
         call.resolve();
     }
 
     @PluginMethod
-    public void stopFindMyPhone(PluginCall call) {
-        LinkFindMyPhone.stopRinging(getContext());
+    public void sendFindMyPhone(PluginCall call) {
+        sendFindMyDevice(call);
+    }
+
+    @PluginMethod
+    public void stopFindMyDevice(PluginCall call) {
+        LinkFindMyDevice.stopRinging(getContext());
         String deviceId = call.getString("deviceId");
         if (deviceId == null) {
             deviceId = activeRingerDeviceId;
         }
         if (deviceId != null) {
-            deviceManager.sendTo(deviceId, LinkFindMyPhone.createPacket(true));
+            deviceManager.sendTo(deviceId, LinkFindMyDevice.createPacket(true));
             JSObject data = new JSObject();
             data.put("deviceId", deviceId);
             notifyListeners("findMyPhoneStopped", data);
+            notifyListeners("findMyDeviceStopped", data);
             activeRingerDeviceId = null;
         }
         call.resolve();
     }
 
     @PluginMethod
-    public void requestCommandList(PluginCall call) {
-        String deviceId = call.getString("deviceId");
-        deviceManager.sendTo(deviceId, LinkRunCommand.createRequestListPacket());
-        call.resolve();
+    public void stopFindMyPhone(PluginCall call) {
+        stopFindMyDevice(call);
     }
 
     @PluginMethod
@@ -2266,6 +3509,24 @@ public class LinkPlugin extends Plugin {
 
 
     @PluginMethod
+    public void sendRemoteInput(PluginCall call) {
+        String deviceId = call.getString("deviceId");
+        String text = call.getString("text");
+        String specialKey = call.getString("specialKey");
+        if (deviceManager != null && deviceId != null) {
+            try {
+                org.json.JSONObject body = new org.json.JSONObject();
+                if (text != null) body.put("text", text);
+                if (specialKey != null) body.put("specialKey", specialKey);
+                deviceManager.sendTo(deviceId, new LinkPacket(LinkRemoteInput.PACKET_TYPE_REMOTEINPUT_SEND, body));
+            } catch (Exception e) {
+                android.util.Log.e(TAG, "Failed to send remote input packet", e);
+            }
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
     public void sendPresenterMove(PluginCall call) {
         String deviceId = call.getString("deviceId");
         double dx = call.getDouble("dx", 0.0);
@@ -2285,6 +3546,19 @@ public class LinkPlugin extends Plugin {
                 deviceManager.sendTo(deviceId, new LinkPacket("link.target.display", new org.json.JSONObject()));
             } catch (Exception ignored) {}
         }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void checkOverlayPermission(PluginCall call) {
+        JSObject data = new JSObject();
+        data.put("enabled", LinkPresenterOverlay.isPermissionGranted(getContext()));
+        call.resolve(data);
+    }
+
+    @PluginMethod
+    public void requestOverlayPermission(PluginCall call) {
+        LinkPresenterOverlay.requestPermission(getContext());
         call.resolve();
     }
 
@@ -2367,6 +3641,14 @@ public class LinkPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void checkDndAccess(PluginCall call) {
+        boolean granted = LinkDND.isDndGranted(getContext());
+        JSObject data = new JSObject();
+        data.put("granted", granted);
+        call.resolve(data);
+    }
+
+    @PluginMethod
     public void requestAllFilesAccess(PluginCall call) {
         try {
             android.content.Intent intent = new android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
@@ -2383,6 +3665,21 @@ public class LinkPlugin extends Plugin {
             } catch (Exception e2) {
                 call.reject("Failed to open all-files-access settings: " + e2.getMessage());
             }
+        }
+    }
+
+    @PluginMethod
+    public void requestDndAccess(PluginCall call) {
+        // Open the Do Not Disturb access permission page in settings
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                android.content.Intent intent = new android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS);
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(intent);
+            }
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Failed to open DND settings: " + e.getMessage());
         }
     }
 
@@ -2460,6 +3757,12 @@ public class LinkPlugin extends Plugin {
             if (deviceManager != null) {
                 deviceManager.updateMyIdentity(myIdentity);
             }
+            if (discoveryWatcher != null) {
+                discoveryWatcher.updateLocalIdentity(myIdentity);
+            }
+            if (sDiscoveryWatcher != null) {
+                sDiscoveryWatcher.updateLocalIdentity(myIdentity);
+            }
         } catch (Exception e) {
             android.util.Log.e(TAG, "Failed to reload identity in renameDevice", e);
         }
@@ -2525,6 +3828,110 @@ public class LinkPlugin extends Plugin {
         call.resolve();
     }
 
+    /** Join request — Joystick has no pairing/permission step at all (see LinkPlugin's CAPABILITIES
+     *  comment and desktop's joystick.ts header comment), so this just fires the raw "hello <name>"
+     *  UDP line directly at whatever IP the user scanned/typed (UntrustedConnectUI), same trust
+     *  model as joining an Audio Sink guest session. The reply ("hello-ack ...") arrives async via
+     *  the joystickHelloAck listener, through startInputUdpServer's receive loop below. */
+    @PluginMethod
+    public void sendJoystickHello(PluginCall call) {
+        String host = call.getString("host");
+        String name = call.getString("name", "Controller");
+        if (host != null) {
+            if (sJoystickClient != null) sJoystickClient.disconnect();
+            sJoystickClient = new LinkJoystickClient(new LinkJoystickClient.Listener() {
+                @Override
+                public void onPinComputed(String pin) {
+                    JSObject data = new JSObject();
+                    data.put("pin", pin);
+                    notifyListeners("joystickPinRequired", data);
+                }
+
+                @Override
+                public void onAdmitted(int padIndex) {
+                    JSObject data = new JSObject();
+                    data.put("ok", true);
+                    data.put("padIndex", padIndex);
+                    notifyListeners("joystickHelloAck", data);
+                }
+
+                @Override
+                public void onRumble(int large, int small) {
+                    vibrateNative(getContext(), Math.max(large, small), 100);
+                }
+
+                @Override
+                public void onClosed(String reason) {
+                    JSObject data = new JSObject();
+                    data.put("ok", false);
+                    data.put("error", reason);
+                    notifyListeners("joystickHelloAck", data);
+                    notifyListeners("joystickForcedDisconnect", new JSObject().put("reason", reason));
+                }
+
+                @Override
+                public void onError(String message) {
+                    JSObject data = new JSObject();
+                    data.put("ok", false);
+                    data.put("error", message);
+                    notifyListeners("joystickHelloAck", data);
+                }
+            });
+            LinkTls.TlsIdentity tls = LinkTls.loadOrCreate(getContext(), myIdentity.deviceId);
+            sJoystickClient.connect(host, LinkTransport.JOYSTICK_PORT, name, tls.certificate, tls.privateKey);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void sendJoystickBye(PluginCall call) {
+        if (sJoystickClient != null) {
+            sJoystickClient.disconnect();
+            sJoystickClient = null;
+        }
+        call.resolve();
+    }
+
+    /** High-frequency (~60Hz) stick/button/trigger state — raw UDP, no TLS envelope, addressed
+     *  directly to `host` (not a paired deviceId — see sendJoystickHello above). See joystick.ts
+     *  for the desktop-side parser and the exact "js lx ly rx ry lt rt buttons" field layout. */
+    @PluginMethod
+    public void sendJoystickState(PluginCall call) {
+        String host = call.getString("host");
+        if (host == null) { call.resolve(); return; }
+        int lx = call.getInt("lx", 0);
+        int ly = call.getInt("ly", 0);
+        int rx = call.getInt("rx", 0);
+        int ry = call.getInt("ry", 0);
+        int lt = call.getInt("lt", 0);
+        int rt = call.getInt("rt", 0);
+        int buttons = call.getInt("buttons", 0);
+        sendUdpMessageToHost(host, "js " + lx + " " + ly + " " + rx + " " + ry + " " + lt + " " + rt + " " + buttons);
+        call.resolve();
+    }
+
+    /** Local haptic pulse — used for the rumble-from-PC receive path (startInputUdpServer's
+     *  "rumble " branch, which fires from a background socket thread with no pending PluginCall
+     *  to resolve) and for JoystickOverlay.tsx's local button-press tap feedback. */
+    @PluginMethod
+    public void vibrate(PluginCall call) {
+        int amplitude = call.getInt("amplitude", 128);
+        long durationMs = call.getInt("durationMs", 100);
+        vibrateNative(getContext(), amplitude, durationMs);
+        call.resolve();
+    }
+
+    static void vibrateNative(android.content.Context context, int amplitude, long durationMs) {
+        android.os.Vibrator vibrator = (android.os.Vibrator) context.getSystemService(android.content.Context.VIBRATOR_SERVICE);
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            int clampedAmplitude = Math.max(1, Math.min(255, amplitude));
+            vibrator.vibrate(android.os.VibrationEffect.createOneShot(durationMs, clampedAmplitude));
+        } else {
+            vibrator.vibrate(durationMs);
+        }
+    }
+
     private void replyToNotification(String replyId, String message) {
         LinkRepliableNotification rn = pendingReplies.remove(replyId);
         if (rn == null) return;
@@ -2564,24 +3971,67 @@ public class LinkPlugin extends Plugin {
             android.os.PowerManager pm = (android.os.PowerManager) getContext().getSystemService(android.content.Context.POWER_SERVICE);
             try {
                 if (!pm.isIgnoringBatteryOptimizations(getContext().getPackageName())) {
-                    // Granting: a one-shot per-app dialog exists for this specific direction.
-                    android.content.Intent intent = new android.content.Intent();
-                    intent.setAction(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                    android.content.Intent intent = new android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
                     intent.setData(android.net.Uri.parse("package:" + getContext().getPackageName()));
                     intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
-                    getContext().startActivity(intent);
+
+                    try {
+                        getContext().startActivity(intent);
+                    } catch (android.content.ActivityNotFoundException e) {
+                        // Fallback to general settings list
+                        android.content.Intent fallback = new android.content.Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                        fallback.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                        getContext().startActivity(fallback);
+                    }
                 } else {
-                    // Revoking: there's no per-app "un-request" intent, only the full list screen
-                    // where the user finds this app and flips it back to optimized themselves.
-                    // Previously this whole branch was skipped when already granted, so tapping
-                    // the toggle to revoke silently did nothing.
+                    // Revoking or viewing: open the battery optimization settings list (doesn't take data)
                     android.content.Intent intent = new android.content.Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
                     intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
-                    getContext().startActivity(intent);
+                    try {
+                        getContext().startActivity(intent);
+                    } catch (android.content.ActivityNotFoundException e) {
+                        android.content.Intent fallback = new android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                        fallback.setData(android.net.Uri.parse("package:" + getContext().getPackageName()));
+                        fallback.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                        getContext().startActivity(fallback);
+                    }
                 }
             } catch (Exception e) {
                 android.util.Log.e(TAG, "Failed to launch battery optimization settings", e);
             }
+        }
+        call.resolve();
+    }
+
+    // Remote Input's D-pad/keyboard (LinkRemoteInput/LinkAccessibilityService) needs the
+    // accessibility service enabled — there is no runtime-permission dialog for this, and no API
+    // for an app to silently turn on its own accessibility service (by design, for security). The
+    // only thing an app can do is open the system Accessibility settings screen and ask the user
+    // to find and enable it themselves.
+    @PluginMethod
+    public void checkAccessibility(PluginCall call) {
+        boolean enabled = false;
+        try {
+            String enabledServices = android.provider.Settings.Secure.getString(
+                getContext().getContentResolver(), android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            String myService = getContext().getPackageName() + "/" + LinkAccessibilityService.class.getName();
+            enabled = enabledServices != null && enabledServices.contains(myService);
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed to check accessibility service state", e);
+        }
+        JSObject ret = new JSObject();
+        ret.put("enabled", enabled);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestAccessibility(PluginCall call) {
+        try {
+            android.content.Intent intent = new android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS);
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed to launch accessibility settings", e);
         }
         call.resolve();
     }
@@ -2700,6 +4150,226 @@ public class LinkPlugin extends Plugin {
         notificationManager.notify(NOTIFICATION_ID, buildActiveNotification(context));
     }
 
+    /** Posts/updates/cancels the active-session notification. Must be called from every place a
+     *  session's state can change: start/end/mute of Audio Relay hosting, Audio Relay listening,
+     *  and Remote Mic hosting — see the call sites next to each of those. Rebuilding the whole
+     *  notification on every change (rather than trying to patch it in place) is simplest and
+     *  cheap; NotificationManager.notify() with the same ID just replaces it. Cancels outright
+     *  when no session is active, since "no session" for a normally-ongoing notification would
+     *  otherwise leave a stale one sitting in the shade forever. */
+    void updateSessionNotification() {
+        android.content.Context context = getContext();
+        if (context == null) return;
+        android.app.NotificationManager notificationManager =
+            (android.app.NotificationManager) context.getSystemService(android.content.Context.NOTIFICATION_SERVICE);
+
+        String kind = null;
+        String title = null;
+        boolean muted = false;
+        if (sAudioSinkServer != null) {
+            kind = SESSION_KIND_AUDIOSINK_HOST;
+            title = "Hosting Audio Relay";
+            muted = sAudioSinkServer.isMuted();
+        } else if (sAudioSinkClient != null) {
+            kind = SESSION_KIND_AUDIOSINK_LISTEN;
+            title = "Listening to Audio Relay";
+            muted = sAudioSinkClient.isLocallyMuted();
+        } else if (sRemoteMicServer != null) {
+            kind = SESSION_KIND_REMOTEMIC_HOST;
+            title = "Hosting Remote Mic";
+            muted = sRemoteMicServer.isMuted();
+        }
+
+        if (kind == null) {
+            notificationManager.cancel(SESSION_NOTIFICATION_ID);
+            return;
+        }
+
+        boolean isHost = !SESSION_KIND_AUDIOSINK_LISTEN.equals(kind);
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            android.app.NotificationChannel channel = new android.app.NotificationChannel(
+                SESSION_CHANNEL_ID,
+                "Active Audio Session",
+                android.app.NotificationManager.IMPORTANCE_LOW
+            );
+            channel.setDescription("Shows controls for an active Audio Relay or Remote Mic session");
+            notificationManager.createNotificationChannel(channel);
+        }
+
+        android.content.Intent muteIntent = new android.content.Intent(ACTION_SESSION_MUTE_TOGGLE);
+        muteIntent.setPackage(context.getPackageName());
+        muteIntent.putExtra(EXTRA_SESSION_KIND, kind);
+        android.app.PendingIntent mutePendingIntent = android.app.PendingIntent.getBroadcast(
+            context, 1, muteIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE
+        );
+
+        android.content.Intent endIntent = new android.content.Intent(ACTION_SESSION_END);
+        endIntent.setPackage(context.getPackageName());
+        endIntent.putExtra(EXTRA_SESSION_KIND, kind);
+        android.app.PendingIntent endPendingIntent = android.app.PendingIntent.getBroadcast(
+            context, 2, endIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE
+        );
+
+        android.app.Notification.Builder builder;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            builder = new android.app.Notification.Builder(context, SESSION_CHANNEL_ID);
+        } else {
+            builder = new android.app.Notification.Builder(context);
+        }
+
+        builder.setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(muted ? "Muted" : "Live")
+            .setOngoing(true);
+
+        String muteLabel = muted ? "Unmute" : "Mute";
+        String endLabel = isHost ? "End Session" : "Disconnect";
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            builder.addAction(new android.app.Notification.Action.Builder(
+                android.graphics.drawable.Icon.createWithResource(context, muted ? android.R.drawable.ic_lock_silent_mode_off : android.R.drawable.ic_lock_silent_mode),
+                muteLabel, mutePendingIntent
+            ).build());
+            builder.addAction(new android.app.Notification.Action.Builder(
+                android.graphics.drawable.Icon.createWithResource(context, android.R.drawable.ic_menu_close_clear_cancel),
+                endLabel, endPendingIntent
+            ).build());
+        } else {
+            builder.addAction(0, muteLabel, mutePendingIntent);
+            builder.addAction(0, endLabel, endPendingIntent);
+        }
+
+        notificationManager.notify(SESSION_NOTIFICATION_ID, builder.build());
+    }
+
+    private java.net.DatagramSocket inputUdpSocket;
+
+    // Receiving half of the high-speed raw UDP input relay (port 1717) — mirrors desktop
+    // main.ts's inputUdpSocket listener. Only "pmove"/"pstop" (presenter) are handled here;
+    // touchpad/digitizer stay desktop-target-only for now (see PLUGIN_REGISTRY comment on
+    // desktop's DeviceControlPanel.tsx). Sender is identified by source IP against the trusted+
+    // connected peer list, same trust boundary as the TCP session packets (no envelope/deviceId
+    // of its own, so this can't just reuse the TLS-authenticated onPacket path).
+    private void startInputUdpServer() {
+        new Thread(() -> {
+            try {
+                inputUdpSocket = new java.net.DatagramSocket(1717, java.net.InetAddress.getByName("0.0.0.0"));
+                android.util.Log.i(TAG, "High-speed UDP Input Relay listening on port 1717");
+                byte[] buf = new byte[1024];
+                while (inputUdpSocket != null && !inputUdpSocket.isClosed()) {
+                    java.net.DatagramPacket packet = new java.net.DatagramPacket(buf, buf.length);
+                    inputUdpSocket.receive(packet);
+                    String senderIp = packet.getAddress().getHostAddress();
+                    String line = new String(packet.getData(), 0, packet.getLength(), "UTF-8").trim();
+
+                    // Joystick replies (from whatever PC we sent "hello"/"js ..." to) are handled
+                    // BEFORE the paired-device senderId gate below — Joystick has no pairing step
+                    // at all, deliberately (see desktop's joystick.ts header comment), so the PC on
+                    // the other end is never expected to be a known/paired device.
+                    if (line.startsWith("hello-ack ")) {
+                        String[] parts = line.split(" ");
+                        JSObject data = new JSObject();
+                        if (parts.length >= 3 && "pin".equals(parts[1])) {
+                            data.put("pin", parts[2]);
+                            notifyListeners("joystickPinRequired", data);
+                        } else {
+                            boolean ok = parts.length >= 2 && "ok".equals(parts[1]);
+                            data.put("ok", ok);
+                            data.put("padIndex", ok && parts.length >= 3 ? Integer.parseInt(parts[2]) : null);
+                            data.put("error", !ok && parts.length >= 3 ? parts[2] : null);
+                            notifyListeners("joystickHelloAck", data);
+                        }
+                        continue;
+                    } else if (line.startsWith("rumble ")) {
+                        // Counts as proof the host is alive, exactly like an explicit "ping" — any
+                        // inbound joystick traffic proves the link is up, and during heavy rumble
+                        // these are far more frequent than the heartbeat.
+                        notifyListeners("joystickPing", new JSObject());
+                        String[] parts = line.split(" ");
+                        int large = Integer.parseInt(parts[1]);
+                        int small = Integer.parseInt(parts[2]);
+                        // "Vibrate until told otherwise": ViGEm's force-feedback events represent a
+                        // held motor state (e.g. sustained engine rumble), not discrete pulses — a
+                        // fixed-duration pulse per packet would make continuous rumble stutter. A
+                        // long-duration one-shot plus an explicit cancel() on the all-zero
+                        // "motors off" packet approximates "sustained until changed" on Android,
+                        // which has no true indefinite-vibrate primitive.
+                        if (large == 0 && small == 0) {
+                            android.os.Vibrator vibrator = (android.os.Vibrator) getContext().getSystemService(android.content.Context.VIBRATOR_SERVICE);
+                            if (vibrator != null) vibrator.cancel();
+                        } else {
+                            int amplitude = Math.max(large, small);
+                            vibrateNative(getContext(), amplitude, 60000);
+                        }
+                        continue;
+                    } else if (line.equals("ping")) {
+                        // Heartbeat — see desktop's joystick.ts header comment. JoystickOverlay.tsx
+                        // tracks how long it's been since the last one and closes itself if the host
+                        // goes quiet for too long (a real network drop, which neither side otherwise
+                        // finds out about over UDP).
+                        notifyListeners("joystickPing", new JSObject());
+                        continue;
+                    } else if (line.startsWith("bye ")) {
+                        // Forced disconnect — the host deliberately dropped us (kicked/blocked) or
+                        // its driver crashed. Unlike the heartbeat above, this closes the overlay
+                        // immediately rather than waiting out the timeout.
+                        JSObject data = new JSObject();
+                        data.put("reason", line.substring(4));
+                        notifyListeners("joystickForcedDisconnect", data);
+                        continue;
+                    }
+
+                    String senderId = deviceManager != null ? deviceManager.deviceIdForAddress(senderIp) : null;
+                    if (senderId == null) continue;
+
+                    // Explicit stop travels over the reliable TCP channel instead (see
+                    // handlePresenterPacket) — only continuous moves need this low-latency path.
+                    if (line.startsWith("pmove ")) {
+                        if (!LinkDevicePermissions.check(getContext(), senderId, "presenter")) continue;
+                        String[] parts = line.split(" ");
+                        double dx = Double.parseDouble(parts[1]);
+                        double dy = Double.parseDouble(parts[2]);
+
+                        if (LinkPresenterOverlay.isPermissionGranted(getContext())) {
+                            // True system-level overlay — draws over whatever app is currently in
+                            // the foreground (slides, PDF viewer, etc.), not just this app's WebView.
+                            android.util.DisplayMetrics dm = getContext().getResources().getDisplayMetrics();
+                            double aspectRatio = (double) dm.widthPixels / dm.heightPixels;
+                            LinkPresenterOverlay.updatePosition(getContext(), dx, dy, aspectRatio);
+                        } else {
+                            // Fallback: in-app-only dot (PresenterDotOverlay.tsx) — only visible
+                            // while Link itself is the foreground app.
+                            JSObject data = new JSObject();
+                            data.put("deviceId", senderId);
+                            data.put("dx", dx);
+                            data.put("dy", dy);
+                            notifyListeners("presenterPositionReceived", data);
+                        }
+                    } else if (line.startsWith("dig ")) {
+                        if (!LinkDevicePermissions.check(getContext(), senderId, "digitizer")) continue;
+                        String[] parts = line.split(" ");
+                        int x = Integer.parseInt(parts[1]);
+                        int y = Integer.parseInt(parts[2]);
+                        boolean touching = Boolean.parseBoolean(parts[3]);
+
+                        JSObject data = new JSObject();
+                        data.put("deviceId", senderId);
+                        data.put("x", x);
+                        data.put("y", y);
+                        data.put("touching", touching);
+                        data.put("active", true);
+                        notifyListeners("digitizerEventReceived", data);
+                    }
+                }
+            } catch (Exception e) {
+                android.util.Log.e(TAG, "UDP Input Relay error", e);
+            }
+        }, "udp-input-listener").start();
+    }
+
     private void sendUdpMessage(String deviceId, String message) {
         if (deviceManager == null || deviceId == null) return;
         String ip = deviceManager.remoteAddressOf(deviceId);
@@ -2715,5 +4385,211 @@ public class LinkPlugin extends Plugin {
                 android.util.Log.e(TAG, "Failed to send UDP input message: " + message, e);
             }
         }, "udp-input-sender").start();
+    }
+
+    /** Same wire behavior as sendUdpMessage above, but addressed to a raw IP directly instead of
+     *  resolving one from a paired deviceId — Joystick's only send path, since it has no pairing
+     *  step at all (see sendJoystickHello's doc comment). */
+    private void sendUdpMessageToHost(String host, String message) {
+        new Thread(() -> {
+            try (java.net.DatagramSocket socket = new java.net.DatagramSocket()) {
+                byte[] buffer = message.getBytes("UTF-8");
+                java.net.InetAddress address = java.net.InetAddress.getByName(host);
+                java.net.DatagramPacket packet = new java.net.DatagramPacket(buffer, buffer.length, address, 1717);
+                socket.send(packet);
+            } catch (Exception e) {
+                android.util.Log.e(TAG, "Failed to send UDP message to host " + host + ": " + message, e);
+            }
+        }, "udp-input-sender-host").start();
+    }
+
+    private java.util.List<String> getMyLocalIps() {
+        java.util.List<String> ips = new java.util.ArrayList<>();
+        try {
+            java.util.List<java.net.NetworkInterface> interfaces = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces());
+            for (java.net.NetworkInterface intf : interfaces) {
+                if (intf.isLoopback() || !intf.isUp()) continue;
+                for (java.net.InterfaceAddress addr : intf.getInterfaceAddresses()) {
+                    java.net.InetAddress ip = addr.getAddress();
+                    if (ip instanceof java.net.Inet4Address) {
+                        ips.add(ip.getHostAddress());
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        java.util.Collections.sort(ips);
+        return ips;
+    }
+
+    private java.util.List<String> getSubnetIPs() {
+        java.util.List<String> ips = new java.util.ArrayList<>();
+        try {
+            java.util.List<java.net.NetworkInterface> interfaces = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces());
+            for (java.net.NetworkInterface intf : interfaces) {
+                if (intf.isLoopback() || !intf.isUp()) continue;
+                for (java.net.InterfaceAddress addr : intf.getInterfaceAddresses()) {
+                    java.net.InetAddress ip = addr.getAddress();
+                    if (ip instanceof java.net.Inet4Address) {
+                        short prefixLen = addr.getNetworkPrefixLength();
+                        if (prefixLen == 24) { // /24 Class C subnet
+                            String ipStr = ip.getHostAddress();
+                            String[] parts = ipStr.split("\\.");
+                            if (parts.length == 4) {
+                                String prefix = parts[0] + "." + parts[1] + "." + parts[2];
+                                int myLastOctet = Integer.parseInt(parts[3]);
+                                for (int i = 1; i <= 254; i++) {
+                                    if (i != myLastOctet) {
+                                        ips.add(prefix + "." + i);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return ips;
+    }
+
+    private final java.util.Map<String, PluginCall> pendingFsCalls = new java.util.concurrent.ConcurrentHashMap<>();
+    private int fsRequestCounter = 0;
+
+    private void sendFsRequest(PluginCall call, String action, JSObject payload) {
+        try {
+            String deviceId = call.getString("deviceId");
+            if (deviceId == null) {
+                call.reject("Missing deviceId");
+                return;
+            }
+            String requestId = "fs-req-" + System.currentTimeMillis() + "-" + (fsRequestCounter++);
+            pendingFsCalls.put(requestId, call);
+
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("requestId", requestId);
+            body.put("action", action);
+            if (payload != null) {
+                java.util.Iterator<String> keys = payload.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    body.put(key, payload.get(key));
+                }
+            }
+
+            LinkPacket packet = new LinkPacket("link.fs.request", body);
+            deviceManager.sendTo(deviceId, packet);
+
+            // Timeout safety: 30 seconds
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                PluginCall pending = pendingFsCalls.remove(requestId);
+                if (pending != null) {
+                    pending.reject("FileSystem request timed out");
+                }
+            }, 30000);
+        } catch (Exception e) {
+            call.reject("Failed to send FS request: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void fsListRoots(PluginCall call) {
+        sendFsRequest(call, "listRoots", null);
+    }
+
+    @PluginMethod
+    public void fsReaddir(PluginCall call) {
+        String path = call.getString("path");
+        JSObject payload = new JSObject();
+        payload.put("path", path);
+        sendFsRequest(call, "readdir", payload);
+    }
+
+    @PluginMethod
+    public void fsStat(PluginCall call) {
+        String path = call.getString("path");
+        JSObject payload = new JSObject();
+        payload.put("path", path);
+        sendFsRequest(call, "stat", payload);
+    }
+
+    @PluginMethod
+    public void fsCreateDirectory(PluginCall call) {
+        String path = call.getString("path");
+        JSObject payload = new JSObject();
+        payload.put("path", path);
+        payload.put("isDirectory", true);
+        sendFsRequest(call, "create", payload);
+    }
+
+    @PluginMethod
+    public void fsDelete(PluginCall call) {
+        String path = call.getString("path");
+        JSObject payload = new JSObject();
+        payload.put("path", path);
+        sendFsRequest(call, "delete", payload);
+    }
+
+    @PluginMethod
+    public void fsRename(PluginCall call) {
+        String path = call.getString("path");
+        String newPath = call.getString("newPath");
+        JSObject payload = new JSObject();
+        payload.put("path", path);
+        payload.put("newPath", newPath);
+        sendFsRequest(call, "rename", payload);
+    }
+
+    private void handleFsResponsePacket(LinkPacket packet) {
+        try {
+            org.json.JSONObject body = packet.body;
+            String requestId = body.getString("requestId");
+            PluginCall call = pendingFsCalls.remove(requestId);
+            if (call != null) {
+                boolean success = body.optBoolean("success", false);
+                if (success) {
+                    JSObject result = new JSObject();
+                    if (body.has("result")) {
+                        Object res = body.get("result");
+                        if (res instanceof org.json.JSONArray) {
+                            result.put("result", (org.json.JSONArray) res);
+                        } else if (res instanceof org.json.JSONObject) {
+                            result.put("result", (org.json.JSONObject) res);
+                        } else {
+                            result.put("result", res);
+                        }
+                    }
+                    call.resolve(result);
+                } else {
+                    call.reject(body.optString("error", "Request failed"));
+                }
+            }
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Error handling FS response packet", e);
+        }
+    }
+
+    private void scanSubnet() {
+        android.util.Log.i(TAG, "[Link] LAN change detected or startup: scanning local subnet...");
+        java.util.List<String> targets = getSubnetIPs();
+        if (targets.isEmpty()) return;
+
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(32);
+        for (String ip : targets) {
+            executor.submit(() -> {
+                try {
+                    java.net.Socket socket = new java.net.Socket();
+                    socket.connect(new java.net.InetSocketAddress(ip, LinkTransport.LINK_PORT), 1000);
+                    socket.close();
+                    android.util.Log.i(TAG, "[Link] Subnet scan found active listener at " + ip + ". Connecting...");
+                    new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                        new Thread(() -> {
+                            try {
+                                deviceManager.connectTo(ip, LinkTransport.LINK_PORT);
+                            } catch (Exception ignored) {}
+                        }).start();
+                    });
+                } catch (Exception ignored) {}
+            });
+        }
+        executor.shutdown();
     }
 }

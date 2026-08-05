@@ -27,13 +27,17 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
   const mobileSteps = [
     { text: "Link binds your systems into a secure, serverless local mesh. Let's set up your permissions to enable background synchronization.", btn: "Start Setup", permissionKey: null },
     { text: "<strong>1. Persistent Notification:</strong> Android requires a persistent notification to allow Link to maintain network sockets in the background. Please authorize notification posting.", btn: "Authorize Notifications Send", permissionKey: "notificationsSend" },
-    { text: "<strong>2. Notification Mirroring:</strong> Access incoming alerts (texts, calls, chats) from your phone to sync and display them on your PC screen.", btn: "Authorize Notifications Mirroring", permissionKey: "notifications" },
+    { text: "<strong>2. Notification Mirroring & Media Detection:</strong> Mirror incoming alerts (texts, calls, chats) to your PC, and detect what music/audio is currently playing (Spotify, YouTube, etc.) so you can control playback from your PC.", btn: "Authorize Notification Access", permissionKey: "notifications" },
     { text: "<strong>3. Phone State & Caller ID:</strong> Automatically pause PC music or video playback when you receive an incoming call, and let Link see the caller's number (required by Android for caller ID on non-dialer apps).", btn: "Authorize Phone State", permissionKey: "phoneState" },
     { text: "<strong>4. Contacts Sync:</strong> Match incoming numbers with contact names so desktop alerts show who is calling/texting.", btn: "Authorize Contacts Sync", permissionKey: "contacts" },
     { text: "<strong>5. File Sync:</strong> Share and transfer files bidirectionally between your phone and your PC.", btn: "Authorize File Sync", permissionKey: "allFiles" },
-    { text: "<strong>6. Remote Screen Lock (optional):</strong> Lets a paired PC lock this phone's screen — Android only allows this through the <strong>Device Administrator</strong> permission.<br/><br/><span style='color:#e0a05c'>Important: while this is on, Android will not let you uninstall Link directly.</span> To uninstall later, first turn <strong>Device Admin</strong> off under Link → Settings → Permissions (or Android Settings → Security → Device admin apps), then uninstall as normal. You can also skip this now and enable it anytime.", btn: "Authorize Device Admin", permissionKey: "deviceAdmin" },
-    { text: "<strong>7. Background Keep-Alive:</strong> Prevent Android from killing Link when your phone screen is off to maintain background sync.", btn: "Disable Battery Optimization", permissionKey: "batteryOpt" },
+    { text: "<strong>6. Microphone Access:</strong> Use your phone as a wireless microphone for your PC during Remote Mic sessions.", btn: "Authorize Microphone Access", permissionKey: "microphone" },
+    { text: "<strong>7. Remote Screen Lock (optional):</strong> Lets a paired PC lock this phone's screen — Android only allows this through the <strong>Device Administrator</strong> permission.<br/><br/><span style='color:#e0a05c'>Important: while this is on, Android will not let you uninstall Link directly.</span> To uninstall later, first turn <strong>Device Admin</strong> off under Link → Settings → Permissions (or Android Settings → Security → Device admin apps), then uninstall as normal. You can also skip this now and enable it anytime.", btn: "Authorize Device Admin", permissionKey: "deviceAdmin" },
+    { text: "<strong>8. Background Keep-Alive:</strong> Prevent Android from killing Link when your phone screen is off to maintain background sync.", btn: "Disable Battery Optimization", permissionKey: "batteryOpt" },
+    { text: "<strong>9. Display Over Other Apps (optional):</strong> Lets the Presenter pointer-dot appear on top of whatever app you're presenting from (slides, a PDF viewer, etc.) when a peer controls it, instead of only while Link is in the foreground. You can skip this and enable it later.", btn: "Authorize Display Over Apps", permissionKey: "overlay" },
+    { text: "<strong>10. Accessibility Service (optional):</strong> Allows Link to receive remote input (keystrokes) from paired devices and type them directly into focused text fields on your system. You can skip this and enable it later.", btn: "Authorize Accessibility", permissionKey: "accessibility" },
     { text: "Setup Complete! Your room is now active. Start pairing nearby devices by toggling broadcast or connecting manually.", btn: "Launch App", permissionKey: null }
+
   ];
 
   const steps = isMobile ? mobileSteps : desktopSteps;
@@ -76,29 +80,14 @@ const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
         />
         
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <button className="onboarding-btn" id="onboarding-next-btn" onClick={handleNext} style={{ width: '100%', margin: 0 }}>
+          <button className="onboarding-btn" id="onboarding-next-btn" onClick={handleNext}>
             {currentStepInfo.btn}
           </button>
           
           {currentStepInfo.permissionKey && (
             <button 
-              className="onboarding-btn" 
-              onClick={advanceStep} 
-              style={{ 
-                width: '100%', 
-                margin: 0, 
-                background: 'rgba(255, 255, 255, 0.02)', 
-                border: '1px solid var(--border-color)', 
-                color: 'var(--text-muted)' 
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-                e.currentTarget.style.color = 'var(--text-color)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
-                e.currentTarget.style.color = 'var(--text-muted)';
-              }}
+              className="onboarding-btn-skip" 
+              onClick={advanceStep}
             >
               Skip for now
             </button>

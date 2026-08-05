@@ -2,16 +2,15 @@ param(
   [Parameter(Position = 0)] [string]$Action = "capture"
 )
 
-# WASAPI capture, shared by two features: "capture" is loopback (Audio Relay) — the same audio
-# Windows is currently playing through the default render endpoint; "capture-mic" is the default
-# microphone (Remote Mic hosting from PC). Writes raw PCM straight to stdout as an uninterpreted
-# binary stream either way. Same COM-interop approach as
+# WASAPI loopback capture for Audio Sink — the same audio Windows is currently playing through
+# the default render endpoint. Writes raw PCM straight to stdout as an uninterpreted binary
+# stream. Same COM-interop approach as
 # audio-endpoint-volume.ps1 (PowerShell can't call vtable-only COM interfaces directly, so every
 # real COM call happens inside compiled C# via Add-Type; PowerShell just invokes one static
 # method). No new binary, no bundled dependency — this is the built-in Windows Core Audio API,
 # unchanged since Vista.
 #
-# Output contract (consumed by audio-relay-server.ts):
+# Output contract (consumed by audio-sink-server.ts):
 #   1. One line of UTF-8 JSON describing the captured format, newline-terminated:
 #        {"sampleRate":48000,"channels":2,"bitsPerSample":32,"isFloat":true}
 #      The mix format is whatever the Windows audio engine is currently using for that device —
@@ -22,7 +21,7 @@ param(
 #      the network relay. This script's only job is "give me bytes + tell me their shape."
 #
 # Stopping: no in-band stop signal. The host (Node's child_process) kills this process when the
-# Audio Relay session ends — simplest possible contract, and correct since there's nothing to
+# Audio Sink session ends — simplest possible contract, and correct since there's nothing to
 # flush/clean up on our side beyond releasing COM objects, which process exit does for free.
 
 $csharp = @"
@@ -90,20 +89,15 @@ public class LoopbackCapture {
     private static readonly Guid IID_IAudioClient = typeof(IAudioClient).GUID;
     private static readonly Guid IID_IAudioCaptureClient = typeof(IAudioCaptureClient).GUID;
 
-    // isMic=false: system loopback (Audio Relay) — default RENDER endpoint, LOOPBACK stream flag.
-    // isMic=true: default microphone (Remote Mic hosting from PC) — default CAPTURE endpoint, no
-    // loopback flag needed since a capture-type endpoint already delivers input, not output-to-
-    // relisten-to. Same WAVEFORMATEX/COM plumbing either way — only these two lines differ.
-    public static void Run(bool isMic) {
+    public static void Run() {
         var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
         IMMDevice device;
-        // eRender = 0, eCapture = 1 (dataFlow); eMultimedia = 1 (role) — same default-endpoint
-        // role already used elsewhere in this app (audio-endpoint-volume.ps1), kept consistent
-        // rather than picking a new one.
-        int dataFlow = isMic ? 1 : 0;
-        int hr = enumerator.GetDefaultAudioEndpoint(dataFlow, 1, out device);
+        // eRender = 0 (dataFlow); eMultimedia = 1 (role) — same default-endpoint role already
+        // used elsewhere in this app (audio-endpoint-volume.ps1), kept consistent rather than
+        // picking a new one.
+        int hr = enumerator.GetDefaultAudioEndpoint(0, 1, out device);
         if (hr != 0 || device == null) {
-            Console.Error.WriteLine((isMic ? "No default microphone" : "No default playback device") + " found (hr=" + hr + ")");
+            Console.Error.WriteLine("No default playback device found (hr=" + hr + ")");
             Environment.Exit(1);
         }
 
@@ -136,11 +130,27 @@ public class LoopbackCapture {
         // latency-sensitive and the tighter 3ms poll loop below no longer needs as much slack
         // against underrun.
         long bufferDuration = 400000;
-        int streamFlags = isMic ? 0 : AUDCLNT_STREAMFLAGS_LOOPBACK;
-        hr = client.Initialize(AUDCLNT_SHAREMODE_SHARED, streamFlags, bufferDuration, 0, pFormat, IntPtr.Zero);
+        hr = client.Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, bufferDuration, 0, pFormat, IntPtr.Zero);
         if (hr != 0) {
             Console.Error.WriteLine("IAudioClient.Initialize failed (hr=" + hr + ")");
             Environment.Exit(1);
+        }
+
+        // WASAPI shared-mode mixer goes idle / stops generating clock ticks when no render stream
+        // is active. Activating a silent render client on the same playback device keeps the mixer
+        // clock running continuously, so WASAPI loopback immediately captures audio regardless of
+        // whether sound was playing when the session started, or if sound starts/stops later.
+        IAudioClient dummyRenderClient = null;
+        try {
+            object dummyObj;
+            if (device.Activate(ref iidClient, 23, IntPtr.Zero, out dummyObj) == 0 && dummyObj != null) {
+                dummyRenderClient = (IAudioClient)dummyObj;
+                if (dummyRenderClient.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, bufferDuration, 0, pFormat, IntPtr.Zero) == 0) {
+                    dummyRenderClient.Start();
+                }
+            }
+        } catch {
+            // Ignore if dummy render activation fails — proceed with standard loopback
         }
 
         object captureObj;
@@ -208,6 +218,7 @@ public class LoopbackCapture {
             }
         } finally {
             try { client.Stop(); } catch {}
+            try { if (dummyRenderClient != null) dummyRenderClient.Stop(); } catch {}
         }
     }
 }
@@ -216,7 +227,5 @@ public class LoopbackCapture {
 Add-Type -TypeDefinition $csharp -Language CSharp
 
 if ($Action -eq "capture") {
-    [LoopbackCapture]::Run($false)
-} elseif ($Action -eq "capture-mic") {
-    [LoopbackCapture]::Run($true)
+    [LoopbackCapture]::Run()
 }

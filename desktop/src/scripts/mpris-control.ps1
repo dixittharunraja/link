@@ -71,12 +71,22 @@ if ($Action -eq 'get') {
         $canGoPrevious = if ($null -ne $controls -and $null -ne $controls.IsPreviousEnabled) { $controls.IsPreviousEnabled } else { $false }
         $canSeek = if ($null -ne $controls -and $null -ne $controls.IsSeekEnabled) { $controls.IsSeekEnabled } else { $false }
 
+        # Replace ASCII double-quote (0x22), Unicode left (0x201C) and right (0x201D) double
+        # quotation marks — all three break ConvertTo-Json string output and crash JSON.parse.
+        function CleanStr($s) {
+            if (-not $s) { return "" }
+            return ([string]$s).Replace([char]0x201C, [char]0x27).Replace([char]0x201D, [char]0x27).Replace([char]0x22, [char]0x27).Replace("`r", "").Replace("`n", " ")
+        }
+        $cleanTitle  = if ($props.Title)     { CleanStr $props.Title }     else { "Unknown" }
+        $cleanArtist = if ($props.Artist)    { CleanStr $props.Artist }    else { "" }
+        $cleanAlbum  = if ($props.AlbumTitle){ CleanStr $props.AlbumTitle } else { "" }
+
         $objects += [PSCustomObject]@{
-            player         = $cleanName
-            playerId       = $appId
-            title          = if ($props.Title) { $props.Title } else { "Unknown" }
-            artist         = if ($props.Artist) { $props.Artist } else { "" }
-            album          = if ($props.AlbumTitle) { $props.AlbumTitle } else { "" }
+            player         = [string]$cleanName
+            playerId       = [string]$appId
+            title          = $cleanTitle
+            artist         = $cleanArtist
+            album          = $cleanAlbum
             isPlaying      = $isPlaying
             canPlay        = $canPlay
             canPause       = $canPause
@@ -88,9 +98,6 @@ if ($Action -eq 'get') {
         }
     }
 
-    # ConvertTo-Json silently unwraps a single-element array into a bare object instead of a JSON
-    # array (a well-known PowerShell 5.1 quirk — there's no -AsArray flag on this PS version) — the
-    # Node side always expects an array, so force array brackets explicitly for the 0/1-item cases.
     if ($objects.Count -eq 0) {
         Write-Output "[]"
     } elseif ($objects.Count -eq 1) {

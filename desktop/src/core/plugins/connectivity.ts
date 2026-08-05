@@ -1,9 +1,9 @@
-// Connectivity Report plugin — faithful port of kdeconnect-kde's plugins/connectivityreport/connectivityreportplugin.cpp.
+// Connectivity Report plugin.
 // Receives signal strength and network status updates from the phone.
 
 import { LinkPacket } from '../packet';
 
-export const PACKET_TYPE_CONNECTIVITY = 'link.connectivity_report';
+export const PACKET_TYPE_CONNECTIVITY = 'link.connectivity';
 
 export interface SubscriptionState {
   networkType: string;

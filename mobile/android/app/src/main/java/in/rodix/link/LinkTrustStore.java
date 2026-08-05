@@ -23,13 +23,19 @@ public class LinkTrustStore {
         public final byte[] certDer;
         public final int protocolVersion;
         public final long pairedAt;
+        public String lastKnownIp;
 
         public TrustedDevice(String deviceId, String deviceName, byte[] certDer, int protocolVersion, long pairedAt) {
+            this(deviceId, deviceName, certDer, protocolVersion, pairedAt, null);
+        }
+
+        public TrustedDevice(String deviceId, String deviceName, byte[] certDer, int protocolVersion, long pairedAt, String lastKnownIp) {
             this.deviceId = deviceId;
             this.deviceName = deviceName;
             this.certDer = certDer;
             this.protocolVersion = protocolVersion;
             this.pairedAt = pairedAt;
+            this.lastKnownIp = lastKnownIp;
         }
 
         public X509Certificate certificate() throws Exception {
@@ -60,7 +66,8 @@ public class LinkTrustStore {
                             obj.getString("deviceName"),
                             certDer,
                             obj.optInt("protocolVersion", 1),
-                            obj.optLong("pairedAt", 0)));
+                            obj.optLong("pairedAt", 0),
+                            obj.optString("lastKnownIp", null)));
                 }
             }
         } catch (Exception e) {
@@ -79,6 +86,7 @@ public class LinkTrustStore {
                 obj.put("certDer", android.util.Base64.encodeToString(d.certDer, android.util.Base64.DEFAULT));
                 obj.put("protocolVersion", d.protocolVersion);
                 obj.put("pairedAt", d.pairedAt);
+                if (d.lastKnownIp != null) obj.put("lastKnownIp", d.lastKnownIp);
                 arr.put(obj);
             }
             try (FileWriter writer = new FileWriter(file)) {
@@ -120,8 +128,17 @@ public class LinkTrustStore {
                 newName,
                 dev.certDer,
                 dev.protocolVersion,
-                dev.pairedAt
+                dev.pairedAt,
+                dev.lastKnownIp
             ));
+            persist();
+        }
+    }
+
+    public void updateLastKnownIp(String deviceId, String ip) {
+        TrustedDevice dev = devices.get(deviceId);
+        if (dev != null && (dev.lastKnownIp == null || !dev.lastKnownIp.equals(ip))) {
+            dev.lastKnownIp = ip;
             persist();
         }
     }

@@ -1,12 +1,7 @@
-// Presenter plugin — port of kdeconnect-kde's plugins/presenter/presenterplugin.cpp. This is
-// ONLY the pointer-dot-movement half of upstream's presenter feature — slide navigation
-// (next/prev/fullscreen/esc) goes over `kdeconnect.mousepad.request` with real keyboard
-// injection, a separate, bigger lift shared with the full touchpad plugin (upstream's "mousepad").
-// Deferred — see docs/features.txt.
-//
-// Input source note: real kdeconnect-android drives dx/dy from the phone's gyroscope (tilt
-// control). Our mobile dev harness uses touch-drag instead — much easier to verify via
-// automation, and the wire packet format (what we're actually proving) is identical either way.
+// Presenter plugin.
+// Handles mapping relative movement increments (dx/dy) to screen coordinate changes 
+// for displaying the pointer overlay.
+
 
 import { LinkPacket, createPacket } from '../packet';
 
@@ -59,6 +54,6 @@ export class PresenterPosition {
   }
 }
 
-function clamp01(v: number): number {
+export function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }

@@ -1,5 +1,4 @@
-// Packet framing — ported from kdeconnect-kde's core/networkpacket.cpp.
-// One JSON object per line over a persistent TLS socket. See docs/PROTOCOL.md §2.
+// Packet framing. One JSON object per line over a persistent TLS socket. See docs/PROTOCOL.md §2.
 
 export interface LinkPacket<TBody = any> {
   id: number;

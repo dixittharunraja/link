@@ -1,4 +1,4 @@
-// Clipboard plugin — faithful port of kdeconnect-kde's plugins/clipboard/clipboardplugin.cpp.
+// Clipboard plugin.
 // Supports text, image, and file sync using the link.clipboard.file packet type.
 
 import { clipboard, app } from 'electron';
@@ -84,13 +84,30 @@ export class ClipboardWatcher {
     if (formats.includes('image/png') || formats.includes('image/jpeg')) {
       const img = clipboard.readImage();
       if (!img.isEmpty()) {
-        const buf = img.toPNG();
-        const hash = crypto.createHash('sha256').update(buf).digest('hex');
+        // Fingerprint the RAW bitmap, and only PNG-encode once something actually changed.
+        //
+        // This used to call toPNG() every single tick just to produce bytes to hash. toPNG() is a
+        // full zlib compression pass over the whole image, so copying one 4K screenshot left the
+        // main process re-compressing several megabytes once a second for as long as that image
+        // stayed on the clipboard — burning CPU forever after a single Ctrl+C and starving
+        // everything else the main process serves, including the UI's IPC.
+        // toBitmap() hands back the already-decoded buffer with no compression work at all.
+        const bitmap = img.toBitmap();
+        const size = img.getSize();
+        const hash = crypto
+          .createHash('sha1')
+          .update(`${size.width}x${size.height}:`)
+          .update(bitmap)
+          .digest('hex');
+
         if (hash !== this.lastSeenImageHash) {
           this.lastSeenImageHash = hash;
           this.lastSeenText = '';
           this.lastSeenFilePath = '';
-          this.onLocalChange('file', { filename: `ClipboardImage_${Date.now()}.png`, buffer: buf });
+          this.onLocalChange('file', {
+            filename: `ClipboardImage_${Date.now()}.png`,
+            buffer: img.toPNG(),
+          });
         }
         return;
       }

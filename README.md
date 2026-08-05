@@ -13,7 +13,7 @@ Everything runs peer-to-peer over TLS on your home or office network. Nothing le
 - **Clipboard sync** — Copy on your phone, paste on your PC. Instantly, in both directions. Works for text, images, and files.
 - **Notification mirroring** — Every phone notification appears on your desktop. Includes inline reply directly from the PC.
 - **File system mount** — Browse your phone's storage as a native Windows drive (Z:) through Explorer. Drag, drop, open, edit.
-- **Remote control** — Use your phone as a touchpad, a presenter clicker (with gyroscope tilt), or a drawing tablet. All over an ultra-low-latency UDP relay.
+- **Remote control** — Use your phone as a touchpad, a presenter clicker (touch-based), or a drawing tablet. All over an ultra-low-latency UDP relay.
 - **Audio relay** — Stream your PC's system audio to your phone in real time over the local network.
 - **Remote microphone** — Use your phone's microphone as a virtual audio input on Windows — works with Zoom, Discord, and any other app that reads from an audio device.
 - **Media control** — Control media playback on any device from any other. Your PC automatically pauses when your phone rings.
@@ -26,9 +26,10 @@ Everything runs peer-to-peer over TLS on your home or office network. Nothing le
 
 Link forms a **decentralized N-to-N mesh**. There is no hub, no relay server, no coordinator. Every device is equal.
 
-**Pairing is done once.** Your devices form a **Trusted Pool** — a set of your own devices that all trust each other. Trust flows through a single shared **owner key** (a per-person Ed25519 root of trust), not peer-to-peer or through blind authority. When a new device joins by pairing with *any* existing member (one PIN — the human gate), that member hands it the owner key and issues it an owner-signed **membership certificate** binding its TLS identity to the pool. Every other member then auto-trusts it by verifying that certificate against the owner key it already holds — no second pairing. Removing a device owner-signs a revocation that propagates across the pool.
+**Pairing is done once.** Your devices form a **Trusted Pool** — a set of your own devices that all trust each other. Trust is established by transitive introduction. When a new device joins by pairing with *any* existing member (one PIN — the human gate), that member automatically syncs its trust list to the newcomer, enrolling it. The rest of the pool automatically learns the new member's cert and trusts it—no second pairing. Removing a device propagates a pool-wide unpair request that instructs all active members to drop the device and purge its configuration, returning it to a stranger state.
 
 **The transport is TLS everywhere.** Self-signed certificates, pinned on first contact (Trust-on-First-Use), verified on every subsequent connection. Mismatched fingerprints abort immediately.
+
 
 **High-throughput transfers use ephemeral binary channels.** File transfers, clipboard payloads, and speed tests bypass JSON entirely — the sender opens a short-lived TLS server on a random port, the receiver connects directly and pulls raw bytes. This is what allows Link to actually saturate your LAN rather than fighting JSON overhead.
 
@@ -37,24 +38,24 @@ Link forms a **decentralized N-to-N mesh**. There is no hub, no relay server, no
 ---
 
 ## How it compares
-
-Link started as a study of [KDE Connect](https://kdeconnect.kde.org) — the best prior art in this space. Over time it diverged substantially in architecture, transport, and implementation. Here is where it stands:
-
-| | KDE Connect | Link |
+ 
+Link is built from the ground up as a native-feeling, high-performance local network suite:
+ 
+| Feature | Legacy Solutions | Link |
 |---|---|---|
-| **Platform** | Qt / C++ desktop, native Android | Electron + TypeScript desktop, Capacitor + native Android |
+| **Platform** | Heavy native/Qt runtimes | Modern Electron desktop client + Capacitor/Android mobile client |
 | **Topology** | Primarily 1-to-1 pairing | N-to-N decentralized mesh; a Trusted Pool where pairing any one device auto-meshes it with all others |
-| **Input transport** | TCP (control channel) | UDP relay — zero jitter, frame-accurate |
-| **File transfer throughput** | Limited by JSON framing and small buffers | Raw binary channels, 128 KB buffers → fills your LAN |
+| **Input transport** | Jittery TCP streams | Custom UDP relay — zero jitter, frame-accurate |
+| **File transfer throughput** | Small chunk buffers | Raw binary channels with 128 KB buffers for maximum LAN bandwidth |
 | **Digitizer** | Basic relative mapping | Absolute landscape-mapped coordinates, stable on lift |
-| **Audio** | Basic | System audio relay + phone-as-virtual-mic (Remote Microphone) |
-| **Windows install** | Requires KDE runtime dependencies | Self-contained Electron binary |
-| **Protocol** | KDE Connect wire format | KDE Connect-compatible wire format with extensions |
-
+| **Audio** | Not supported / restricted | System audio relay + phone-as-virtual-mic (Remote Microphone) |
+| **Windows install** | Bulky runtime dependencies | Self-contained, portable Windows binary |
+| **Protocol** | Standard peer protocol | Secure peer-to-peer wire format with mesh extensions |
+ 
 ---
-
+ 
 ## Stack
-
+ 
 | Layer | Technology |
 |---|---|
 | Desktop app | Electron · TypeScript · Node.js |
@@ -62,21 +63,20 @@ Link started as a study of [KDE Connect](https://kdeconnect.kde.org) — the bes
 | Transport | TLS 1.3 (self-signed, pinned) · UDP |
 | File system | WebDAV-over-WSS · rclone mount |
 | Input injection | Win32 mouse/keyboard APIs · C# helper |
-
+ 
 ---
+ 
+## Authors & Acknowledgements
+ 
+* **Author**: Dixit Tharun Raja P
+* **Company**: Rodix
+ 
+Link utilizes a secure, custom peer-to-peer protocol. Credit is given to KDE Connect for providing valuable prior art and protocol design ideas that inspired early stages of local network synchronization. No code from the KDE Connect project is included or distributed within this repository.
 
-## Acknowledgements
-
-Link would not exist without KDE Connect. Their protocol design, feature thinking, and years of real-world testing gave us a solid foundation to build from. We diverged significantly — but we started from a great place because of their work.
-
-**KDE Connect** — Albert Vaca Cintora and contributors. [kdeconnect.kde.org](https://kdeconnect.kde.org)
-
-No KDE Connect source code is included in or distributed with this project.
 
 ---
 
 ## License
 
-GPL-2.0. See `LICENSE`.
 
 

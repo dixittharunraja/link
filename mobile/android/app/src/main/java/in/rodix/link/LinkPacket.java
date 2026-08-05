@@ -24,6 +24,14 @@ public class LinkPacket {
         this.body = body;
     }
 
+    public String getType() {
+        return type;
+    }
+
+    public JSONObject getBody() {
+        return body;
+    }
+
     private LinkPacket(long id, String type, JSONObject body, Long payloadSize, JSONObject payloadTransferInfo) {
         this.id = id;
         this.type = type;

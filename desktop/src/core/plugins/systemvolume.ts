@@ -1,9 +1,6 @@
-// System volume plugin — faithful port of kdeconnect-kde's plugins/systemvolume/systemvolumeplugin.cpp.
-// Upstream desktop exposes every audio sink (PulseAudioQt::Sink list) and lets the phone control
-// each one individually. Windows has no per-sink enumeration as simple as PulseAudio's, so this
-// is SCOPED DOWN to the single default playback device — sinkList always contains exactly one
-// entry named "default". Field names/shapes match upstream so the wire format itself isn't a
-// deviation, only how many sinks we ever report.
+// System volume plugin.
+// Default playback device default sink only. Field names/shapes match protocol so the wire format
+// itself is compatible.
 
 import { spawn } from 'child_process';
 import * as readline from 'readline';
@@ -161,6 +158,11 @@ export async function handleSystemVolumeRequest(packet: LinkPacket): Promise<Sin
 export class VolumeWatcher {
   private lastSinks: SinkState[] = [];
   private interval: NodeJS.Timeout | null = null;
+  // setInterval does not wait for an async callback, so a poll that outran the interval used to
+  // let the next one start anyway. Each overlapping call queues another entry on the runner's
+  // pendingResolvers list, which is matched to output strictly by line order — so a backlog both
+  // grew without bound and desynced every later reply by one position.
+  private polling = false;
 
   constructor(private onChange: (sinks: SinkState[]) => void, pollIntervalMs = 2000) {
     this.poll();
@@ -168,6 +170,16 @@ export class VolumeWatcher {
   }
 
   private async poll() {
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      await this.pollOnce();
+    } finally {
+      this.polling = false;
+    }
+  }
+
+  private async pollOnce() {
     const current = await queryVolumeList();
     if (current.length === 0) return;
 

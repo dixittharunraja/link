@@ -14,7 +14,7 @@ import java.util.Map;
 import org.json.JSONObject;
 
 public class LinkConnectivity {
-    public static final String PACKET_TYPE_CONNECTIVITY = "link.connectivity_report";
+    public static final String PACKET_TYPE_CONNECTIVITY = "link.connectivity";
     private static final String TAG = "LinkConnectivity";
 
     public static class SubscriptionState {

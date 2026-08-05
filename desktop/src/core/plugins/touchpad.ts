@@ -1,5 +1,4 @@
-// Touchpad/Remotecontrol plugin — faithful port of kdeconnect-kde's plugins/mousepad/mousepadplugin.cpp
-// (upstream KDE Connect calls this the "mousepad" plugin; renamed to touchpad throughout here).
+// Touchpad/Remotecontrol plugin.
 // Receives touchpad movement, clicks, and scroll gestures from the phone, and injects them
 // into Windows using a persistent C#-compiled native helper communicating over stdin.
 
@@ -167,6 +166,19 @@ public class MouseHelper {
                         short code = (short)(-specialKey);
                         keybd_event(0, (byte)code, 0x0004, UIntPtr.Zero);
                         keybd_event(0, (byte)code, 0x0004 | 0x0002, UIntPtr.Zero); // KEYEVENTF_KEYUP
+                    } else if (specialKey >= 40 && specialKey <= 43) {
+                        // Ctrl+A/C/V/X (select-all/copy/paste/cut) — same VK_CONTROL-modifier
+                        // pattern as the "undo"/"redo" commands below, just parameterized over the
+                        // combo letter instead of two dedicated commands.
+                        byte comboVk = 0;
+                        if (specialKey == 40) comboVk = 0x41; // A
+                        else if (specialKey == 41) comboVk = 0x43; // C
+                        else if (specialKey == 42) comboVk = 0x56; // V
+                        else if (specialKey == 43) comboVk = 0x58; // X
+                        keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);
+                        keybd_event(comboVk, 0, 0, UIntPtr.Zero);
+                        keybd_event(comboVk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
                     } else {
                         byte vk = 0;
                         if (specialKey == 8) vk = 0x21; // Page Up

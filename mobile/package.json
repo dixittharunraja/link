@@ -1,10 +1,11 @@
 {
   "name": "link-mobile",
   "version": "0.1.0",
-  "description": "Link mobile app — faithful Capacitor/Android port of KDE Connect's protocol",
+  "description": "Link mobile app — secure peer-to-peer local network device synchronization and control suite (mobile client)",
+  "author": "Dixit Tharun Raja P / Rodix",
   "license": "GPL-3.0-only",
   "scripts": {
-    "build:android": "npx cap copy android && powershell -Command \"$env:JAVA_HOME='C:\\Program Files\\Android\\Android Studio\\jbr'; $env:Path+=';C:\\Program Files\\Android\\Android Studio\\jbr\\bin'; cd android; .\\gradlew.bat clean assembleRelease; cd ..; if (Test-Path ..\\..\\rodix\\public) { New-Item -ItemType Directory -Force ..\\..\\rodix\\public\\installers; Copy-Item -Path android\\app\\build\\outputs\\apk\\release\\app-release.apk -Destination ..\\..\\rodix\\public\\installers\\link.apk -Force } else { Write-Warning 'Skipping APK copy: rodix folder not found' }\"",
+    "build:android": "npx cap copy android && powershell -Command \"if (-not $env:JAVA_HOME -and (Test-Path 'C:\\Program Files\\Android\\Android Studio\\jbr')) { $env:JAVA_HOME='C:\\Program Files\\Android\\Android Studio\\jbr'; $env:Path+=';C:\\Program Files\\Android\\Android Studio\\jbr\\bin' }; cd android; .\\gradlew.bat clean assembleRelease; cd ..; if (Test-Path ..\\..\\rodix\\public) { New-Item -ItemType Directory -Force ..\\..\\rodix\\public\\installers; Copy-Item -Path android\\app\\build\\outputs\\apk\\release\\app-release.apk -Destination ..\\..\\rodix\\public\\installers\\link.apk -Force } else { Write-Warning 'Skipping APK copy: rodix folder not found' }\"",
     "install:android": "powershell -Command \"$env:Path += ';C:\\Users\\dixit\\AppData\\Local\\Android\\Sdk\\platform-tools'; adb install -r android/app/build/outputs/apk/release/app-release.apk\""
   },
   "dependencies": {

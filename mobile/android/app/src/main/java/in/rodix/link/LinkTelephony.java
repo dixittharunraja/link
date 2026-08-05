@@ -9,7 +9,7 @@ import org.json.JSONObject;
 
 public class LinkTelephony {
     public static final String PACKET_TYPE_TELEPHONY = "link.telephony";
-    private static final String CALL_CHANNEL_ID = "link_call_channel";
+    private static final String CALL_CHANNEL_ID = "link_call_channel_v2";
 
     public static boolean isTelephonyPacket(LinkPacket packet) {
         return PACKET_TYPE_TELEPHONY.equals(packet.type);
@@ -122,6 +122,18 @@ public class LinkTelephony {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             android.app.NotificationChannel channel = new android.app.NotificationChannel(
                 CALL_CHANNEL_ID, "Incoming Calls (Linked Devices)", android.app.NotificationManager.IMPORTANCE_HIGH);
+            
+            // Set sound to the system default ringtone instead of regular notification chirp
+            android.net.Uri ringtoneUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE);
+            channel.setSound(ringtoneUri, new android.media.AudioAttributes.Builder()
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                .build());
+            
+            // Enable continuous vibration pattern
+            channel.enableVibration(true);
+            channel.setVibrationPattern(new long[]{0, 1000, 1000, 1000});
+            
             nm.createNotificationChannel(channel);
         }
 
@@ -156,6 +168,24 @@ public class LinkTelephony {
             .setAutoCancel(!ongoing)
             .setCategory(android.app.Notification.CATEGORY_CALL);
 
+        if ("ringing".equals(event)) {
+            android.net.Uri ringtoneUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE);
+            builder.setSound(ringtoneUri);
+            builder.setVibrate(new long[]{0, 1000, 1000, 1000});
+
+            try {
+                android.content.Intent fullScreenIntent = new android.content.Intent(context, MainActivity.class);
+                fullScreenIntent.setFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK | android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                android.app.PendingIntent fullScreenPendingIntent = android.app.PendingIntent.getActivity(
+                    context,
+                    notifId,
+                    fullScreenIntent,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE
+                );
+                builder.setFullScreenIntent(fullScreenPendingIntent, true);
+            } catch (Exception ignored) {}
+        }
+
         if (iconBase64 != null) {
             try {
                 byte[] bytes = android.util.Base64.decode(iconBase64, android.util.Base64.NO_WRAP);
@@ -168,7 +198,7 @@ public class LinkTelephony {
 
         if ("ringing".equals(event)) {
             // This device isn't the one physically ringing — "Mute" relays a request back to the
-            // peer (deviceId) to silence its own ringer, via LinkPlugin's muteRemoteRingerReceiver.
+            // peer (deviceId) to silence its own ringer, via LinkPlugin's ringer-mute request.
             android.content.Intent muteIntent = new android.content.Intent(LinkPlugin.ACTION_MUTE_REMOTE_RINGER);
             muteIntent.setPackage(context.getPackageName());
             muteIntent.putExtra(LinkPlugin.EXTRA_MUTE_DEVICE_ID, deviceId);
@@ -190,6 +220,11 @@ public class LinkTelephony {
             }
         }
 
-        nm.notify(notifId, builder.build());
+        android.app.Notification notification = builder.build();
+        if ("ringing".equals(event)) {
+            // INSISTENT loops the ringtone audio continuously until the user interacts or the call ends.
+            notification.flags |= android.app.Notification.FLAG_INSISTENT;
+        }
+        nm.notify(notifId, notification);
     }
 }

@@ -1,6 +1,6 @@
-// Pairing state machine — faithful port of kdeconnect-kde's core/backends/pairinghandler.cpp.
+// Pairing state machine.
 // Trust-on-first-use: no PIN, no shared-secret proof. See docs/PROTOCOL.md §6 for why this is
-// intentional for this pass (SPAKE2 is a planned follow-up, not part of this port).
+// intentional for this pass.
 
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
@@ -139,7 +139,7 @@ export class PairingHandler extends EventEmitter {
         case 'Requested':
         case 'RequestedByPeer':
           this.state = 'NotPaired';
-          this.emit('pairingFailed', 'Cancelled by other peer');
+          this.emit('pairingFailed', 'Rejected by other peer');
           break;
         case 'Paired':
           this.state = 'NotPaired';

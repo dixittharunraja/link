@@ -26,29 +26,13 @@ const DevicePermissionsModal: React.FC<DevicePermissionsModalProps> = ({
   // notifications) — desktop is purely a passive display, it never decides anything. So, like
   // Flashlight/DND, those toggles only belong on the OWNER's own settings dialog: gate on LOCAL
   // device type, not on the peer being configured.
-  const isLocalDesktop = localDeviceType !== 'phone' && localDeviceType !== 'tablet';
-  const isLocalMobile = localDeviceType === 'phone' || localDeviceType === 'tablet';
+  const isLocalDesktop = localDeviceType !== 'phone';
+  const isLocalMobile = localDeviceType === 'phone';
 
   return (
-    <div
-      className="popup-overlay"
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: 'rgba(0,0,0,0.75)',
-        backdropFilter: 'blur(10px)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000
-      }}
-      onClick={onClose}
-    >
+    <div className="modal">
       <div
-        className="card"
+        className="modal-content"
         style={{
           width: '90%',
           maxWidth: '440px',
@@ -57,9 +41,9 @@ const DevicePermissionsModal: React.FC<DevicePermissionsModalProps> = ({
           boxShadow: '0 25px 60px var(--modal-shadow)',
           padding: '28px',
           maxHeight: '90vh',
-          overflowY: 'auto'
+          overflowY: 'auto',
+          textAlign: 'left'
         }}
-        onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
@@ -68,16 +52,33 @@ const DevicePermissionsModal: React.FC<DevicePermissionsModalProps> = ({
           </div>
           <button
             onClick={onClose}
+            aria-label="Close"
             style={{
-              background: 'transparent',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '30px',
+              height: '30px',
+              minWidth: '30px',
+              borderRadius: '50%',
+              padding: 0,
+              fontSize: '16px',
+              background: 'rgba(255, 255, 255, 0.08)',
               border: 'none',
               color: 'var(--text-muted)',
-              fontSize: '16px',
               cursor: 'pointer',
-              padding: '4px'
+              transition: 'background 0.15s ease, color 0.15s ease'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.16)';
+              e.currentTarget.style.color = 'var(--text-color)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
+              e.currentTarget.style.color = 'var(--text-muted)';
             }}
           >
-            ✕
+            &times;
           </button>
         </div>
 
@@ -94,23 +95,16 @@ const DevicePermissionsModal: React.FC<DevicePermissionsModalProps> = ({
             onChange={(v) => setPermission('clipboard', v)}
           />
 
-          {isLocalDesktop && (
-            <ToggleRow
-              title="Allow Touchpad"
-              description="Allow pointer control inputs."
-              checked={getPermission('touchpad')}
-              onChange={(v) => setPermission('touchpad', v)}
-            />
-          )}
 
-          {isLocalDesktop && (
-            <ToggleRow
-              title="Allow Presenter"
-              description="Allow slide and spotlight presentations."
-              checked={getPermission('presenter')}
-              onChange={(v) => setPermission('presenter', v)}
-            />
-          )}
+          {/* Presenter is executed by BOTH platforms now: desktop (slides/spotlight) and mobile
+              (in-app pointer-dot overlay, mobile-to-mobile) — unlike Touchpad/Digitizer below,
+              which stay desktop-only until their mobile-target support is built. */}
+          <ToggleRow
+            title="Allow Presenter"
+            description="Allow slide and spotlight presentations."
+            checked={getPermission('presenter')}
+            onChange={(v) => setPermission('presenter', v)}
+          />
 
           {isLocalDesktop && (
             <ToggleRow
@@ -120,6 +114,10 @@ const DevicePermissionsModal: React.FC<DevicePermissionsModalProps> = ({
               onChange={(v) => setPermission('digitizer', v)}
             />
           )}
+
+          {/* Joystick has no allow/deny toggle at all, same as Ring below — it's inherently
+              available to any connected device, so a friend's phone can be handed a controller
+              without being pre-configured first. */}
 
           <ToggleRow
             title="Allow File Access"
@@ -137,7 +135,6 @@ const DevicePermissionsModal: React.FC<DevicePermissionsModalProps> = ({
               onChange={(v) => setPermission('flashlight', v)}
             />
           )}
-
           {/* DND — only mobile ever executes this; desktop has no notification-policy control. */}
           {isLocalMobile && (
             <ToggleRow
@@ -147,6 +144,7 @@ const DevicePermissionsModal: React.FC<DevicePermissionsModalProps> = ({
               onChange={(v) => setPermission('dnd', v)}
             />
           )}
+
 
           {/* Lock — Ring has no toggle at all: it's inherently available to any connected,
               trusted device, same as rename. */}
@@ -192,6 +190,13 @@ const DevicePermissionsModal: React.FC<DevicePermissionsModalProps> = ({
               onChange={(v) => setPermission('notification', v)}
             />
           )}
+
+          <ToggleRow
+            title="Allow Remote Input"
+            description="Let this device send mouse clicks, touchpad movements, keyboard typing, and D-pad commands to this system."
+            checked={getPermission('remoteinput')}
+            onChange={(v) => setPermission('remoteinput', v)}
+          />
 
           {/* Run Command — only desktop ever executes/whitelists commands; Android has no
               executor at all (it only receives a peer's list and triggers on THEM). */}

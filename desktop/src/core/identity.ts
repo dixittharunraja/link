@@ -1,16 +1,19 @@
 // Device identity — one per device, generated once, persisted forever.
-// Ported from kdeconnect-kde's KdeConnectConfig::deviceId()/deviceType() and core/deviceinfo.h.
 //
 // Architectural rule (see docs/PROTOCOL.md §4): this is the ONE place identity is generated or
 // loaded from disk. Every other part of the app (transport, pairing, UI) reads it from here —
 // nothing else is allowed to mint its own deviceId.
+
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as os from 'os';
 
-export type DeviceType = 'desktop' | 'laptop' | 'phone' | 'tablet' | 'tv';
+// Only 'desktop', 'phone', and 'tv' are ever actually produced at runtime — desktop's own
+// identity creation hardcodes 'desktop' (main.ts), and Android's detectDeviceType() only ever
+// returns 'tv' (Android TV) or 'phone' (everything else, no tablet auto-detection exists).
+export type DeviceType = 'desktop' | 'phone' | 'tv';
 
 export interface DeviceIdentity {
   deviceId: string;
@@ -19,11 +22,7 @@ export interface DeviceIdentity {
   protocolVersion: number;
   incomingCapabilities: string[];
   outgoingCapabilities: string[];
-  // Trusted Pool (Wave 2): advertised so a peer can auto-trust this device when it's in the same
-  // pool. Both absent until this device joins a pool (see pool.ts). ownerKeyFingerprint identifies
-  // WHICH pool; membershipCert is the owner-signed proof, verified against the peer's own owner key.
-  ownerKeyFingerprint?: string;
-  membershipCert?: import('./pool').MembershipCert;
+  visibility?: boolean;
 }
 
 export const PROTOCOL_VERSION = 1;

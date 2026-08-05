@@ -2,7 +2,7 @@ package in.rodix.link;
 
 // Audio Relay — Android-as-host capture side. Wraps MediaProjection + AudioPlaybackCaptureConfiguration
 // + AudioRecord to capture this device's own system audio, isolated behind its own Listener
-// interface so LinkAudioRelayServer (the relay/wire-protocol half) never touches AudioRecord
+// interface so LinkAudioSinkServer (the relay/wire-protocol half) never touches AudioRecord
 // directly — keeps capture independently replaceable (e.g. if Opus encoding is added later, only
 // this seam changes).
 //
@@ -10,7 +10,7 @@ package in.rodix.link;
 // capturing app choose what rate source apps are mixed at — the OS mixes everything down to
 // whatever format the AudioRecord here requests, and 48000Hz/stereo/16-bit is the de facto
 // standard Android mixer output on essentially all modern devices, and already the exact format
-// every existing listener (LinkAudioRelayClient.java, desktop's audio-relay-client.ts) already
+// every existing listener (LinkAudioSinkClient.java, desktop's audio-sink-client.ts) already
 // knows how to play with zero new code.
 
 import android.content.Context;
@@ -149,12 +149,12 @@ public class LinkAudioCapture {
                     break;
                 }
             }
-        }, "link-audiorelay-capture");
+        }, "link-audiosink-capture");
         readThread.start();
     }
 
     /** Does not stop/release the MediaProjection — ownership of that stays with whoever created
-     *  it (LinkAudioRelayServer), since a fresh grant/consent is required per session anyway and
+     *  it (LinkAudioSinkServer), since a fresh grant/consent is required per session anyway and
      *  the two lifecycles happen to coincide 1:1 in this design, not because this class owns it. */
     public void stop() {
         running = false;

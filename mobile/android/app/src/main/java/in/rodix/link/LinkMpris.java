@@ -22,10 +22,16 @@ public class LinkMpris {
     }
     public static void handleMediaRequest(android.content.Context context, LinkPacket packet) {
         String action = packet.body.optString("action");
-        if (action == null) return;
+        if (action == null) {
+            android.util.Log.w("LinkMpris", "Media request with no action");
+            return;
+        }
 
         android.media.AudioManager audioManager = (android.media.AudioManager) context.getSystemService(android.content.Context.AUDIO_SERVICE);
-        if (audioManager == null) return;
+        if (audioManager == null) {
+            android.util.Log.w("LinkMpris", "AudioManager not available");
+            return;
+        }
 
         int keyCode = 0;
         if ("Play".equalsIgnoreCase(action) || "PlayPause".equalsIgnoreCase(action)) {
@@ -41,11 +47,15 @@ public class LinkMpris {
         }
 
         if (keyCode != 0) {
+            android.util.Log.d("LinkMpris", "Dispatching media key event: keyCode=" + keyCode + " for action=" + action);
             long eventtime = android.os.SystemClock.uptimeMillis();
             android.view.KeyEvent downEvent = new android.view.KeyEvent(eventtime, eventtime, android.view.KeyEvent.ACTION_DOWN, keyCode, 0);
             audioManager.dispatchMediaKeyEvent(downEvent);
             android.view.KeyEvent upEvent = new android.view.KeyEvent(eventtime, eventtime, android.view.KeyEvent.ACTION_UP, keyCode, 0);
             audioManager.dispatchMediaKeyEvent(upEvent);
+            android.util.Log.d("LinkMpris", "Media key event dispatched successfully");
+        } else {
+            android.util.Log.w("LinkMpris", "Unknown media action: " + action);
         }
     }
 
@@ -54,7 +64,7 @@ public class LinkMpris {
             android.media.session.MediaSessionManager mediaSessionManager =
                     (android.media.session.MediaSessionManager) context.getSystemService(android.content.Context.MEDIA_SESSION_SERVICE);
             android.content.ComponentName componentName = new android.content.ComponentName(context, LinkNotificationReceiver.class);
-            
+
             java.util.List<String> playerList = new java.util.ArrayList<>();
             String activePlayer = "";
             String title = "No Active Media";
@@ -69,7 +79,9 @@ public class LinkMpris {
             long length = 0;
             long pos = 0;
 
-            if (LinkNotificationReceiver.isPermissionGranted(context)) {
+            boolean permGranted = LinkNotificationReceiver.isPermissionGranted(context);
+
+            if (permGranted) {
                 try {
                     java.util.List<android.media.session.MediaController> controllers = mediaSessionManager.getActiveSessions(componentName);
                     if (controllers != null && !controllers.isEmpty()) {

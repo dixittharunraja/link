@@ -1,16 +1,17 @@
-// Audio Relay — host side. A dedicated WebSocket+TLS server on AUDIO_RELAY_PORT, completely
+// Audio Sink — host side. A dedicated WebSocket+TLS server on AUDIO_SINK_PORT, completely
 // separate from DeviceManager/TrustStore/the permission system (see docs/flow.txt and the plan
 // this was built from) — an admitted listener here is NEVER added to the paired-device mesh.
 //
-// Two ways in, both ending at the same admit() path so there's exactly one relay/playback
-// implementation regardless of how a listener got here:
-//   - Guest (unpaired, manual IP): sends {"type":"join-guest"}. Server computes a PIN from both
-//     sides' public keys (same hash PairingHandler.verificationKey() uses, via
-//     computeVerificationCode() — reused, not reimplemented) and waits for the host to
-//     accept/reject via acceptGuest()/rejectGuest(). Nothing is written to the trust store.
+// Two ways in, both ending at the same admit() path:
+//   - Guest (unpaired, manual IP): sends {"type":"join-guest"}. The PIN gate fires — the host
+//     sees an Accept/Reject/Block card and the guest displays the PIN. Only admit() is called
+//     after the human accepts. Nothing is written to the trust store; a "listener" here is scoped
+//     to this session only.
 //   - Already-paired device: sends {"type":"join-token","token":"..."}. issueToken() was called
-//     for that specific deviceId over the MAIN trusted connection when the session started —
-//     matching token admits immediately, no human confirmation needed (trust already exists).
+//     for that specific deviceId over the MAIN trusted connection when the session started;
+//     tokens auto-admit without a PIN step.
+// Kick/Block (post-admission only) are the sole moderation controls — see kickListener() and
+// main.ts's block-audio-sink-listener handler.
 //
 // Capture: spawns audio-capture.ps1, reads its one-line JSON format header, then relays every
 // subsequent chunk of raw PCM to every admitted listener.
@@ -18,7 +19,7 @@
 // PCM transport: UDP, not the WS/TCP control connection — TCP's head-of-line blocking means one
 // delayed/lost packet stalls EVERY later packet behind it in the kernel buffer until it's
 // retransmitted, which is exactly backwards for real-time audio (a stale-but-arrived frame is
-// worse than a dropped one). AUDIO_RELAY_UDP_PORT carries only PCM; this WS connection keeps
+// worse than a dropped one). AUDIO_SINK_UDP_PORT carries only PCM; this WS connection keeps
 // carrying every control message (join/admit/format/mute/end) exactly as before — none of that is
 // latency-sensitive or continuous enough to benefit from UDP, and keeping it on TLS/WS means PIN
 // verification, tokens, and admission all keep their existing guarantees unchanged.
@@ -48,12 +49,14 @@ import * as path from 'path';
 import { EventEmitter } from 'events';
 import WebSocket from 'ws';
 import type { Encoder as OpusEncoderClass } from '@evan/opus';
+import { AUDIO_SINK_UDP_PORT } from '../core/transport';
 import { computeVerificationCode } from '../core/pairing';
-import { AUDIO_RELAY_UDP_PORT } from '../core/transport';
+
+const GUEST_CONFIRM_TIMEOUT_MS = 30_000;
 
 // Type-only import above emits no runtime code — the actual load is this guarded require(), so a
 // missing/broken native binary on some machine falls back to raw PCM transparently instead of
-// crashing Audio Relay entirely. In practice @evan/opus ships prebuilt native binaries for the
+// crashing Audio Sink entirely. In practice @evan/opus ships prebuilt native binaries for the
 // common desktop platforms plus a WASM fallback and uses true N-API bindings (ABI-stable across
 // Node/Electron versions, confirmed during development — no rebuild step needed even though
 // Electron's own Node ABI differs from plain Node's), so this catch is a defensive safety net, not
@@ -69,7 +72,7 @@ const CODEC_TAG_PCM = 0x00;
 const CODEC_TAG_OPUS = 0x01;
 // Opus mandates one of these fixed sample rates — WASAPI's actual shared-mode mix rate (whatever
 // the audio engine happens to be configured for, commonly but not always 48000Hz) might not be
-// one of them, in which case Audio Relay falls back to raw PCM for this session rather than
+// one of them, in which case Audio Sink falls back to raw PCM for this session rather than
 // resampling (out of scope for now — a real resampler is a separate, bigger piece of work).
 const OPUS_SUPPORTED_SAMPLE_RATES = new Set([8000, 12000, 16000, 24000, 48000]);
 // Opus also mandates fixed frame durations (2.5/5/10/20/40/60ms). History: 20ms -> 10ms (confirmed
@@ -81,9 +84,14 @@ const OPUS_SUPPORTED_SAMPLE_RATES = new Set([8000, 12000, 16000, 24000, 48000]);
 // session: a genuine cumulative-throughput ceiling on the phone's more CPU-constrained hardware,
 // not a discrete bug to chase further. 10ms is the confirmed-good floor for this pipeline.
 const OPUS_FRAME_MS = 10;
-const GUEST_CONFIRM_TIMEOUT_MS = 30000;
 const UDP_NONCE_BYTES = 12;
 const UDP_SEQ_BYTES = 4;
+// 6-byte millisecond-resolution wall-clock timestamp packed into every UDP frame immediately after
+// the seq number — enough range to represent any Unix ms timestamp (2^48 ms ≈ 8919 years from
+// epoch) in a single contiguous field without BigInt on the Android side (read as two u16+u32).
+// The receiver uses this to measure its own accumulated play-offset drift relative to the live PC
+// capture and drive the AudioTrack playback-rate correction loop.
+const UDP_TS_BYTES = 6;
 // A single WASAPI capture read is ~20-40ms of audio — 3-4KB+ at 48kHz/stereo — which is well over
 // the ~1472-byte Ethernet/Wi-Fi MTU payload budget. Sending that as one UDP datagram means the OS
 // silently IP-fragments it into several packets; if even ONE fragment is lost, the kernel discards
@@ -115,32 +123,27 @@ interface Listener {
   ws: WebSocket;
   deviceId?: string; // set for paired listeners, undefined for guests
   label: string;
+  remoteAddress: string;
   sessionKey: Buffer; // AES-256-GCM key for this listener's UDP audio frames, minted in admit()
   udpAddress?: string; // set once this listener's UDP "hello" arrives — see handleUdpMessage()
   udpPort?: number;
   seq: number; // per-listener outgoing sequence counter for UDP audio frames
 }
 
-interface PendingGuest {
-  ws: WebSocket;
-  pin: string;
-  timeout: NodeJS.Timeout;
-}
-
-export interface AudioRelayServerEvents {
-  guestPinPending: (connId: string, pin: string, remoteAddress: string) => void;
+export interface AudioSinkServerEvents {
   listenerJoined: (connId: string, label: string) => void;
   listenerLeft: (connId: string) => void;
+  guestPinPending: (connId: string, pin: string, remoteAddress: string, deviceName?: string) => void;
   error: (err: Error) => void;
   stopped: () => void;
 }
 
-export declare interface AudioRelayServer {
-  on<E extends keyof AudioRelayServerEvents>(event: E, listener: AudioRelayServerEvents[E]): this;
-  emit<E extends keyof AudioRelayServerEvents>(event: E, ...args: Parameters<AudioRelayServerEvents[E]>): boolean;
+export declare interface AudioSinkServer {
+  on<E extends keyof AudioSinkServerEvents>(event: E, listener: AudioSinkServerEvents[E]): this;
+  emit<E extends keyof AudioSinkServerEvents>(event: E, ...args: Parameters<AudioSinkServerEvents[E]>): boolean;
 }
 
-export class AudioRelayServer extends EventEmitter {
+export class AudioSinkServer extends EventEmitter {
   private httpsServer: https.Server | null = null;
   private wss: WebSocket.Server | null = null;
   private udpSocket: dgram.Socket | null = null;
@@ -148,7 +151,6 @@ export class AudioRelayServer extends EventEmitter {
   private format: AudioFormat | null = null;
   private headerBuffer = Buffer.alloc(0);
   private admittedListeners = new Map<string, Listener>();
-  private pendingGuests = new Map<string, PendingGuest>();
   // token -> {deviceId, deviceName}. Used to hold the real device name is a real bug that showed
   // up in the "Connected Receivers"/"Listeners" list as a truncated device ID instead of the
   // actual name — this class has no trust-store access of its own (deliberately, see this file's
@@ -168,13 +170,14 @@ export class AudioRelayServer extends EventEmitter {
   private opusFrameBytes = 0; // byte size of exactly one 20ms frame, in the ORIGINAL captured PCM format
   private muted = false;
   private myPublicKeyDer: Buffer;
+  private pendingGuests = new Map<string, { ws: WebSocket; pin: string; timeout: NodeJS.Timeout | null; remoteAddress: string; deviceName?: string }>();
   // Every live socket regardless of state (pending-guest or admitted) — a single set so the
   // heartbeat sweep doesn't need to know which map a connection currently lives in.
   private allSockets = new Set<WebSocket>();
   private heartbeatInterval: NodeJS.Timeout | null = null;
 
   // captureMode picks which audio-capture.ps1 action gets spawned: 'loopback' (default) is system
-  // audio — Audio Relay's original v1 scope. 'mic' captures the default microphone instead — used
+  // audio — Audio Sink's original v1 scope. 'mic' captures the default microphone instead — used
   // to host a Remote Mic session FROM this PC (mirrors Android's LinkRemoteMicCapture, same idea,
   // Windows side). Everything else in this class — admission, tokens, UDP relay, Opus encode,
   // mute/kick — is identical between the two; only the capture source differs, so this stays one
@@ -183,7 +186,9 @@ export class AudioRelayServer extends EventEmitter {
     private cert: string,
     private key: string,
     private port: number,
-    private captureMode: 'loopback' | 'mic' = 'loopback'
+    private isBlocked: (idOrIp: string) => boolean = () => false,
+    private captureMode: 'loopback' | 'mic' = 'loopback',
+    private localDeviceName: string = 'Host'
   ) {
     super();
     this.myPublicKeyDer = new crypto.X509Certificate(cert).publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
@@ -234,7 +239,7 @@ export class AudioRelayServer extends EventEmitter {
       // preventing it, at the cost of added end-to-end latency for every packet queued behind it.
       try { this.udpSocket!.setSendBufferSize(1 << 17); } catch {} // 128KB
     });
-    this.udpSocket.bind(AUDIO_RELAY_UDP_PORT);
+    this.udpSocket.bind(AUDIO_SINK_UDP_PORT);
   }
 
   /** A listener's first UDP datagram is just its own connId, sent so we learn the (address, port)
@@ -253,11 +258,11 @@ export class AudioRelayServer extends EventEmitter {
     this.heartbeatInterval = setInterval(() => {
       for (const ws of this.allSockets) {
         const anyWs = ws as any;
-        if (anyWs._audioRelayAlive === false) {
+        if (anyWs._audioSinkAlive === false) {
           try { ws.terminate(); } catch {}
           continue; // terminate() fires 'close', which removes it from allSockets there
         }
-        anyWs._audioRelayAlive = false;
+        anyWs._audioSinkAlive = false;
         try { ws.ping(); } catch {}
       }
     }, HEARTBEAT_INTERVAL_MS);
@@ -274,25 +279,39 @@ export class AudioRelayServer extends EventEmitter {
     return token;
   }
 
+  setMuted(muted: boolean) {
+    this.muted = muted;
+    this.broadcastJson({ type: 'hostMuted', muted });
+  }
+
+  isMuted(): boolean {
+    return this.muted;
+  }
+
+  getListenerBlockInfo(connId: string): { deviceId?: string; remoteAddress: string } | null {
+    const l = this.admittedListeners.get(connId);
+    return l ? { deviceId: l.deviceId, remoteAddress: l.remoteAddress } : null;
+  }
+
   acceptGuest(connId: string) {
     const pending = this.pendingGuests.get(connId);
     if (!pending) return;
-    clearTimeout(pending.timeout);
+    if (pending.timeout) clearTimeout(pending.timeout);
     this.pendingGuests.delete(connId);
-    this.admit(connId, pending.ws, 'Guest');
+    this.admit(connId, pending.ws, pending.deviceName || 'Guest Listener', undefined, pending.remoteAddress);
   }
 
   rejectGuest(connId: string) {
     const pending = this.pendingGuests.get(connId);
     if (!pending) return;
-    clearTimeout(pending.timeout);
+    if (pending.timeout) clearTimeout(pending.timeout);
     this.pendingGuests.delete(connId);
     try { pending.ws.close(4007, 'rejected by host'); } catch {}
   }
 
-  setMuted(muted: boolean) {
-    this.muted = muted;
-    this.broadcastJson({ type: 'hostMuted', muted });
+  getPendingGuestBlockInfo(connId: string): { remoteAddress: string } | null {
+    const pending = this.pendingGuests.get(connId);
+    return pending ? { remoteAddress: pending.remoteAddress } : null;
   }
 
   listenersSnapshot(): { id: string; label: string }[] {
@@ -300,7 +319,7 @@ export class AudioRelayServer extends EventEmitter {
   }
 
   /** Disconnects a single listener without ending the session for anyone else — closing with
-   *  code 1000 means the kicked listener's own client (audio-relay-client.ts) treats this as a
+   *  code 1000 means the kicked listener's own client (audio-sink-client.ts) treats this as a
    *  graceful 'ended' rather than surfacing a raw error, same as a full session end. The listener
    *  is removed from admittedListeners the moment the resulting 'close' event fires (see
    *  handleConnection's close handler), not here — this just requests the disconnect. */
@@ -320,11 +339,6 @@ export class AudioRelayServer extends EventEmitter {
       try { listener.ws.close(1000, 'session ended'); } catch {}
     }
     this.admittedListeners.clear();
-    for (const pending of this.pendingGuests.values()) {
-      clearTimeout(pending.timeout);
-      try { pending.ws.close(1000, 'session ended'); } catch {}
-    }
-    this.pendingGuests.clear();
     this.validTokens.clear();
 
     if (this.captureProcess) {
@@ -360,13 +374,13 @@ export class AudioRelayServer extends EventEmitter {
     // Nagle's algorithm was still on here — for a stream of frequent small audio chunks (the
     // exact pathological case it punishes), this could add up to ~40ms of avoidable delay PER
     // CHUNK on the host->listener direction, which is the one that actually matters for audio.
-    // The listener side already disabled it (audio-relay-client.ts); the server accepting the
+    // The listener side already disabled it (audio-sink-client.ts); the server accepting the
     // connection needed the same call on ITS end of the same socket.
     if (typeof socket.setNoDelay === 'function') socket.setNoDelay(true);
 
     this.allSockets.add(ws);
-    (ws as any)._audioRelayAlive = true;
-    ws.on('pong', () => { (ws as any)._audioRelayAlive = true; });
+    (ws as any)._audioSinkAlive = true;
+    ws.on('pong', () => { (ws as any)._audioSinkAlive = true; });
 
     const peerCert = socket.getPeerCertificate();
     if (!peerCert || !peerCert.raw) {
@@ -384,6 +398,11 @@ export class AudioRelayServer extends EventEmitter {
 
     const remoteAddress = (req.socket.remoteAddress as string) || 'unknown';
     const connId = crypto.randomUUID();
+
+    if (this.isBlocked(remoteAddress)) {
+      ws.close(4010, 'blocked');
+      return;
+    }
 
     // The client always announces its intent as the first message — avoids any race/timeout
     // guessing between "is this a paired device with a token" vs "is this a guest needing a PIN".
@@ -404,21 +423,21 @@ export class AudioRelayServer extends EventEmitter {
           return;
         }
         this.validTokens.delete(msg.token); // one-time use
-        this.admit(connId, ws, entry.deviceName, entry.deviceId);
+        if (this.isBlocked(entry.deviceId)) {
+          ws.close(4010, 'blocked');
+          return;
+        }
+        this.admit(connId, ws, entry.deviceName, entry.deviceId, remoteAddress);
       } else if (msg.type === 'join-guest') {
-        const pin = computeVerificationCode(this.myPublicKeyDer, peerPublicKeyDer);
+        const deviceName = typeof msg.deviceName === 'string' ? msg.deviceName : undefined;
+        const pin = computeVerificationCode(this.myPublicKeyDer, peerPublicKeyDer!);
         const timeout = setTimeout(() => {
           this.pendingGuests.delete(connId);
           try { ws.close(4006, 'confirmation timed out'); } catch {}
         }, GUEST_CONFIRM_TIMEOUT_MS);
-        this.pendingGuests.set(connId, { ws, pin, timeout });
-        // Also send the PIN we computed to the guest as a fallback for clients that can't pull
-        // their own TLS peer certificate to independently compute it (a real constraint on
-        // Android's WebSocket client library — see LinkAudioRelayClient.java). A client capable
-        // of independent computation should prefer its own value and treat this only as a
-        // convenience/fallback, not the primary source of truth.
+        this.pendingGuests.set(connId, { ws, pin, timeout, remoteAddress, deviceName });
         try { ws.send(JSON.stringify({ type: 'pin', code: pin })); } catch {}
-        this.emit('guestPinPending', connId, pin, remoteAddress);
+        this.emit('guestPinPending', connId, pin, remoteAddress, deviceName);
       } else {
         ws.close(4004, 'unknown join type');
       }
@@ -427,9 +446,9 @@ export class AudioRelayServer extends EventEmitter {
 
     ws.on('close', () => {
       this.allSockets.delete(ws);
-      const pending = this.pendingGuests.get(connId);
-      if (pending) {
-        clearTimeout(pending.timeout);
+      if (this.pendingGuests.has(connId)) {
+        const p = this.pendingGuests.get(connId)!;
+        if (p.timeout) clearTimeout(p.timeout);
         this.pendingGuests.delete(connId);
       }
       if (this.admittedListeners.has(connId)) {
@@ -439,13 +458,13 @@ export class AudioRelayServer extends EventEmitter {
     });
   }
 
-  private admit(connId: string, ws: WebSocket, label: string, deviceId?: string) {
+  private admit(connId: string, ws: WebSocket, label: string, deviceId?: string, remoteAddress: string = 'unknown') {
     const sessionKey = crypto.randomBytes(32);
-    this.admittedListeners.set(connId, { ws, deviceId, label, sessionKey, seq: 0 });
+    this.admittedListeners.set(connId, { ws, deviceId, label, remoteAddress, sessionKey, seq: 0 });
     // connId + udpKey ride this already-TLS-encrypted message, so the key exchange itself stays
     // fully protected even though the UDP audio frames it protects don't have their own transport
     // encryption — see this file's header comment.
-    ws.send(JSON.stringify({ type: 'admitted', connId, udpKey: sessionKey.toString('base64') }));
+    ws.send(JSON.stringify({ type: 'admitted', connId, udpKey: sessionKey.toString('base64'), hostName: this.localDeviceName }));
     if (this.format) {
       ws.send(JSON.stringify({ type: 'format', ...this.formatMessage() }));
     }
@@ -462,7 +481,7 @@ export class AudioRelayServer extends EventEmitter {
     );
 
     this.captureProcess.stderr?.on('data', (d: Buffer) => {
-      console.error('[AudioRelayServer:capture stderr]', d.toString().trim());
+      console.error('[AudioSinkServer:capture stderr]', d.toString().trim());
     });
 
     this.captureProcess.on('error', (err) => {
@@ -529,7 +548,7 @@ export class AudioRelayServer extends EventEmitter {
       this.opusFrameBytes = bytesPerFrame * Math.round((this.format.sampleRate * OPUS_FRAME_MS) / 1000);
       this.useOpus = true;
     } catch (e: any) {
-      console.error('[AudioRelayServer] Opus encoder init failed, falling back to raw PCM:', e?.message || e);
+      console.error('[AudioSinkServer] Opus encoder init failed, falling back to raw PCM:', e?.message || e);
       this.opusEncoder = null;
       this.useOpus = false;
     }
@@ -597,7 +616,7 @@ export class AudioRelayServer extends EventEmitter {
       try {
         encoded = Buffer.from(this.opusEncoder!.encode(this.toInt16(rawFrame)));
       } catch (e: any) {
-        console.error('[AudioRelayServer] Opus encode failed for a frame, dropping it:', e?.message || e);
+        console.error('[AudioSinkServer] Opus encode failed for a frame, dropping it:', e?.message || e);
         continue;
       }
       this.scheduleSend(now, CODEC_TAG_OPUS, encoded);
@@ -645,7 +664,7 @@ export class AudioRelayServer extends EventEmitter {
   private static readonly MAX_AHEAD_MS = 100;
 
   private advancePacingCursor(now: number) {
-    if (this.nextSendAtMs === null || this.nextSendAtMs < now || this.nextSendAtMs - now > AudioRelayServer.MAX_AHEAD_MS) {
+    if (this.nextSendAtMs === null || this.nextSendAtMs < now || this.nextSendAtMs - now > AudioSinkServer.MAX_AHEAD_MS) {
       this.nextSendAtMs = now;
     }
   }
@@ -662,6 +681,14 @@ export class AudioRelayServer extends EventEmitter {
   private sendFrame(codecTag: number, payload: Buffer) {
     if (!this.udpSocket) return;
     const framedPayload = Buffer.concat([Buffer.from([codecTag]), payload]);
+    // Capture wall-clock timestamp (ms since epoch) packed as 6 bytes: high 2 bytes then low 4
+    // bytes. This avoids BigInt on the Android side (read as getShort()+getInt(), both unsigned).
+    const nowMs = Date.now();
+    const tsBuf = Buffer.alloc(UDP_TS_BYTES);
+    const hi = Math.floor(nowMs / 0x100000000);
+    const lo = nowMs >>> 0;
+    tsBuf.writeUInt16BE(hi, 0);
+    tsBuf.writeUInt32BE(lo, 2);
     for (const listener of this.admittedListeners.values()) {
       // Nothing to send to until this listener's UDP hello arrives (see handleUdpHello) — a
       // brief startup gap of a few chunks at most, same order of magnitude as the old admission
@@ -675,7 +702,8 @@ export class AudioRelayServer extends EventEmitter {
       const cipher = crypto.createCipheriv('aes-256-gcm', listener.sessionKey, nonce);
       const encrypted = Buffer.concat([cipher.update(framedPayload), cipher.final()]);
       const authTag = cipher.getAuthTag();
-      const frame = Buffer.concat([seqBuf, nonce, encrypted, authTag]);
+      // Frame layout: [seq:4][ts:6][nonce:12][encrypted+tag]
+      const frame = Buffer.concat([seqBuf, tsBuf, nonce, encrypted, authTag]);
       this.udpSocket.send(frame, listener.udpPort, listener.udpAddress);
     }
   }

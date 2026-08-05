@@ -44,6 +44,12 @@ export interface BlocklistEntry {
   label: string; // Friendly name or IP label
   type: 'device' | 'ip';
   blockedAt: number;
+  // Known only when available at the moment of blocking (e.g. rejecting an incoming pair
+  // request, whose identity carries it) — undefined for IP-only guest blocks, where there's no
+  // device identity at all. Lets the Blocklist UI show the same phone/desktop icon "Nearby
+  // Discovered Devices" uses, falling back to a generic icon when unknown.
+  deviceType?: string;
+  ip?: string;
 }
 
 export function loadBlocklist(configDir: string): BlocklistEntry[] {

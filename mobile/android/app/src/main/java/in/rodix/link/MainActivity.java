@@ -31,7 +31,7 @@ public class MainActivity extends BridgeActivity {
             }
         });
 
-        // Disable pinch-to-zoom in WebView settings
+        // Configure WebView settings and ChromeClient for WebRTC microphone capture
         this.runOnUiThread(() -> {
             try {
                 android.webkit.WebView webView = this.getBridge().getWebView();
@@ -40,6 +40,18 @@ public class MainActivity extends BridgeActivity {
                     settings.setSupportZoom(false);
                     settings.setBuiltInZoomControls(false);
                     settings.setDisplayZoomControls(false);
+                    settings.setMediaPlaybackRequiresUserGesture(false);
+
+                    webView.setWebChromeClient(new com.getcapacitor.BridgeWebChromeClient(getBridge()) {
+                        @Override
+                        public void onPermissionRequest(final android.webkit.PermissionRequest request) {
+                            if (request != null) {
+                                runOnUiThread(() -> request.grant(request.getResources()));
+                            } else {
+                                super.onPermissionRequest(request);
+                            }
+                        }
+                    });
                 }
             } catch (Exception e) {
                 e.printStackTrace();

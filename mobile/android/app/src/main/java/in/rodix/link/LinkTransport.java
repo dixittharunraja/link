@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class LinkTransport {
     public static final int LINK_PORT = 1739; // arbitrary, distinct from KDE Connect's 1716/1717
     // File System's WebSocket server lives on LINK_PORT + 2 (see LinkFsServer.java). Audio
-    // Relay's control-channel server (see LinkAudioRelayServer.java) lives on LINK_PORT + 3,
+    // Relay's control-channel server (see LinkAudioSinkServer.java) lives on LINK_PORT + 3,
     // matching desktop's AUDIO_RELAY_PORT in core/transport.ts.
     public static final int AUDIO_RELAY_PORT = LINK_PORT + 3;
     // Dedicated UDP channel for the actual PCM stream — AUDIO_RELAY_PORT above now carries only
@@ -33,6 +33,18 @@ public class LinkTransport {
     // over UDP here to avoid TCP head-of-line blocking stalling playback behind one delayed/lost
     // packet. Matches desktop's AUDIO_RELAY_UDP_PORT.
     public static final int AUDIO_RELAY_UDP_PORT = AUDIO_RELAY_PORT + 1;
+    // Portal Mode (one-time file transfer to an unpaired/untrusted device) — own dedicated port,
+    // same reasoning as Audio Relay above: guest connections here are NEVER paired and must never
+    // touch the trust store or peers map. Matches desktop's PORTAL_TRANSFER_PORT.
+    public static final int PORTAL_TRANSFER_PORT = LINK_PORT + 7;
+    // Walkie Talkie's actual audio is WebRTC (getUserMedia + RTCPeerConnection, already built into
+    // the WebView) and never touches this app's own transport layer. Signaling between paired
+    // devices rides the existing trusted connection as plain link.walkietalkie.* packets — but an
+    // unpaired guest has no such connection, so this dedicated control-only port (no UDP pair
+    // needed — there's no PCM stream of our own) exists purely for guests to reach the same
+    // protocol via manual IP + PIN. Matches desktop's WALKIE_TALKIE_PORT.
+    public static final int WALKIE_TALKIE_PORT = LINK_PORT + 8;
+    public static final int JOYSTICK_PORT = LINK_PORT + 9;
     public static final String PACKET_TYPE_IDENTITY = "link.identity";
     // Silent, transport-level-only packet — never forwarded to the listener, purely to prove
     // liveness and reset lastActivityAt. Mirrors desktop's transport.ts PACKET_TYPE_HEARTBEAT —
@@ -185,6 +197,16 @@ public class LinkTransport {
         /** True if nothing at all has arrived from the peer in longer than timeoutMs — treat as dead. */
         public boolean isStale(long timeoutMs) {
             return System.currentTimeMillis() - lastActivityAt > timeoutMs;
+        }
+
+        public void closeGracefully() {
+            if (closed.compareAndSet(false, true)) {
+                writeExecutor.execute(() -> {
+                    try { socket.close(); } catch (Exception ignored) {}
+                    writeExecutor.shutdown();
+                });
+                if (listener != null) listener.onClose();
+            }
         }
 
         public void close() {

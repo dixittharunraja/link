@@ -1,15 +1,16 @@
 package in.rodix.link;
 
-// Audio Relay — Android-as-host side. Ports desktop's audio-relay-server.ts admission/relay logic
+// Audio Relay — Android-as-host side. Ports desktop's audio-sink-server.ts admission/relay logic
 // onto the same TLS/WebSocketServer skeleton LinkFsServer.java already established for this
 // codebase, so this is a new peer implementation of an already-symmetric wire protocol, NOT a new
-// protocol — see audio-relay-server.ts's own header comment for the full design (guest PIN path
-// vs already-paired token path, both converging on admit(); JSON control messages for join/admit/
-// format/mute/end). Completely isolated from LinkDeviceManager/LinkTrustStore/the permission
-// system — an admitted listener here is never added to the paired-device mesh.
+// protocol — see audio-sink-server.ts's own header comment for the full design. Guest (manual IP)
+// and already-paired-token joins both converge on admit() and are admitted immediately — there is
+// no human accept/reject step for either, unlike Remote Mic's guest flow (LinkRemoteMicServer.java
+// genuinely still gates on a PIN). Completely isolated from LinkDeviceManager/LinkTrustStore/the
+// permission system — an admitted listener here is never added to the paired-device mesh.
 //
 // PCM audio goes out over a separate UDP socket (LinkTransport.AUDIO_RELAY_UDP_PORT), not this
-// WebSocket connection — see audio-relay-server.ts's header comment for the full reasoning (TCP
+// WebSocket connection — see audio-sink-server.ts's header comment for the full reasoning (TCP
 // head-of-line blocking vs. real-time audio) and wire format (per-listener AES-256-GCM session
 // key handed over inside "admitted", UDP hello for NAT/address discovery, [seq][nonce][ciphertext
 // +tag] framing). This WebSocket keeps carrying every control message unchanged.
@@ -17,7 +18,7 @@ package in.rodix.link;
 // Deliberately owns the LinkAudioCapture instance and the MediaProjection it was constructed
 // with (see startCapture()) rather than LinkPlugin holding them separately — keeps LinkPlugin's
 // reattach-cleanup block to a single new static field, matching the existing sFsServer/
-// sAudioRelayClient pattern.
+// sAudioSinkClient pattern.
 
 import android.content.Context;
 import android.media.projection.MediaProjection;
@@ -62,8 +63,8 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLPeerUnverifiedException;
 
-public class LinkAudioRelayServer extends WebSocketServer {
-    private static final String TAG = "LinkAudioRelayServer";
+public class LinkAudioSinkServer extends WebSocketServer {
+    private static final String TAG = "LinkAudioSinkServer";
     private static final byte CODEC_TAG_PCM = 0x00;
     private static final byte CODEC_TAG_OPUS = 0x01;
     // Opus mandates fixed frame durations. History: 20ms -> 10ms (confirmed clean, real hardware)
@@ -78,7 +79,6 @@ public class LinkAudioRelayServer extends WebSocketServer {
     // See onAudioChunkPcm/onAudioChunkOpus's shared comment for why this needs both a "behind"
     // and "too far ahead" resync — hoisted to a class constant since both paths share one cursor.
     private static final long MAX_AHEAD_MS = 100;
-    private static final long GUEST_CONFIRM_TIMEOUT_MS = 30000;
     private static final int UDP_SEQ_BYTES = 4;
     private static final int UDP_NONCE_BYTES = 12;
     private static final int UDP_MAX_PACKET_BYTES = 65507; // UDP payload ceiling — hello datagrams are tiny
@@ -93,10 +93,25 @@ public class LinkAudioRelayServer extends WebSocketServer {
     private static final int MAX_UDP_PCM_BYTES = 1280;
 
     public interface Listener {
-        void onGuestPinPending(String connId, String pin, String remoteAddress);
+        void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName);
         void onListenerJoined(String connId, String label);
         void onListenerLeft(String connId);
         void onError(String message);
+    }
+
+    private static class PendingGuest {
+        final WebSocket conn;
+        final String pin;
+        final ScheduledFuture<?> timeoutFuture;
+        final String remoteAddress;
+        final String deviceName;
+        PendingGuest(WebSocket conn, String pin, ScheduledFuture<?> timeoutFuture, String remoteAddress, String deviceName) {
+            this.conn = conn;
+            this.pin = pin;
+            this.timeoutFuture = timeoutFuture;
+            this.remoteAddress = remoteAddress;
+            this.deviceName = deviceName;
+        }
     }
 
     public static class ListenerInfo {
@@ -121,29 +136,20 @@ public class LinkAudioRelayServer extends WebSocketServer {
         }
     }
 
-    private static class PendingGuest {
-        final WebSocket conn;
-        final String pin;
-        final ScheduledFuture<?> timeoutFuture;
-        PendingGuest(WebSocket conn, String pin, ScheduledFuture<?> timeoutFuture) {
-            this.conn = conn;
-            this.pin = pin;
-            this.timeoutFuture = timeoutFuture;
-        }
-    }
-
     private static class AdmittedListener {
         final WebSocket conn;
         final String deviceId; // nullable — unset for guests
         final String label;
+        final String remoteAddress; // needed so a guest (no deviceId) can still be blocked, by IP
         final byte[] sessionKey; // AES-256-GCM key for this listener's UDP audio frames
         final AtomicInteger seq = new AtomicInteger(0);
         volatile InetAddress udpAddress; // set once this listener's UDP hello arrives
         volatile int udpPort = -1;
-        AdmittedListener(WebSocket conn, String deviceId, String label, byte[] sessionKey) {
+        AdmittedListener(WebSocket conn, String deviceId, String label, String remoteAddress, byte[] sessionKey) {
             this.conn = conn;
             this.deviceId = deviceId;
             this.label = label;
+            this.remoteAddress = remoteAddress;
             this.sessionKey = sessionKey;
         }
     }
@@ -154,8 +160,9 @@ public class LinkAudioRelayServer extends WebSocketServer {
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private final byte[] myPublicKeyDer;
 
-    private final Map<String, PendingGuest> pendingGuests = new ConcurrentHashMap<>();
     private final Map<String, AdmittedListener> admittedListeners = new ConcurrentHashMap<>();
+    private final Map<String, PendingGuest> pendingGuests = new ConcurrentHashMap<>();
+
     // token -> issued-for info. Used to hold the real device name so admit() can label a listener
     // by its actual name instead of a truncated device ID — see issueToken()'s comment for why the
     // caller (LinkPlugin.java, which has trust-store access) must supply it, not this class.
@@ -188,7 +195,7 @@ public class LinkAudioRelayServer extends WebSocketServer {
     // ~20-50ms per listener) is wasteful reseeding overhead for no benefit over one shared instance.
     private final SecureRandom udpNonceRandom = new SecureRandom();
     // Reused across every sub-packet/listener in onAudioChunk() instead of calling
-    // Cipher.getInstance("AES/GCM/NoPadding") fresh each time — see LinkAudioRelayClient.java's
+    // Cipher.getInstance("AES/GCM/NoPadding") fresh each time — see LinkAudioSinkClient.java's
     // decryptCipher comment for why that lookup is expensive enough on Android to matter at this
     // packet rate. Only ever touched from LinkAudioCapture's single dedicated read thread.
     private final Cipher encryptCipher;
@@ -231,10 +238,24 @@ public class LinkAudioRelayServer extends WebSocketServer {
         }
     }
 
-    public LinkAudioRelayServer(Context context, X509Certificate cert, PrivateKey key, int port, Listener listener) throws Exception {
+    // Checked against both the connecting IP and (once known) the peer's deviceId — lets a
+    // single app-wide LinkBlocklist entry cut off a device/IP from this ephemeral guest-session
+    // server too, not just the main paired-device connection. Mirrors desktop's
+    // AudioSinkServer's isBlocked constructor param.
+    public interface BlockChecker {
+        boolean isBlocked(String idOrIp);
+    }
+    private final BlockChecker blockChecker;
+
+    public LinkAudioSinkServer(Context context, X509Certificate cert, PrivateKey key, int port, Listener listener) throws Exception {
+        this(context, cert, key, port, listener, idOrIp -> false);
+    }
+
+    public LinkAudioSinkServer(Context context, X509Certificate cert, PrivateKey key, int port, Listener listener, BlockChecker blockChecker) throws Exception {
         super(new InetSocketAddress(port));
         this.context = context;
         this.listener = listener;
+        this.blockChecker = blockChecker;
         this.myPublicKeyDer = cert.getPublicKey().getEncoded();
 
         SSLContext sslContext = LinkTransport.buildSslContext(cert, key);
@@ -247,12 +268,12 @@ public class LinkAudioRelayServer extends WebSocketServer {
                 (android.net.wifi.WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wifiManager != null) {
                 wifiLock = wifiManager.createWifiLock(
-                    android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Link:audiorelay-host-wifi");
+                    android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Link:audiosink-host-wifi");
                 wifiLock.setReferenceCounted(false);
             }
             android.os.PowerManager pm = (android.os.PowerManager) context.getSystemService(Context.POWER_SERVICE);
             if (pm != null) {
-                wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "Link:audiorelay-host-cpu");
+                wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "Link:audiosink-host-cpu");
                 wakeLock.setReferenceCounted(false);
             }
         } catch (Exception e) {
@@ -297,11 +318,38 @@ public class LinkAudioRelayServer extends WebSocketServer {
         return token;
     }
 
+    /** deviceId (nullable, set only for a paired-token join) + remoteAddress (always present) for
+     *  an admitted listener — everything main.ts's Block button needs. */
+    public static class ListenerBlockInfo {
+        public final String deviceId;
+        public final String remoteAddress;
+        ListenerBlockInfo(String deviceId, String remoteAddress) {
+            this.deviceId = deviceId;
+            this.remoteAddress = remoteAddress;
+        }
+    }
+
+    public ListenerBlockInfo getListenerBlockInfo(String connId) {
+        AdmittedListener l = admittedListeners.get(connId);
+        return l != null ? new ListenerBlockInfo(l.deviceId, l.remoteAddress) : null;
+    }
+
+    public void setMuted(boolean muted) {
+        this.muted = muted;
+        try {
+            broadcastJson(new JSONObject().put("type", "hostMuted").put("muted", muted));
+        } catch (Exception ignored) {}
+    }
+
+    public boolean isMuted() {
+        return muted;
+    }
+
     public void acceptGuest(String connId) {
         PendingGuest pending = pendingGuests.remove(connId);
         if (pending == null) return;
         pending.timeoutFuture.cancel(false);
-        admit(connId, pending.conn, "Guest", null);
+        admit(connId, pending.conn, pending.deviceName, null, pending.remoteAddress);
     }
 
     public void rejectGuest(String connId) {
@@ -311,11 +359,9 @@ public class LinkAudioRelayServer extends WebSocketServer {
         try { pending.conn.close(4007, "rejected by host"); } catch (Exception ignored) {}
     }
 
-    public void setMuted(boolean muted) {
-        this.muted = muted;
-        try {
-            broadcastJson(new JSONObject().put("type", "hostMuted").put("muted", muted));
-        } catch (Exception ignored) {}
+    public String getPendingGuestRemoteAddress(String connId) {
+        PendingGuest pending = pendingGuests.get(connId);
+        return pending != null ? pending.remoteAddress : null;
     }
 
     public List<ListenerInfo> listenersSnapshot() {
@@ -559,7 +605,7 @@ public class LinkAudioRelayServer extends WebSocketServer {
                     l.udpPort = packet.getPort();
                 }
             }
-        }, "LinkAudioRelayServer-udp");
+        }, "LinkAudioSinkServer-udp");
         udpReceiveThread.start();
     }
 
@@ -589,16 +635,20 @@ public class LinkAudioRelayServer extends WebSocketServer {
             return;
         }
 
+        String remoteAddress = addr != null ? addr.toString() : "unknown";
+        if (blockChecker.isBlocked(remoteAddress)) {
+            conn.close(4010, "blocked");
+            return;
+        }
+
         String connId = UUID.randomUUID().toString();
         connIds.put(conn, connId);
-        String remoteAddress = addr != null ? addr.toString() : "unknown";
         peerKeysByConn.put(conn, peerPublicKeyDer);
         remoteAddrByConn.put(conn, remoteAddress);
     }
 
     // Stashes just enough per-connection context to resolve the first message; a small local map
-    // keeps this out of the AdmittedListener/PendingGuest types, which only exist once admission
-    // is decided.
+    // keeps this out of the AdmittedListener type, which only exists once admission is decided.
     private final Map<WebSocket, byte[]> peerKeysByConn = new ConcurrentHashMap<>();
     private final Map<WebSocket, String> remoteAddrByConn = new ConcurrentHashMap<>();
     // Guards against processing more than one "first" message per connection — checked
@@ -634,7 +684,11 @@ public class LinkAudioRelayServer extends WebSocketServer {
                 return;
             }
             validTokens.remove(token); // one-time use
-            admit(connId, conn, entry.deviceName, entry.deviceId);
+            if (blockChecker.isBlocked(entry.deviceId)) {
+                conn.close(4010, "blocked");
+                return;
+            }
+            admit(connId, conn, entry.deviceName, entry.deviceId, remoteAddrByConn.get(conn));
         } else if ("join-guest".equals(type)) {
             byte[] peerPublicKeyDer = peerKeysByConn.get(conn);
             String remoteAddress = remoteAddrByConn.get(conn);
@@ -642,16 +696,17 @@ public class LinkAudioRelayServer extends WebSocketServer {
                 conn.close(4002, "invalid certificate");
                 return;
             }
+            String deviceName = msg.optString("deviceName", "Guest Listener");
             String pin = LinkVerification.computeCode(myPublicKeyDer, peerPublicKeyDer, "");
             ScheduledFuture<?> timeoutFuture = scheduler.schedule(() -> {
                 pendingGuests.remove(connId);
                 try { conn.close(4006, "confirmation timed out"); } catch (Exception ignored) {}
-            }, GUEST_CONFIRM_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            pendingGuests.put(connId, new PendingGuest(conn, pin, timeoutFuture));
+            }, 30000, TimeUnit.MILLISECONDS);
+            pendingGuests.put(connId, new PendingGuest(conn, pin, timeoutFuture, remoteAddress != null ? remoteAddress : "unknown", deviceName));
             try {
                 conn.send(new JSONObject().put("type", "pin").put("code", pin).toString());
             } catch (Exception ignored) {}
-            listener.onGuestPinPending(connId, pin, remoteAddress != null ? remoteAddress : "unknown");
+            listener.onGuestPinPending(connId, pin, remoteAddress != null ? remoteAddress : "unknown", deviceName);
         } else {
             conn.close(4004, "unknown join type");
         }
@@ -666,7 +721,9 @@ public class LinkAudioRelayServer extends WebSocketServer {
         if (connId == null) return;
 
         PendingGuest pending = pendingGuests.remove(connId);
-        if (pending != null) pending.timeoutFuture.cancel(false);
+        if (pending != null) {
+            pending.timeoutFuture.cancel(false);
+        }
 
         if (admittedListeners.remove(connId) != null) {
             listener.onListenerLeft(connId);
@@ -685,10 +742,10 @@ public class LinkAudioRelayServer extends WebSocketServer {
         startUdp();
     }
 
-    private void admit(String connId, WebSocket conn, String label, String deviceId) {
+    private void admit(String connId, WebSocket conn, String label, String deviceId, String remoteAddress) {
         byte[] sessionKey = new byte[32];
         udpNonceRandom.nextBytes(sessionKey);
-        admittedListeners.put(connId, new AdmittedListener(conn, deviceId, label, sessionKey));
+        admittedListeners.put(connId, new AdmittedListener(conn, deviceId, label, remoteAddress != null ? remoteAddress : "unknown", sessionKey));
         try {
             // connId + udpKey ride this already-TLS-encrypted message, so the key exchange itself
             // stays fully protected even though the UDP audio frames it protects don't have their
@@ -726,12 +783,12 @@ public class LinkAudioRelayServer extends WebSocketServer {
         for (AdmittedListener l : admittedListeners.values()) {
             try { l.conn.close(1000, "session ended"); } catch (Exception ignored) {}
         }
-        admittedListeners.clear();
         for (PendingGuest p : pendingGuests.values()) {
             p.timeoutFuture.cancel(false);
-            try { p.conn.close(1000, "session ended"); } catch (Exception ignored) {}
+            try { p.conn.close(1000, "receiver stopped"); } catch (Exception ignored) {}
         }
         pendingGuests.clear();
+        admittedListeners.clear();
         validTokens.clear();
 
         if (capture != null) {

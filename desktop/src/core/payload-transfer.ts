@@ -1,18 +1,14 @@
 // Payload transfer — core mechanism used by any plugin that moves bytes rather than just JSON
-// (share, link.clipboard.file). Ported from the *mechanism* in kdeconnect-kde's
-// core/backends/lan/uploadjob.h: the sender opens a brand-new, one-shot TLS server just for this
+// (share, link.clipboard.file). The sender opens a brand-new, one-shot TLS server just for this
 // transfer, embeds its port in the packet's `payloadTransferInfo`, and the receiver dials in on a
-// separate connection to pull the bytes. See docs/PROTOCOL.md §2 and the deferred-scope note for
-// link.clipboard.file.
+// separate connection to pull the bytes. See docs/PROTOCOL.md §2.
 //
-// One deliberate strengthening over the minimal port of the mechanism: since this is a SEPARATE
-// TLS connection from the main paired control channel, we verify the peer's certificate on it
-// matches the fingerprint already pinned for that device — otherwise a payload connection would
-// be trusted less carefully than the control channel it was announced over.
+// Since this is a SEPARATE TLS connection from the main paired control channel, we verify the
+// peer's certificate on it matches the fingerprint already pinned for that device — otherwise
+// a payload connection would be trusted less carefully than the control channel it was announced over.
 //
-// KDE Connect uses a fixed port range (1739-1764) for firewall-rule friendliness; we use OS-
-// assigned ephemeral ports (`port: 0`) instead — simpler, and firewall rules aren't a concern for
-// this phase.
+// We use OS-assigned ephemeral ports (`port: 0`) for ease of connection setup.
+
 
 import * as tls from 'tls';
 import * as crypto from 'crypto';
