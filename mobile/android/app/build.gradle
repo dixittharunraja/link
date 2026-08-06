@@ -53,7 +53,7 @@ dependencies {
     // version kdeconnect-android uses (org.kde.kdeconnect...SslHelper.kt), Android's own
     // java.security stack has no built-in certificate BUILDER, only parsing.
     implementation "org.bouncycastle:bcpkix-jdk15on:1.70"
-    implementation "org.java-websocket:Java-WebSocket:1.5.7"
+    implementation "org.java-websocket:Java-WebSocket:1.6.0"
     // Biometric Unlock (Settings -> Biometric Unlock). Uses Google's own AndroidX BiometricPrompt
     // API directly rather than a third-party Capacitor plugin — this app already wraps every
     // other native feature as a @PluginMethod on the one LinkPlugin it owns (see e.g. lockdevice,
