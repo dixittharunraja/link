@@ -9,7 +9,7 @@
     "install:android": "powershell -Command \"$env:Path += ';C:\\Users\\dixit\\AppData\\Local\\Android\\Sdk\\platform-tools'; adb install -r android/app/build/outputs/apk/release/app-release.apk\""
   },
   "dependencies": {
-    "@capacitor/android": "^7.0.0",
+    "@capacitor/android": "^8.5.0",
     "@capacitor/core": "^7.0.0"
   },
   "devDependencies": {
