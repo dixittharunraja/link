@@ -1,0 +1,513 @@
+{
+  "duplicates": [
+    {
+      "firstFile": {
+        "end": 11,
+        "endLoc": {
+          "column": 20,
+          "line": 11,
+          "position": 535
+        },
+        "name": "components\\AudioSinkTab.tsx",
+        "start": 3,
+        "startLoc": {
+          "column": 47,
+          "line": 3,
+          "position": 218
+        }
+      },
+      "format": "tsx",
+      "fragment": "import { SessionHostQr } from './SessionHostQr';\nimport { AudioListenerRow, HostActionButtons } from './AudioListenerRow';\nimport { LinkApi } from '../vite-env';\nimport { createLinkQrDataUrl } from '../utils/qr';\n\nconst linkApi = (window as any).link as LinkApi;\n\nimport { AudioFormat, PcmPlayer, mapCloseReasonToError } from '../utils/audio';\nimport { PeerDevice, upsertPairedSession, removePairedSession } from '../types/peer';",
+      "lines": 9,
+      "secondFile": {
+        "end": 10,
+        "endLoc": {
+          "column": 20,
+          "line": 10,
+          "position": 485
+        },
+        "name": "components\\RemoteMicTab.tsx",
+        "start": 2,
+        "startLoc": {
+          "column": 108,
+          "line": 2,
+          "position": 168
+        }
+      },
+      "tokens": 52
+    },
+    {
+      "firstFile": {
+        "end": 153,
+        "endLoc": {
+          "column": 12,
+          "line": 153,
+          "position": 7231
+        },
+        "name": "components\\AudioSinkTab.tsx",
+        "start": 142,
+        "startLoc": {
+          "column": 28,
+          "line": 142,
+          "position": 6659
+        }
+      },
+      "format": "tsx",
+      "fragment": "    linkApi.onAudioSinkEnded((reason?: string) => {\n      setListenerPhase('idle');\n      setActiveHostLabel(null);\n      setPin(null);\n      // A graceful whole-session end (reason undefined, or the server's 'session ended') needs no\n      // explanation — but a host kicking just this one listener sends 'removed by host' with no\n      // prior end-of-session message, and that DOES deserve a visible reason on the connect page.\n      setListenerError(reason === 'removed by host' ? 'Removed by host' : null);\n      playerRef.current?.close();\n      playerRef.current = null;\n    });\n    linkApi.onAudioSinkClosed((reason: string) => {",
+      "lines": 12,
+      "secondFile": {
+        "end": 154,
+        "endLoc": {
+          "column": 12,
+          "line": 154,
+          "position": 6836
+        },
+        "name": "components\\RemoteMicTab.tsx",
+        "start": 144,
+        "startLoc": {
+          "column": 30,
+          "line": 144,
+          "position": 6374
+        }
+      },
+      "tokens": 54
+    },
+    {
+      "firstFile": {
+        "end": 219,
+        "endLoc": {
+          "column": 29,
+          "line": 219,
+          "position": 10922
+        },
+        "name": "components\\AudioSinkTab.tsx",
+        "start": 211,
+        "startLoc": {
+          "column": 22,
+          "line": 211,
+          "position": 10611
+        }
+      },
+      "format": "tsx",
+      "fragment": "  }, [volume, isMobile]);\n\n  // Generate QR for local IP when hosting is active\n  useEffect(() => {\n    if (hosting) {\n      const ip = (localIdentity?.ipAddresses && localIdentity.ipAddresses.length > 0)\n        ? localIdentity.ipAddresses.join(',')\n        : (localIdentity?.ipAddress || '127.0.0.1');\n      createLinkQrDataUrl(ip, 1719)",
+      "lines": 9,
+      "secondFile": {
+        "end": 200,
+        "endLoc": {
+          "column": 29,
+          "line": 200,
+          "position": 8981
+        },
+        "name": "components\\RemoteMicTab.tsx",
+        "start": 192,
+        "startLoc": {
+          "column": 12,
+          "line": 192,
+          "position": 8670
+        }
+      },
+      "tokens": 52
+    },
+    {
+      "firstFile": {
+        "end": 358,
+        "endLoc": {
+          "column": 10,
+          "line": 358,
+          "position": 16187
+        },
+        "name": "components\\AudioSinkTab.tsx",
+        "start": 352,
+        "startLoc": {
+          "column": 58,
+          "line": 352,
+          "position": 15938
+        }
+      },
+      "format": "tsx",
+      "fragment": "  const showDivider = !hosting && listenerPhase === 'idle';\n\n  return (\n    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', width: '100%', padding: '4px' }}>\n      {!hosting && (\n        <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>\n          {listenerPhase === 'idle' && (",
+      "lines": 7,
+      "secondFile": {
+        "end": 865,
+        "endLoc": {
+          "column": 10,
+          "line": 865,
+          "position": 41949
+        },
+        "name": "components\\WalkieTalkieTab.tsx",
+        "start": 859,
+        "startLoc": {
+          "column": 41,
+          "line": 859,
+          "position": 41700
+        }
+      },
+      "tokens": 62
+    },
+    {
+      "firstFile": {
+        "end": 475,
+        "endLoc": {
+          "column": 95,
+          "line": 475,
+          "position": 22569
+        },
+        "name": "components\\AudioSinkTab.tsx",
+        "start": 470,
+        "startLoc": {
+          "column": 32,
+          "line": 470,
+          "position": 22219
+        }
+      },
+      "format": "tsx",
+      "fragment": "      {listenerPhase === 'idle' && (\n        <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>\n          {!hosting ? (\n            <>\n              <div style={{ fontWeight: 600, color: 'var(--text-color)', fontSize: '14px' }}>Host a Session</div>\n              <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: '1.4' }}>",
+      "lines": 6,
+      "secondFile": {
+        "end": 949,
+        "endLoc": {
+          "column": 95,
+          "line": 949,
+          "position": 45836
+        },
+        "name": "components\\WalkieTalkieTab.tsx",
+        "start": 944,
+        "startLoc": {
+          "column": 15,
+          "line": 944,
+          "position": 45486
+        }
+      },
+      "tokens": 81
+    },
+    {
+      "firstFile": {
+        "end": 494,
+        "endLoc": {
+          "column": 24,
+          "line": 494,
+          "position": 23597
+        },
+        "name": "components\\AudioSinkTab.tsx",
+        "start": 486,
+        "startLoc": {
+          "column": 50,
+          "line": 486,
+          "position": 23274
+        }
+      },
+      "format": "tsx",
+      "fragment": "              <PrimaryButton onClick={startHosting}>Start Session</PrimaryButton>\n              {hostError && <div style={{ color: '#e05c5c', fontSize: '12.5px' }}>{hostError}</div>}\n            </>\n          ) : (\n            <>\n              <SessionHostQr\n                qrDataUrl={qrDataUrl}\n                ipAddress={localIdentity.ipAddress}\n                altText=\"Audio Relay QR Code\"",
+      "lines": 9,
+      "secondFile": {
+        "end": 962,
+        "endLoc": {
+          "column": 24,
+          "line": 962,
+          "position": 46509
+        },
+        "name": "components\\WalkieTalkieTab.tsx",
+        "start": 954,
+        "startLoc": {
+          "column": 50,
+          "line": 954,
+          "position": 46186
+        }
+      },
+      "tokens": 61
+    },
+    {
+      "firstFile": {
+        "end": 698,
+        "endLoc": {
+          "column": 25,
+          "line": 698,
+          "position": 33871
+        },
+        "name": "components\\AudioSinkTab.tsx",
+        "start": 691,
+        "startLoc": {
+          "column": 16,
+          "line": 691,
+          "position": 33525
+        }
+      },
+      "format": "tsx",
+      "fragment": "                )}\n\n                {hostError && <div style={{ color: '#e05c5c', fontSize: '12px' }}>{hostError}</div>}\n              </div>\n\n              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px', borderTop: '1px solid var(--border-color)', paddingTop: '12px' }}>\n                <HostActionButtons\n                  muted={hostMuted}",
+      "lines": 8,
+      "secondFile": {
+        "end": 980,
+        "endLoc": {
+          "column": 25,
+          "line": 980,
+          "position": 47414
+        },
+        "name": "components\\WalkieTalkieTab.tsx",
+        "start": 973,
+        "startLoc": {
+          "column": 35,
+          "line": 973,
+          "position": 47068
+        }
+      },
+      "tokens": 70
+    },
+    {
+      "firstFile": {
+        "end": 713,
+        "endLoc": {
+          "column": 8,
+          "line": 713,
+          "position": 34249
+        },
+        "name": "components\\AudioSinkTab.tsx",
+        "start": 700,
+        "startLoc": {
+          "column": 37,
+          "line": 700,
+          "position": 33967
+        }
+      },
+      "format": "tsx",
+      "fragment": "                  onLeave={endHosting}\n                />\n              </div>\n            </>\n          )}\n        </div>\n      )}\n\n      <ScannerModal\n        open={showScannerModal}\n        onClose={() => setShowScannerModal(false)}\n        onDecoded={handleDecodedHost}\n        title=\"Scan Session QR Code\"\n      />",
+      "lines": 14,
+      "secondFile": {
+        "end": 996,
+        "endLoc": {
+          "column": 8,
+          "line": 996,
+          "position": 47829
+        },
+        "name": "components\\WalkieTalkieTab.tsx",
+        "start": 983,
+        "startLoc": {
+          "column": 39,
+          "line": 983,
+          "position": 47547
+        }
+      },
+      "tokens": 50
+    },
+    {
+      "firstFile": {
+        "end": 29,
+        "endLoc": {
+          "column": 64,
+          "line": 29,
+          "position": 942
+        },
+        "name": "components\\ConfirmDialog.tsx",
+        "start": 23,
+        "startLoc": {
+          "column": 10,
+          "line": 23,
+          "position": 719
+        }
+      },
+      "format": "tsx",
+      "fragment": "  onCancel,\n}) => {\n  useEscapeAndBack(onCancel);\n  return (\n    <DialogCard onCancel={onCancel}>\n      <div style={{ fontSize: '16px', fontWeight: 700 }}>{title}</div>\n      <div style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>{message}</div>",
+      "lines": 7,
+      "secondFile": {
+        "end": 31,
+        "endLoc": {
+          "column": 64,
+          "line": 31,
+          "position": 765
+        },
+        "name": "components\\InputDialog.tsx",
+        "start": 24,
+        "startLoc": {
+          "column": 24,
+          "line": 24,
+          "position": 541
+        }
+      },
+      "tokens": 58
+    },
+    {
+      "firstFile": {
+        "end": 30,
+        "endLoc": {
+          "column": 34,
+          "line": 30,
+          "position": 1094
+        },
+        "name": "components\\PresenterOverlay.tsx",
+        "start": 20,
+        "startLoc": {
+          "column": 64,
+          "line": 20,
+          "position": 891
+        }
+      },
+      "format": "tsx",
+      "fragment": "  const { className, transformDelta } = useLandscapeOrientation();\n\n  useEffect(() => {\n    linkApi?.setImmersiveMode?.(true);\n    return () => {\n      linkApi?.setImmersiveMode?.(false);\n    };\n  }, [linkApi]);\n\n  useEffect(() => {\n    return pushBackHandler(() => {",
+      "lines": 11,
+      "secondFile": {
+        "end": 56,
+        "endLoc": {
+          "column": 34,
+          "line": 56,
+          "position": 2633
+        },
+        "name": "components\\RemoteInputOverlay.tsx",
+        "start": 46,
+        "startLoc": {
+          "column": 47,
+          "line": 46,
+          "position": 2430
+        }
+      },
+      "tokens": 51
+    },
+    {
+      "firstFile": {
+        "end": 145,
+        "endLoc": {
+          "column": 14,
+          "line": 145,
+          "position": 5973
+        },
+        "name": "components\\PresenterOverlay.tsx",
+        "start": 135,
+        "startLoc": {
+          "column": 11,
+          "line": 135,
+          "position": 5725
+        }
+      },
+      "format": "tsx",
+      "fragment": "          }}\n          style={{ padding: '10px 4px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', fontSize: '12px', fontWeight: 'bold' }}\n        >\n          Exit\n        </button>\n      </div>\n    </div>\n  );\n};\n\nexport default PresenterOverlay;",
+      "lines": 11,
+      "secondFile": {
+        "end": 444,
+        "endLoc": {
+          "column": 14,
+          "line": 444,
+          "position": 17253
+        },
+        "name": "components\\RemoteInputOverlay.tsx",
+        "start": 434,
+        "startLoc": {
+          "column": 26,
+          "line": 434,
+          "position": 17005
+        }
+      },
+      "tokens": 56
+    },
+    {
+      "firstFile": {
+        "end": 75,
+        "endLoc": {
+          "column": 8,
+          "line": 75,
+          "position": 3793
+        },
+        "name": "components\\RemoteMicTab.tsx",
+        "start": 69,
+        "startLoc": {
+          "column": 47,
+          "line": 69,
+          "position": 3541
+        }
+      },
+      "format": "tsx",
+      "fragment": "      const hasVirtualCable = audioOutputs.some(\n        (d) =>\n          d.label.toLowerCase().includes('cable input') ||\n          d.label.toLowerCase().includes('vb-audio') ||\n          d.label.toLowerCase().includes('voicemeeter') ||\n          d.label.toLowerCase().includes('vb-cable')\n      );",
+      "lines": 7,
+      "secondFile": {
+        "end": 82,
+        "endLoc": {
+          "column": 8,
+          "line": 82,
+          "position": 4091
+        },
+        "name": "components\\RemoteMicTab.tsx",
+        "start": 76,
+        "startLoc": {
+          "column": 45,
+          "line": 76,
+          "position": 3839
+        }
+      },
+      "tokens": 58
+    },
+    {
+      "firstFile": {
+        "end": 22,
+        "endLoc": {
+          "column": 35,
+          "line": 22,
+          "position": 868
+        },
+        "name": "components\\SettingsTab.tsx",
+        "start": 11,
+        "startLoc": {
+          "column": 1,
+          "line": 11,
+          "position": 343
+        }
+      },
+      "format": "tsx",
+      "fragment": "}> = ({ title, description, checked, onChange }) => (\n  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n    <div>\n      <div style={{ fontSize: '13.5px', fontWeight: 600 }}>{title}</div>\n      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{description}</div>\n    </div>\n    <label className=\"switch-container\" style={{ margin: 0 }}>\n      <span className=\"switch\">\n        <input\n          type=\"checkbox\"\n          checked={checked}\n          onChange={(e) => onChange?.(e.target.checked)}",
+      "lines": 12,
+      "secondFile": {
+        "end": 21,
+        "endLoc": {
+          "column": 74,
+          "line": 21,
+          "position": 915
+        },
+        "name": "components\\ToggleRow.tsx",
+        "start": 13,
+        "startLoc": {
+          "column": 40,
+          "line": 13,
+          "position": 420
+        }
+      },
+      "tokens": 134
+    }
+  ],
+  "statistics": {
+    "detectionDate": "2026-09-09T10:00:10.779Z",
+    "formats": {
+      "tsx": {
+        "clones": 13,
+        "duplicatedLines": 109,
+        "duplicatedTokens": 839,
+        "lines": 13679,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.7968418744060238,
+        "percentageTokens": 0.8950860946934943,
+        "sources": 37,
+        "tokens": 93734
+      },
+      "typescript": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 1731,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 12,
+        "tokens": 16901
+      }
+    },
+    "total": {
+      "clones": 13,
+      "duplicatedLines": 109,
+      "duplicatedTokens": 839,
+      "lines": 15410,
+      "newClones": 0,
+      "newDuplicatedLines": 0,
+      "percentage": 0.7073329007138222,
+      "percentageTokens": 0.7583495277263071,
+      "sources": 49,
+      "tokens": 110635
+    }
+  }
+}

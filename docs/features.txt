@@ -200,7 +200,7 @@ LOCAL-ONLY (no wire packet of their own — port the behavior, not a new message
                            disappeared immediately. LOCAL-ONLY-ish: no new wire packet type (reuses
                            the already-proven runcommand/runcommand.request packets), this is
                            purely upgrading the whitelist from a hardcoded object
-                           (desktop/src/core/plugins/runcommand.ts) to a persistent, desktop-owned,
+                           (electron/core/plugins/runcommand.ts) to a persistent, desktop-owned,
                            editable one (RunCommandManager, JSON in configDir) — matching upstream's
                            actual design where only the desktop's own settings UI can add/edit/
                            remove entries; the phone can only ever select by key, never supply or

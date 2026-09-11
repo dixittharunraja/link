@@ -1,0 +1,9 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": [
+    "electron/main/preload.ts",
+    "electron/main/presenter-preload.ts"
+  ],
+  "project": ["src/**/*.{ts,tsx}", "electron/**/*.ts"],
+  "ignoreBinaries": ["rundll32.exe", "start", "reg", "net"]
+}

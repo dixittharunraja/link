@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "lib": ["ES2022", "DOM"],
+    "outDir": "dist",
+    "rootDir": "electron",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": true
+  },
+  // Electron main-process build only. rootDir "electron" with outDir "dist" preserves the exact
+  // compiled layout the runtime expects — dist/main/ and dist/core/ — so every __dirname-relative
+  // path inside the main process (scripts, renderer html, icons, vendor binaries) keeps resolving
+  // unchanged. The shared web app under /src is built separately by Vite (see vite.config.mts)
+  // and type-checked by its own tsconfig at src/tsconfig.json.
+  "include": ["electron/**/*.ts"]
+}

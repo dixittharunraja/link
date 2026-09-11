@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "TZkXmNiop/M=",
+  "success": true,
+  "projectFilePath": "D:\\Projects\\link\\electron\\main\\link-fs-driver\\LinkFsDriver.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\dixittharunraja\\.nuget\\packages\\microsoft.netcore.app.runtime.win-x64\\8.0.29\\microsoft.netcore.app.runtime.win-x64.8.0.29.nupkg.sha512",
+    "C:\\Users\\dixittharunraja\\.nuget\\packages\\microsoft.windowsdesktop.app.runtime.win-x64\\8.0.29\\microsoft.windowsdesktop.app.runtime.win-x64.8.0.29.nupkg.sha512",
+    "C:\\Users\\dixittharunraja\\.nuget\\packages\\microsoft.aspnetcore.app.runtime.win-x64\\8.0.29\\microsoft.aspnetcore.app.runtime.win-x64.8.0.29.nupkg.sha512"
+  ],
+  "logs": []
+}

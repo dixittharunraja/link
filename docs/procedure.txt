@@ -49,7 +49,7 @@ VERIFY THE RISKY PIECE STANDALONE BEFORE WIRING IT INTO THE FULL PLUGIN
 ------------------------------------------------------
 When a feature needs a shaky platform API (COM interop via PowerShell, a native Windows dialog,
 an Android permission flow), prove that ONE piece works in isolation first — a throwaway test
-script, not the real plugin file. Example: before writing desktop/src/core/plugins/
+script, not the real plugin file. Example: before writing electron/core/plugins/
 systemvolume.ts, a standalone .ps1 was written and run manually to confirm IAudioEndpointVolume
 COM calls actually work from PowerShell (they don't work via naive method calls — PowerShell only
 does IDispatch late-binding on COM objects, so vtable-only interfaces need every real call to

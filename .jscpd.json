@@ -1,0 +1,11 @@
+{
+  "threshold": 1,
+  "reporters": ["console"],
+  "ignore": [
+    "node_modules/**",
+    "dist/**",
+    "dist_electron/**",
+    "android/**"
+  ],
+  "format": ["typescript", "tsx", "javascript"]
+}

@@ -3,32 +3,6 @@ LINK PROJECT BACKLOG
 
 ACTIVE VERSION 1 BACKLOG
 ------------------------
-[ ] Build installer + bundle WinFsp & rclone
-   - Status: Not started. will do after completion of version 1 and its testing.
-   - Task: Configured electron-builder for NSIS installers, implemented automated segment splitting for Cloudflare deployment, and placed APK and split installers directly in the website directory.
-   - ADDED REQUIREMENT (investigated via real hardware debugging — see docs/status.txt's Discovery
-     entry for the full writeup, including the actual bug this was chasing, which turned out to
-     be an unrelated Android-side broadcast-address bug, not this): the installer's already-
-     elevated install step should also fix Windows' network-trust classification, since a network
-     classified "Public" (very common — e.g. any phone-hosted Wi-Fi hotspot defaults to Public)
-     makes Windows apply stricter handling to unsolicited INBOUND broadcast/multicast UDP than a
-     plain per-app inbound-allow firewall rule can override (this app already has one for
-     Electron/Node.js, confirmed present/enabled, confirmed still insufficient on its own). This
-     is a real, independently-worth-having hardening item — CONFIRMED NOT the cause of the specific
-     "phone can't discover PC" bug hit this session (reclassifying to Private had zero effect on
-     that symptom; the real cause was Android-side, see status.txt) — but worth fixing anyway for
-     whatever future case it does affect, since it's a genuine platform quirk.
-   - During install (already-elevated, same UAC prompt every Windows install already needs — no
-     new user-facing friction): enable the Network Discovery firewall rule group and/or nudge the
-     active connection's network category, with a one-line explanation ("Link needs local network
-     access to find your paired devices") — same pattern as any other LAN app (game clients,
-     printer software) already uses. Must never be silent/without disclosure, and must never be
-     something the running app tries to do on every launch — a one-time install-time step only.
-   - DEV-ONLY interim workaround (not shippable, for testing before the installer exists): manually
-     set the active connection to the Private profile — `Set-NetConnectionProfile -InterfaceAlias
-     "<name>" -NetworkCategory Private` in an elevated PowerShell, or via Settings -> Network &
-     Internet -> Wi-Fi -> (network) -> Network profile type -> Private.
-
 [ ] Auto-update check (BLOCKED ON the installer above — needs a real published installer to check
    against and swap in, not just a dev build)
    - Deliberately MANUAL/opt-in, not silent/forced — settled in discussion: this app is explicitly

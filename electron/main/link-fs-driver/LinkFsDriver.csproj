@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>link-fs-driver</AssemblyName>
+    <RootNamespace>Link.FsDriver</RootNamespace>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Optimize>true</Optimize>
+    <!-- Self-contained win-x64 publish bundles the .NET 8 runtime (~55 MB).
+         This eliminates the runtime dependency on the user's machine. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>false</PublishSingleFile>
+  </PropertyGroup>
+
+  <!-- WinFSP managed assembly — loaded from the WinFSP installation.
+       WinFSP must be installed (we install it via the bundled MSI) for the
+       kernel driver to be present; copying winfsp-msil.dll alongside our exe
+       ensures the CLR can find the assembly without needing the WinFSP bin
+       directory on the PATH. The native winfsp-x64.dll is found by the
+       managed assembly via the WinFSP registry key at runtime. -->
+  <ItemGroup>
+    <Reference Include="WinFspNet">
+      <HintPath>$(MSBuildProgramFiles32)\WinFsp\bin\winfsp-msil.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

@@ -14,7 +14,7 @@ COMMANDS
   `electron-builder --linux deb`, then copies the resulting .deb into the sibling `rodix` repo's
   `public/installers/` if that repo exists locally (skips gracefully with a warning if not — don't
   worry about having `rodix` checked out, it's optional).
-- The electron-builder Linux target is ALREADY configured in `desktop/package.json`'s `build`
+- The electron-builder Linux target is ALREADY configured in `package.json`'s `build`
   block (`"linux": {"target": ["deb"], "icon": "icon.png", "category": "Utility"}` +  a `deb`
   section listing `libnotify4`/`libxtst6`/`libnss3` as runtime deps). You should not need to touch
   packaging config unless a new feature needs a new native dependency declared there.
@@ -34,23 +34,23 @@ that protocol to silently drift when only one of the two copies gets updated lat
 
 REPO LAYOUT (what you need to know)
 ------------------------------------
-- `desktop/src/main/` — Electron main process. `main.ts` is the entry point (window/tray
+- `electron/main/` — Electron main process. `main.ts` is the entry point (window/tray
   lifecycle, IPC handlers). Also: `preload.ts` (renderer bridge), `audio-relay-server.ts` /
   `audio-relay-client.ts` (Audio Relay + Remote Mic, host/listen), `fs-mount-service.ts` +
   `fs-client.ts`/`fs-helper.ts`/`fs-socket-client.ts` (WebDAV file-system mount feature).
-- `desktop/src/core/plugins/` — one file per KDE-Connect-style feature (battery.ts, mpris.ts,
+- `electron/core/plugins/` — one file per KDE-Connect-style feature (battery.ts, mpris.ts,
   systemvolume.ts, lock.ts, screensaver-inhibit.ts, touchpad.ts, findmydevice.ts, etc.).
   This is where almost all of the Windows-only code you need to replace actually lives.
-- `desktop/src/scripts/` — PowerShell helper scripts the main process spawns for anything Node
+- `electron/scripts/` — PowerShell helper scripts the main process spawns for anything Node
   has no cross-platform API for (audio capture, volume, media-session control, screensaver
   inhibit). These get copied into `dist/scripts/` at build time (see the `build`/`dev` npm
-  scripts in `desktop/package.json` — note the copy step is currently hardcoded per-file; you'll
-  likely want to make that copy step platform-aware, or add your own Linux scripts dir alongside
-  it, same copy pattern).
-- `desktop/vendor/rclone/` — currently only vendors `rclone.exe` (Windows), pinned by SHA-256
+  scripts in `package.json` — the copy step iterates a filename list, so adding a script means
+  adding its name to that array; you'll likely want to make the step platform-aware, or add your
+  own Linux scripts dir alongside it, same copy pattern).
+- `vendor/rclone/` — currently only vendors `rclone.exe` (Windows), pinned by SHA-256
   (`fs-mount-service.ts`, `RCLONE_PINNED_SHA256`). You'll need to vendor a Linux `rclone` binary
   here too if you take on the file-system mount feature.
-- `mobile/` — Android/Capacitor app. Not in scope for you; nothing here needs Linux changes.
+- `android/` — Android/Capacitor app. Not in scope for you; nothing here needs Linux changes.
 
 EVERYTHING CURRENTLY WINDOWS-ONLY (needs a Linux path)
 --------------------------------------------------------
@@ -90,7 +90,7 @@ you're just swapping *what* gets spawned.
    Linux equivalent: `paplay`/`pw-play` with a bundled/system sound file.
 9. `core/plugins/battery.ts` — PowerShell `Get-CimInstance Win32_Battery`. Linux equivalent:
    read `/sys/class/power_supply/*/capacity` and `/status` directly — no shell-out even needed.
-10. `desktop/build/installer.nsh` — NSIS installer script, runs `netsh advfirewall` firewall
+10. `build/installer.nsh` — NSIS installer script, runs `netsh advfirewall` firewall
     rules on install/uninstall. This is Windows-installer-only; it has no Linux counterpart to
     port because .deb packaging doesn't work this way at all (see below).
 
@@ -117,9 +117,9 @@ branch-inside-the-file rule as everywhere else — do not fork this file):
 - `cleanup()`'s `net use <letter> /delete /y` — Windows-only forced-unmount fallback. Linux
   equivalent: `fusermount -u <mountpoint>` (or just trust rclone's own clean shutdown on
   `SIGTERM`, which is generally more reliable on Linux than Windows drive-letter cleanup is).
-- The vendored binary: `desktop/vendor/rclone/rclone.exe`, path + pinned SHA-256
+- The vendored binary: `vendor/rclone/rclone.exe`, path + pinned SHA-256
   (`RCLONE_PINNED_SHA256`) in `spawnRclone()`. You'll vendor a Linux `rclone` binary at
-  `desktop/vendor/rclone/rclone` (no extension) with its own pinned hash, and branch the binary
+  `vendor/rclone/rclone` (no extension) with its own pinned hash, and branch the binary
   path/hash constant by platform — same integrity-check pattern, just a second known-good hash
   for a second binary.
 
@@ -144,8 +144,8 @@ WHERE process.platform IS ALREADY BRANCHED (don't need new work, just know these
 PRACTICAL NOTES FOR APPLYING THE ZERO-REDUNDANCY RULE ABOVE
 ----------------------------------------------------------------
 - For the PowerShell-script-backed features (audio, volume, mpris, screensaver), the cleanest
-  split is: keep `desktop/src/scripts/*.ps1` as-is (Windows), add a parallel
-  `desktop/src/scripts/*.sh` (or a single `.js`/`.ts` helper using the Linux CLI tools listed
+  split is: keep `electron/scripts/*.ps1` as-is (Windows), add a parallel
+  `electron/scripts/*.sh` (or a single `.js`/`.ts` helper using the Linux CLI tools listed
   above — genuinely simpler than PowerShell for most of these), and have the *calling* plugin
   file (`systemvolume.ts`, `mpris.ts`, etc.) pick which helper to spawn based on
   `process.platform`, same spawn/parse code shape either way. Don't rewrite the calling
@@ -157,12 +157,12 @@ PRACTICAL NOTES FOR APPLYING THE ZERO-REDUNDANCY RULE ABOVE
   new Linux-side config surface in `docs/status.txt`/`docs/features.txt` once it's working —
   those two files are the project's living source of truth for "what's actually verified on real
   hardware," not just what compiles.
-- Update `desktop/package.json`'s `build`/`dev` npm scripts' inline copy step (currently a long
-  `node -e "..."` one-liner copying each `.ps1` into `dist/scripts/`) to also copy any new Linux
+- Update `package.json`'s `build`/`dev` npm scripts' inline copy step (a `node -e "..."` one-liner
+  looping a filename array to copy each `.ps1` into `dist/scripts/`) to also copy any new Linux
   helper scripts you add, keeping the existing pattern rather than introducing a separate build
   tool.
 - Test manually against real hardware/a real Linux desktop session — there is deliberately no
-  `desktop/src/test/` directory anymore (it held a handful of ad-hoc historical e2e scripts that
+  `electron/test/` directory anymore (it held a handful of ad-hoc historical e2e scripts that
   were never part of the shipped app and were removed as dead weight); don't reintroduce
   standalone test scripts living in `src/`. If you want repeatable verification for the Linux
   work specifically, that's worth a real discussion with the rest of the team on where automated
