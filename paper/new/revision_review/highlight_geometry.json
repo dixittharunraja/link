@@ -1,0 +1,852 @@
+[
+  {
+    "report_page": 3,
+    "rect": [
+      59.25072744186046,
+      76.97057116279063,
+      536.0252725581395,
+      104.10408186046504
+    ],
+    "text": "Device Meshes via Transitive Trust-on-First-Use"
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      248.63155720930231,
+      105.21157209302328,
+      347.1981879069767,
+      132.3450827906977
+    ],
+    "text": "(T-TOFU)"
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      50.39080558139535,
+      373.224208372093,
+      291.8236762790698,
+      383.74536558139533
+    ],
+    "text": "Abstract—Modern multi-device environments, encompassing"
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      40.42339348837209,
+      383.1916204651163,
+      292.9311665116279,
+      393.7127776744186
+    ],
+    "text": "smartphones, personal computers and embedded endpoints,"
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      40.42339348837209,
+      393.15903255813953,
+      291.8236762790698,
+      403.68018976744185
+    ],
+    "text": "frequently demand tight local network interoperability for"
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      40.42339348837209,
+      403.1264446511628,
+      291.8236762790698,
+      413.6476018604651
+    ],
+    "text": "telemetry, continuous synchronization and remote peripheral"
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      40.42339348837209,
+      413.09385674418604,
+      69.21813953488372,
+      423.61501395348836
+    ],
+    "text": "control."
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      313.4197358139535,
+      470.6833488372093,
+      555.960096744186,
+      481.75825116279066
+    ],
+    "text": "Despite the operational demand for continuous local inter-"
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      303.4523237209302,
+      482.3119962790697,
+      554.2988613953488,
+      493.9406437209302
+    ],
+    "text": "operability, establishing secure and user-friendly trust across"
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      303.4523237209302,
+      494.49438883720927,
+      554.2988613953488,
+      505.56929116279065
+    ],
+    "text": "these endpoints remains fundamentally challenging. System"
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      303.4523237209302,
+      506.6767813953489,
+      555.960096744186,
+      517.7516837209303
+    ],
+    "text": "architectures in this domain inevitably encounter the Usable-"
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      303.4523237209302,
+      518.3054288372093,
+      554.2988613953488,
+      529.9340762790698
+    ],
+    "text": "illustrated in Fig. 1, wherein no conventional Security Trilemma,"
+  },
+  {
+    "report_page": 3,
+    "rect": [
+      303.4523237209302,
+      530.4878213953489,
+      532.149056744186,
+      541.5627237209303
+    ],
+    "text": "architecture satisfies all three properties simultaneously:"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      260.8139497674418,
+      161.69357395348837,
+      270.227616744186
+    ],
+    "text": "T-TOFU reconciles all three vertices."
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      289.0549506976744,
+      291.8236762790698,
+      300.1298530232558
+    ],
+    "text": "usability challenge by delegating trust to centralized cloud"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      301.237343255814,
+      291.8236762790698,
+      312.31224558139536
+    ],
+    "text": "identity infrastructures (Apple ID, Google Accounts, Microsoft"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      312.8659906976744,
+      292.9311665116279,
+      324.4946381395349
+    ],
+    "text": "Entra). While this offers an effortless out-of-the-box experience,"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      325.048383255814,
+      291.8236762790698,
+      336.12328558139535
+    ],
+    "text": "it mandates WAN connectivity, introduces single points of"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      336.67703069767435,
+      291.8236762790698,
+      348.30567813953485
+    ],
+    "text": "failure, exposes personal metadata to cloud providers and"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      348.85942325581397,
+      291.8236762790698,
+      359.93432558139534
+    ],
+    "text": "nearby observers [3], [4], and enforces proprietary vendor"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      361.04181581395346,
+      71.43312,
+      372.11671813953484
+    ],
+    "text": "lock-in."
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      50.39080558139535,
+      372.67046325581396,
+      292.9311665116279,
+      383.74536558139533
+    ],
+    "text": "Conversely, open-source peer-to-peer (P2P) systems (e.g.,"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      384.85285581395345,
+      291.8236762790698,
+      395.92775813953483
+    ],
+    "text": "KDE Connect [5], SSH-based local tooling, standard Bluetooth"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      396.4815032558139,
+      291.8236762790698,
+      408.1101506976744
+    ],
+    "text": "pairing [6]) adopt a Trust-on-First-Use (TOFU) model using"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      408.6638958139535,
+      291.8236762790698,
+      419.7387981395349
+    ],
+    "text": "self-signed cryptographic certificates or pre-shared keys. While"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      420.29254325581394,
+      291.8236762790698,
+      431.92119069767443
+    ],
+    "text": "these systems achieve zero-cloud privacy, they suffer from"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      432.4749358139535,
+      291.8236762790698,
+      444.103583255814
+    ],
+    "text": "2 O(N ) N an human pairing bottleneck: enrolling devices"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      40.42339348837209,
+      445.21107348837205,
+      71.98686511627906,
+      456.2859758139534
+    ],
+    "text": "requires"
+  },
+  {
+    "report_page": 4,
+    "rect": [
+      80.29304186046511,
+      444.657328372093,
+      86.38423813953487,
+      451.3022697674418
+    ],
+    "text": "N"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      68.11064930232558,
+      289.6086958139534,
+      554.2988613953488,
+      298.4686176744185
+    ],
+    "text": "C B Protocol Sequence Diagram of Transitive Trust-on-First-Use (T-TOFU): A single human-gated verification between New Node and Gateway"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      298.46861767441857,
+      383.1916204651163,
+      307.88228465116276
+    ],
+    "text": "C transitively enrolls across the entire mesh, verified via canonical pool digest convergence (PoolHash)."
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      50.39080558139535,
+      358.8268353488372,
+      291.8236762790698,
+      371.0092279069768
+    ],
+    "text": "d Upon first boot, each device generates a persistent i"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      371.0092279069767,
+      188.27333953488372,
+      382.0841302325581
+    ],
+    "text": "cryptographic identity consisting of:"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      64.23443348837209,
+      384.85285581395345,
+      291.82367627906973,
+      397.035248372093
+    ],
+    "text": "128 ∈ {0, 1} A 128-bit identifier ID , drawn from a i"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      64.78817860465116,
+      397.035248372093,
+      291.8236762790698,
+      408.1101506976744
+    ],
+    "text": "cryptographically secure random source and stored in"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      64.78817860465116,
+      408.6638958139535,
+      140.09751441860465,
+      419.7387981395349
+    ],
+    "text": "hexadecimal form."
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      64.23443348837209,
+      420.846288372093,
+      291.82367627906973,
+      433.02868093023255
+    ],
+    "text": "A self-signed X.509 certificate Cert carrying a 2048-bit i"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      64.78817860465116,
+      432.4749358139535,
+      122.93141581395349,
+      444.103583255814
+    ],
+    "text": "RSA key pair."
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      64.23443348837209,
+      444.657328372093,
+      204.33194790697672,
+      455.73223069767437
+    ],
+    "text": "A canonical certificate fingerprint:"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      481.75825116279066,
+      292.37742139534885,
+      492.83315348837203
+    ],
+    "text": "All inter-device communication is transported over TLS;"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      493.38689860465115,
+      291.8236762790698,
+      504.4618009302325
+    ],
+    "text": "version 1.3 [10] is negotiated by default and version 1.2 is the"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      505.56929116279076,
+      291.8236762790698,
+      516.6441934883721
+    ],
+    "text": "minimum accepted. During the TLS handshake, peer certificates"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      517.1979386046512,
+      291.8236762790698,
+      528.8265860465117
+    ],
+    "text": "are validated not against a public CA root, but strictly against"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      529.3803311627905,
+      291.8236762790698,
+      540.455233488372
+    ],
+    "text": "pinned fingerprints stored within the local [11]. If a TrustStore"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      541.0089786046511,
+      291.8236762790698,
+      552.6376260465116
+    ],
+    "text": "remote device presents a certificate whose fingerprint differs"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      553.1913711627906,
+      291.8236762790698,
+      564.266273488372
+    ],
+    "text": "from the stored pinned value, the connection is instantly aborted"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      565.3737637209301,
+      94.69041488372093,
+      576.4486660465116
+    ],
+    "text": "with an alert."
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      50.39080558139535,
+      598.5984706976744,
+      291.8236762790698,
+      609.6733730232559
+    ],
+    "text": "C When an unauthenticated device initiates contact with an"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      610.780863255814,
+      291.8236762790698,
+      621.8557655813954
+    ],
+    "text": "B, existing mesh member they execute an initial handshake over"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      622.4095106976744,
+      292.9311665116279,
+      634.0381581395349
+    ],
+    "text": "an unpinned TLS channel. To prevent active MitM interception,"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      634.5919032558139,
+      280.1950288372093,
+      645.6668055813954
+    ],
+    "text": "the protocol derives an ephemeral visual verification code:"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      67.55690418604651,
+      654.5267274418604,
+      243.09410604651163,
+      666.70912
+    ],
+    "text": "(︂ (︁ = max(K , ) Code Hex SHA-256 K B,C B C"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      134.00631813953487,
+      645.1130604651164,
+      233.12669395348837,
+      687.7514344186047
+    ],
+    "text": "(︂ (︁ max(K , SHA-256 K B ∥ ∥ min(K , ) K Salt B C"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      666.1553748837209,
+      291.8236762790698,
+      707.1325134883721
+    ],
+    "text": "(3) )︁)︂ ∥ ∥ min(K , ) [0..7] K Salt B C where K and K denote the DER-encoded public keys of B C"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      40.42339348837209,
+      707.1325134883721,
+      291.8236762790698,
+      718.7611609302326
+    ],
+    "text": "the respective endpoints, ordered byte-wise so that both sides"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      303.4523237209302,
+      328.9245990697674,
+      554.2988613953488,
+      339.9995013953488
+    ],
+    "text": "compute the same value, and Salt is the timestamp of the pairing"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      303.4523237209302,
+      341.10699162790695,
+      554.2988613953488,
+      352.1818939534883
+    ],
+    "text": "session. This 8-character token is displayed simultaneously on"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      303.4523237209302,
+      352.73563906976744,
+      554.2988613953488,
+      364.36428651162794
+    ],
+    "text": "both physical screens. Once the human operator confirms code"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      303.4523237209302,
+      364.91803162790694,
+      555.960096744186,
+      377.1004241860465
+    ],
+    "text": "T B C equality, device registers into its active trust store , B"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      303.4523237209302,
+      376.54667906976744,
+      414.7550920930232,
+      388.729071627907
+    ],
+    "text": "T C B and registers into . C"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      313.4197358139535,
+      413.6476018604651,
+      554.2988613953488,
+      425.2762493023256
+    ],
+    "text": "To maintain decentralized state agreement across all mesh"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      303.4523237209302,
+      425.82999441860466,
+      555.960096744186,
+      436.90489674418603
+    ],
+    "text": "members without a consensus leader (e.g., Raft or Paxos),"
+  },
+  {
+    "report_page": 5,
+    "rect": [
+      303.4523237209302,
+      437.45864186046504,
+      502.24682046511623,
+      449.08728930232553
+    ],
+    "text": "T-TOFU defines a canonical pool representation."
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      257.4914790697674,
+      163.90855441860472,
+      291.82367627906973,
+      176.09094697674425
+    ],
+    "text": "Because"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      176.09094697674428,
+      279.0875386046512,
+      187.16584930232568
+    ],
+    "text": "B heartbeats flow in both directions, does the same."
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      188.27333953488372,
+      291.8236762790698,
+      199.90198697674418
+    ],
+    "text": "∈ T B k Node iterates through each entry . For any A"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      199.9019869767442,
+      292.9311665116279,
+      212.08437953488374
+    ],
+    "text": "∈ T ∈ T / B A entry where ID , node verifies that , k B B"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      212.08437953488377,
+      201.00947720930233,
+      224.2667720930233
+    ],
+    "text": "auto-ingests Cert , and pins FP . k k"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      223.71302697674415,
+      291.8236762790698,
+      235.3416744186046
+    ],
+    "text": "B Node updates its canonical pool hash and broadcasts"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      235.8954195348837,
+      291.8236762790698,
+      246.9703218604651
+    ],
+    "text": "to all other currently connected link.pool.sync"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      247.5240669767442,
+      88.59921860465116,
+      259.15271441860466
+    ],
+    "text": "peers."
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      50.39080558139535,
+      291.82367627906973,
+      291.8236762790698,
+      302.8985786046511
+    ],
+    "text": "A When a user initiates an unpair action on device targeting"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      40.42339348837209,
+      303.45232372093017,
+      253.06151813953488,
+      315.08097116279066
+    ],
+    "text": "X, A device node executes the following sequence:"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      318.9571869767442,
+      291.8236762790698,
+      331.13957953488375
+    ],
+    "text": "T A X removes from its local and severs any active A"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      331.1395795348837,
+      96.35165023255814,
+      342.21448186046507
+    ],
+    "text": "sockets."
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      343.32197209302325,
+      291.8236762790698,
+      354.3968744186046
+    ],
+    "text": "A constructs a revocation frame, carried only over"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      354.9506195348837,
+      180.52090790697673,
+      366.5792669767442
+    ],
+    "text": "authenticated TLS channels:"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      86.93798325581395,
+      374.8854437209302,
+      269.12012651162786,
+      385.9603460465116
+    ],
+    "text": "{︁ R = : \"type\" \"link.pool.remove\","
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      109.08778790697674,
+      367.6867572093023,
+      199.90198697674418,
+      404.78767999999997
+    ],
+    "text": "{︁ : \"type\" : ID \"deviceId\" X"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      382.6378753488372,
+      268.01263627906974,
+      422.50752372093024
+    ],
+    "text": "}︁ : ID \"deviceId\" X R \\ {X}. A P floods to all active connections in"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      422.50752372093024,
+      292.9311665116279,
+      434.6899162790698
+    ],
+    "text": "R, ∈ T j Upon receiving peer checks if ID . If present, X j"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      434.68991627906973,
+      291.8236762790698,
+      445.7648186046511
+    ],
+    "text": "X’s it purges certificate, recalculates its PoolHash, and"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      64.78817860465116,
+      446.31856372093023,
+      260.2602046511628,
+      458.5009562790698
+    ],
+    "text": "R propagates to its remaining active neighbors."
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      50.39080558139535,
+      492.27940837209303,
+      292.9311665116279,
+      503.3543106976744
+    ],
+    "text": "We implemented the complete T-TOFU protocol in Link,"
+  },
+  {
+    "report_page": 6,
+    "rect": [
+      40.42339348837209,
+      504.4618009302325,
+      270.22761674418604,
+      515.5367032558139
+    ],
+    "text": "an open-source cross-platform device mesh runtime."
+  }
+]

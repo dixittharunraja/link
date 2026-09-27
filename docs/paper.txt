@@ -221,3 +221,23 @@ Step 4: Submission & Open-Source Artifact Badging
   - Submit to target IEEE/ACM journal or conference.
   - Link open-source repository for Artifact Availability and Replicability Badges.
 ================================================================================
+our details 
+Mam
+name :Ms.N.Nandhini
+email:nandhini.n@kpriet.ac.in
+
+our team
+
+Dixit Tharun Raja P 
+23cs044@kpriet.ac.in
+
+Dharaneesh D
+23cs036@kpriet.ac.in
+
+Deepanandham P
+23csl02@kpriet.ac.in
+
+Gohul S
+23cs049@kpriet.ac.in
+
+as of now our project name:Secure Decentralized Cross-Device Communication and Synchronization Framework

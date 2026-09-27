@@ -1,0 +1,67 @@
+{
+  "displayed_equations": {
+    "unchanged": true,
+    "count": 10
+  },
+  "citations": {
+    "unchanged": true,
+    "count": 22
+  },
+  "labels": {
+    "unchanged": true,
+    "count": 5
+  },
+  "bibliography": {
+    "unchanged": true,
+    "count": 1
+  },
+  "tikz_figures": {
+    "unchanged": true,
+    "count": 3
+  },
+  "table": {
+    "unchanged": true,
+    "count": 1
+  },
+  "contribution_bullets": {
+    "unchanged": true,
+    "count": 1
+  },
+  "list_environment_counts": {
+    "enumerate": [
+      5,
+      5
+    ],
+    "itemize": [
+      7,
+      7
+    ]
+  },
+  "all_source_edits_logged": true,
+  "reported_values_retained": {
+    "48.2": true,
+    "65\\,\\text{ms}": true,
+    "98 bytes": true,
+    "0.05": true,
+    "1.3\\,KB": true,
+    "5\\,KB": true,
+    "Wi-Fi 6": true,
+    "Gigabit Ethernet": true
+  },
+  "archive_matches_source": true,
+  "sha256": {
+    "paper.tex": "a4e1cc17dd4ab6214fa7ea4aac67d46cf2c605ccf196f959d70c80a1ed1be183",
+    "paper.pdf": "cfd280ad4801dab46ad8df6100e8ed5d89b54305bf7a1a75208dd25a6b44bcc3",
+    "ICAECA2026_TTOFU_Overleaf.zip": "66f5c03a07417cbf44fe6a2a1fe91941374342e33920290cccc5a127e8d1979c",
+    "revision_backup/paper.tex": "2a75902b58fdc820e83fa0e9b03fc9bd5da2ffed550cb51e3b3bbecc46e726a3",
+    "revision_backup/ICAECA2026_TTOFU_Overleaf.zip": "2d5ef1d7adebed4207ee2ea707a69ad8ca4b80d7466d1876239f1a1632f40187"
+  },
+  "build": {
+    "pages": 6,
+    "paper_size": "A4",
+    "overfull_boxes": 0,
+    "undefined_references": 0,
+    "logged_prose_revisions": 23,
+    "logged_layout_adjustments": 1
+  }
+}

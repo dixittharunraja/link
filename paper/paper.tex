@@ -1,0 +1,332 @@
+\documentclass[conference,a4paper]{IEEEtran}
+% ICAECA 2026: two-column A4, 4--6 pages including references, no page numbers.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc}
+\graphicspath{{figures/}}
+\input{results_macros}
+\renewcommand{\algorithmicrequire}{\textbf{Input:}}
+\newcommand{\T}{\mathcal{T}}
+\newcommand{\V}{\mathcal{V}}
+\newcommand{\PP}{\mathcal{P}}
+% Start a new, centered row of author blocks (standard IEEEtran idiom).
+\makeatletter
+\newcommand{\linebreakand}{\end{@IEEEauthorhalign}\hfill\mbox{}\par\mbox{}\hfill\begin{@IEEEauthorhalign}}
+\makeatother
+
+\begin{document}
+
+\title{A Secure Decentralized Cross-Device Communication and Synchronization Framework with Transitive Trust and Plane-Separated Transport}
+
+\author{\IEEEauthorblockN{Ms. N. Nandhini}
+\IEEEauthorblockA{\textit{Department of Computer Science}\\
+\textit{and Engineering}\\
+\textit{KPR Institute of Engineering}\\
+\textit{and Technology}\\
+Coimbatore, Tamil Nadu, India \\
+nandhini.n@kpriet.ac.in}
+\and
+\IEEEauthorblockN{Dixit Tharun Raja P}
+\IEEEauthorblockA{\textit{Department of Computer Science}\\
+\textit{and Engineering}\\
+\textit{KPR Institute of Engineering}\\
+\textit{and Technology}\\
+Coimbatore, Tamil Nadu, India \\
+23cs044@kpriet.ac.in}
+\and
+\IEEEauthorblockN{Dharaneesh D}
+\IEEEauthorblockA{\textit{Department of Computer Science}\\
+\textit{and Engineering}\\
+\textit{KPR Institute of Engineering}\\
+\textit{and Technology}\\
+Coimbatore, Tamil Nadu, India \\
+23cs036@kpriet.ac.in}
+\linebreakand
+\IEEEauthorblockN{Deepanandham P}
+\IEEEauthorblockA{\textit{Department of Computer Science}\\
+\textit{and Engineering}\\
+\textit{KPR Institute of Engineering}\\
+\textit{and Technology}\\
+Coimbatore, Tamil Nadu, India \\
+23csl02@kpriet.ac.in}
+\and
+\IEEEauthorblockN{Gohul S}
+\IEEEauthorblockA{\textit{Department of Computer Science}\\
+\textit{and Engineering}\\
+\textit{KPR Institute of Engineering}\\
+\textit{and Technology}\\
+Coimbatore, Tamil Nadu, India \\
+23cs049@kpriet.ac.in}}
+
+\maketitle
+\pagestyle{empty}
+\thispagestyle{empty}
+
+\begin{abstract}
+Personal computing now spans laptops, phones and televisions, yet the tools that connect these devices either depend on a vendor cloud account or require every pair of devices to be introduced separately. This paper presents Link, a zero-cloud framework that joins Windows and Android devices on a local network into a mutually authenticated device mesh. Link contributes a transitive trust-on-first-use enrollment protocol in which one human-verified pairing with any member admits a newcomer to the whole pool, a membership digest carried by heartbeats for anti-entropy repair, and flooded revocation. Traffic is separated into a persistent TLS control plane, an ephemeral certificate-pinned bulk plane with write back-pressure, and a UDP real-time plane for input events and AES-GCM protected Opus audio. The unmodified protocol implementation was evaluated under controlled network emulation. A sixteen-device pool converged after an enrollment in \EnrMeshSixteen~ms and purged a revoked device in \RevMeshSixteen~ms, while the number of human pairing ceremonies fell from quadratic to linear in the pool size. Computing the digest over the full membership view removed up to \AEMiBSixteen~MiB of redundant synchronization traffic per heartbeat. The bulk plane matched raw TCP goodput on a shaped 300~Mbps link with \CpuRatioWifi\ times lower CPU cost than Base64 transfer over the control channel, and the UDP plane bounded the 99th-percentile input latency at \InpUdpOnePnn~ms under one percent loss, against \InpMuxOnePnn~ms for a single multiplexed stream.
+\end{abstract}
+
+\begin{IEEEkeywords}
+cross-device communication, peer-to-peer networks, trust on first use, device pairing, transport layer security, gossip protocols, local-first software, network security
+\end{IEEEkeywords}
+
+\section{Introduction}
+A typical user now owns several computing devices and expects them to behave as one system: text copied on a phone should paste on a laptop, a file should move at local-network speed, and a phone should act as a touchpad, presenter or microphone for a nearby computer \cite{brudy2019crossdevice}. Commercial ecosystems deliver this experience by binding every device to a cloud account, which makes cross-device trust depend on an online identity provider and exposes metadata even when both devices share one room \cite{celosia2020discontinued, stute2019billion}. The local-first movement argues that such collaboration should work without a server and keep data under user control \cite{kleppmann2019localfirst}.
+
+Open, serverless tools such as KDE Connect \cite{kdeconnect} avoid the cloud by pinning self-signed certificates on first use, but they introduce two practical costs. First, trust is strictly pairwise: a household with $N$ devices needs $N(N-1)/2$ separate pairing ceremonies, and removing a lost device requires visiting every other device. Second, a single control connection per device pair often carries notifications, clipboard data and input events together, so a lost segment or a large message delays everything behind it. Wireless LANs make this worse because loss and queueing delay vary widely under load \cite{liu2023wifi6, carrascosa2024mlo}.
+
+This paper describes the design, implementation and evaluation of \emph{Link}, a framework that removes both costs while remaining fully local (Fig.~\ref{fig:arch}). Its contributions are as follows.
+\begin{enumerate}
+\item \textbf{Transitive trust-on-first-use (T-TOFU) enrollment.} One short-authentication-string (SAS) confirmation with any pool member enrolls a newcomer in the whole pool; membership views are repaired by digest-driven anti-entropy, and revocation is flooded to all members (Section~\ref{sec:trust}).
+\item \textbf{Plane-separated transport.} Control, bulk and real-time traffic use a persistent TLS channel, one-shot pinned TLS channels with back-pressure, and UDP datagrams with per-session authenticated encryption, respectively (Section~\ref{sec:transport}).
+\item \textbf{A cross-platform implementation} for Windows and Android that adds a user-mode file-system mount, input injection and audio relay on top of these planes.
+\item \textbf{A reproducible evaluation} of the unmodified protocol code under network emulation, which also exposed two protocol defects and their correction (Sections~\ref{sec:eval} and~\ref{sec:security}).
+\end{enumerate}
+
+\begin{figure*}[t]
+\centering
+\input{figures/fig_architecture.tex}
+\caption{Link architecture. Each traffic class has its own plane: persistent control TLS, one-shot pinned bulk TLS, and UDP for real-time input and encrypted audio.}
+\label{fig:arch}
+\end{figure*}
+
+\section{Related Work}
+\label{sec:related}
+\textit{Vendor ecosystems and proximity protocols.} Apple Continuity and AirDrop rely on account-bound identities and proprietary radio protocols. Their continuity advertisements leak personal data \cite{celosia2020discontinued}, and the Apple Wireless Direct Link has been reverse engineered and shown to allow tracking, denial-of-service and man-in-the-middle attacks \cite{stute2019billion}. PrivateDrop repairs the contact-discovery leak of AirDrop with private set intersection \cite{heinrich2021privatedrop}. Bluetooth pairing, the other common proximity mechanism, remains exposed to key-downgrade attacks such as BLUFFS \cite{antonioli2023bluffs, casar2022ble}. Link avoids both account binding and proprietary radio layers by running over ordinary IP on the local network.
+
+\textit{Serverless LAN tools and trust establishment.} KDE Connect \cite{kdeconnect} established the model that Link builds upon: UDP discovery, a JSON packet protocol over TLS, and pairwise trust on first use. Trust on first use is also the basis of SSH host authentication, where users rarely verify fingerprints \cite{neef2022ssh}, and certificate pinning is the standard defense when a public PKI is absent \cite{pradeep2022pinning}. Syncthing lets a designated introducer device share its device list \cite{syncthingintroducer}. Link differs by making every member an introducer, by detecting divergence through a membership digest, and by propagating revocation. The design follows zero-trust principles in that the network location grants no privilege \cite{nist80207, nahar2024zerotrust}, and it complements identity-centric IoT approaches that anchor TLS in self-sovereign credentials \cite{perugini2024ssi}.
+
+\textit{Membership dissemination and transport.} Epidemic protocols spread updates by anti-entropy and rumor mongering \cite{demers1987epidemic}, and recent work adapts gossip membership to constrained edge devices \cite{daubaris2026muswim}. QUIC removes transport head-of-line blocking between streams \cite{rfc9000} and is being evaluated as the multiplexing layer of WebRTC \cite{engelbart2026quic}; Link instead separates traffic classes onto existing TLS and UDP sockets, which are available on every target platform without an extra protocol stack. Table~\ref{tab:compare} summarizes the positioning.
+
+\begin{table}[t]
+\caption{Positioning of Link Against Representative Systems}
+\label{tab:compare}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Property & KDE Connect & Apple & Quick Share & \textbf{Link} \\
+\midrule
+Cloud account needed & No & Yes & Yes$^{a}$ & \textbf{No} \\
+Ceremonies, $N$ devices & $\binom{N}{2}$ & account & account & $\mathbf{N-1}$ \\
+Pool-wide revocation & No & account & account & \textbf{Yes} \\
+Separate bulk channel & Yes & Yes & Yes & \textbf{Yes} \\
+UDP real-time input & No & n/d$^{b}$ & n/a & \textbf{Yes} \\
+Unenrolled guests & No & Yes & Yes & \textbf{Yes} \\
+\bottomrule
+\multicolumn{5}{@{}l}{\scriptsize $^{a}$``Your devices'' mode. $^{b}$Not publicly documented.}\\
+\multicolumn{5}{@{}l}{\scriptsize n/a: feature not offered.}
+\end{tabular}
+\end{table}
+
+\section{System and Threat Model}
+\label{sec:model}
+A \emph{pool} $\PP$ is the set of devices owned by one user. Each device $d_i$ has a random 128-bit identifier and a long-lived self-signed X.509 certificate $C_i$ with an RSA-2048 key $K_i$; its fingerprint is
+\begin{equation}
+f_i=\mathrm{SHA\text{-}256}(\mathrm{DER}(C_i)).
+\end{equation}
+Device $d_i$ keeps a trust store $\T_i$ of $(d_j,C_j)$ entries, encrypted at rest with the operating-system key store on the desktop. Its \emph{membership view} includes itself:
+\begin{equation}
+\V_i=\T_i\cup\{(d_i,C_i)\}.
+\end{equation}
+The pool is consistent when $\V_i=\PP$ for every member.
+
+The adversary controls the local network: it can observe, drop, delay, replay and inject packets, run its own devices and answer discovery broadcasts, but it cannot compromise the operating system of a member or read its private key. The user compares a short authentication string exactly once when a device joins. The goals are (G1) authenticity and confidentiality of control and bulk traffic, (G2) admission of new members only through a human-confirmed pairing with an existing member, (G3) eventual consistency of membership views, and (G4) timely, pool-wide revocation.
+
+\section{Transitive Trust Enrollment}
+\label{sec:trust}
+\subsection{Discovery, Connection and Pairing}
+Every device broadcasts an identity beacon every 2~s to the broadcast address of each attached subnet (UDP port 1716). On discovery, peers open a mutually authenticated TLS~1.2/1.3 connection (port 1739), which the desktop restricts to AEAD cipher suites \cite{rfc8446}. Chain validation is intentionally disabled because certificates are self-signed; instead, after the identity packet reveals the claimed $d_j$, the receiver compares the presented fingerprint with the pinned $f_j$ and closes the connection on mismatch. When two peers dial each other simultaneously, both keep the same socket without negotiation by the rule
+\begin{equation}
+\text{keep outbound}\iff d_{\mathrm{local}}<d_{\mathrm{remote}},
+\end{equation}
+evaluated lexicographically on the identifiers.
+
+Pairing a stranger is a four-state machine (not paired, requested, requested by peer, paired) with a 30~s timeout and a 30~min bound on clock skew. Both devices display
+\begin{equation}
+\mathrm{SAS}=\mathrm{Trunc}_{32}\big(\mathrm{SHA\text{-}256}(K_{\max}\,\Vert\,K_{\min}\,\Vert\,\tau)\big),
+\end{equation}
+as eight hexadecimal characters, where $K_{\max}$ and $K_{\min}$ are the two DER-encoded public keys in byte order and $\tau$ is the request timestamp. A man-in-the-middle who substitutes either key changes the string with probability $1-2^{-32}$.
+
+\subsection{Membership Views and Anti-Entropy}
+Algorithm~\ref{alg:pool} gives the per-device logic. After a confirmed pairing, both devices insert each other and broadcast their views in \texttt{pool.sync} messages. A receiver adds every unknown entry, upgrades any open connection whose presented certificate matches the newly pinned one, and rebroadcasts only when its own view changed. The rule in line~\ref{line:trusted} is essential: a view is accepted only from a peer that is already trusted over an authenticated channel, so that transitive trust never originates from a stranger.
+
+Divergence caused by partitions or lost messages is repaired by anti-entropy. Every heartbeat (2~s) carries the digest
+\begin{equation}
+H(\V)=\mathrm{Trunc}_{64}\Big(\mathrm{SHA\text{-}256}\big(\textstyle\big\Vert_{(d,C)\in\mathrm{sort}(\V)} d\,{:}\,f(C)\,{\mid}\big)\Big),
+\end{equation}
+and a trusted receiver whose own digest differs replies with its view. Because two consistent members hold the same set $\V_i=\V_j=\PP$, their digests are equal and a converged pool exchanges no synchronization traffic.
+
+\begin{algorithm}[t]
+\caption{Pool maintenance at device $d_i$}
+\label{alg:pool}
+\begin{algorithmic}[1]
+\small
+\REQUIRE trust store $\T_i$, connections with trust flags
+\STATE \textbf{on} pairing confirmed with $(d_p,C_p)$:
+\STATE \quad $\T_i\gets\T_i\cup\{(d_p,C_p)\}$; \textsc{Broadcast}$(\V_i)$
+\STATE \textbf{on} message $m$ from peer $d_s$:
+\IF{$m$ is \texttt{pool.sync} or \texttt{pool.remove} \textbf{and} $d_s$ not trusted}
+  \STATE drop $m$ \label{line:trusted}
+\ELSIF{$m=\texttt{pool.sync}(L)$}
+  \STATE $\mathit{chg}\gets\FALSE$
+  \FORALL{$(d,C)\in L$ with $d\neq d_i$ and $d\notin\T_i$}
+    \STATE $\T_i\gets\T_i\cup\{(d,C)\}$; $\mathit{chg}\gets\TRUE$
+    \STATE \textbf{if} a connection to $d$ presents $f(C)$ \textbf{then} mark it trusted
+  \ENDFOR
+  \STATE \textbf{if} $\mathit{chg}$ \textbf{then} \textsc{Broadcast}$(\V_i)$
+\ELSIF{$m=\texttt{heartbeat}(h)$ and $h\neq H(\V_i)$}
+  \STATE send $\texttt{pool.sync}(\V_i)$ to $d_s$
+\ELSIF{$m=\texttt{pool.remove}(d_x)$ and $d_x\in\T_i$}
+  \STATE $\T_i\gets\T_i\setminus\{d_x\}$; send \texttt{pair}(\textit{false}) to $d_x$; close
+  \STATE forward $m$ to every trusted peer $\notin\{d_s,d_x\}$
+\ENDIF
+\STATE \textbf{procedure} \textsc{Broadcast}$(\V)$: send $\texttt{pool.sync}(\V)$ to all trusted peers
+\end{algorithmic}
+\end{algorithm}
+
+\begin{figure}[t]
+\centering
+\input{figures/fig_sequence.tex}
+\caption{Transitive enrollment of $d_n$ through gateway $d_g$ (top) and cascaded revocation (bottom). Dashed arrows are gossip; only the first pairing needs a human.}
+\label{fig:seq}
+\end{figure}
+
+\subsection{Cascaded Revocation}
+Any member may revoke $d_x$ by sending \texttt{pool.remove} to its trusted peers and unpairing locally. Each receiver that still holds $d_x$ purges it, tells $d_x$ to unpair, closes the connection, and forwards the message to its other trusted peers (Fig.~\ref{fig:seq}). Forwarding happens only on the first removal, so duplicates die out; in a full mesh the flood costs $(N-2)^2$ messages of about 100~bytes.
+
+\subsection{Properties}
+\textit{Human effort.} Pairwise TOFU needs $E_{\mathrm{pw}}(N)=N(N-1)/2$ ceremonies to connect $N$ devices, while T-TOFU needs
+\begin{equation}
+E_{\mathrm{T}}(N)=N-1,
+\end{equation}
+one per newcomer; for $N=8$ this is 7 instead of 28.
+
+\textit{Termination and convergence.} During enrollment the views only grow and are bounded by $\PP$, and a device rebroadcasts only after a change, so each device sends at most $|\PP|$ broadcasts and gossip terminates. If the graph of trusted connections is connected, induction on the hop distance from the gateway shows that every member eventually holds $\PP$; the heartbeat digest additionally repairs any loss.
+
+\section{Plane-Separated Transport and OS Integration}
+\label{sec:transport}
+Fig.~\ref{fig:arch} shows how Link assigns each traffic class to its own plane so that a slow or lossy class cannot delay another.
+
+
+\textit{Plane 1 (control).} The persistent TLS connection carries newline-delimited JSON packets for pairing, membership, heartbeats and low-rate feature messages (notifications, battery, telephony, media and volume state). A peer silent for 5~s is declared dead.
+
+\textit{Plane 2 (bulk).} Files, clipboard images and speed tests never travel inside control packets. Following the payload model of KDE Connect \cite{kdeconnect}, the sender opens a one-shot TLS server on an OS-assigned port and announces the port in a control packet; the receiver connects and verifies the pinned fingerprint before reading (Algorithm~\ref{alg:bulk}). Link streams raw bytes in 64~KiB writes and suspends on socket back-pressure, and the Android receiver reads through a 128~KiB buffer. In field tests on the team's Wi-Fi network, replacing a single large write with this loop raised application throughput from about 80~Mbps to the roughly 220~Mbps ceiling measured for raw TCP on the same link.
+
+\begin{algorithm}[t]
+\caption{One-shot bulk transfer on Plane 2}
+\label{alg:bulk}
+\begin{algorithmic}[1]
+\small
+\REQUIRE payload $B$, pinned fingerprint $f_s$ of the sender
+\STATE \textit{Sender:} $p\gets$ listen on TLS port 0; send \texttt{payload}$(|B|,p)$ on Plane 1
+\STATE \textit{Receiver:} connect to $(\mathit{ip}_s,p)$; \textbf{if} $f(C_{\mathrm{presented}})\neq f_s$ \textbf{then} abort
+\STATE \textit{Sender:} $o\gets0$
+\WHILE{$o<|B|$}
+  \STATE $\mathit{ok}\gets$ \textsc{Write}$(B[o\,..\,o+64\,\mathrm{KiB}])$; $o\gets o+64\,\mathrm{KiB}$
+  \STATE \textbf{if not} $\mathit{ok}$ \textbf{then} wait for the \texttt{drain} event
+\ENDWHILE
+\STATE \textit{Sender:} end the stream and close the listener (one connection only)
+\end{algorithmic}
+\end{algorithm}
+
+\textit{Plane 3 (real time).} Touchpad, pen and presenter events travel as small UDP datagrams (port 1717) that are accepted only from the address of a trusted or admitted peer. A lost datagram is simply superseded by the next one, which suits relative pointer motion. Relative deltas are injected with a sub-pixel carry $c$ so that slow finger motion is not rounded away:
+\begin{equation}
+\delta_{\mathrm{int}}=\mathrm{round}(\delta+c),\qquad c\gets\delta+c-\delta_{\mathrm{int}}.
+\end{equation}
+Audio relay encodes 10~ms Opus frames \cite{rfc6716} and seals each datagram with AES-256-GCM under a per-listener key delivered over TLS. The frame layout is sequence (4~B), capture timestamp (6~B), nonce (12~B), ciphertext of a codec tag and payload, and tag (16~B), i.e., 39~bytes of overhead; a reorder buffer and the timestamps drive the playback-rate correction. The same pipeline, reversed, exposes a phone microphone to the desktop.
+
+\textit{OS integration and guests.} A WinFsp user-mode driver \cite{winfsp} mounts phone storage as a Windows drive. The driver talks to a token-protected loopback API, which reads 4~MiB chunks from the Android storage server over four pooled secure WebSocket connections, keeps a 512~MiB least-recently-used read cache and writes synchronously so that Explorer reports real progress. Unenrolled guests (Portal file transfer, audio, input) connect to dedicated ports, show a PIN derived from both public keys, and never modify any trust store.
+
+\textit{Implementation.} The desktop client uses Electron and TypeScript (about 30~k lines including the user interface) with a C\# driver; the Android client uses Capacitor and Java (about 18~k lines). Clipboard, notification, telephony, media, volume, lock, input, file and audio features were verified end to end between a Windows desktop and Android phones on a real Wi-Fi LAN.
+
+\section{Evaluation}
+\label{sec:eval}
+\subsection{Methodology}
+All experiments execute the unmodified desktop protocol modules (device manager, trust store, pairing, transport and the bulk-transfer routine), bundled for Node.js 22.17 and run on an AMD Ryzen 7 5800H with 16~GB of memory under Linux 6.8. Transport experiments run each endpoint in its own process inside a private network namespace whose loopback interface is shaped by Linux \texttt{netem} with a 1500-byte MTU, so that loss, delay and rate limits act on real kernel TCP and UDP. Trust experiments run $N$ devices with real TLS connections in one process with trust stores on tmpfs, which isolates protocol cost from storage and radio latency. They use 20 trials per full-mesh configuration and 10 per chain. The trusted-sender rule and the view digest of Section~\ref{sec:trust} are applied as harness-level patches (Section~\ref{sec:security}); the harness and raw data accompany the source code.
+
+\subsection{Enrollment, Revocation and Anti-Entropy}
+Fig.~\ref{fig:conv} reports the median time from the gateway's confirmation until every member trusts the newcomer and every connection is upgraded, and the time from a revocation until every remaining member has purged the device. A full mesh of 8 devices converged in \EnrMeshEight~ms and one of 16 devices in \EnrMeshSixteen~ms, with 95th percentiles of \EnrMeshEightPnf~ms and \EnrMeshSixteenPnf~ms. Growth is superlinear because each learner rebroadcasts its full view, giving \SyncMeshSixteen\ messages (\SyncKiBMeshSixteen~KiB) for $N=16$; a chain, where the view must travel $N-2$ hops, needed only \EnrChainSixteen~ms because it has fewer links. Revocation completed in \RevMeshSixteen~ms (full mesh, \RevMsgsMeshSixteen\ messages) and \RevChainSixteen~ms (chain) for $N=16$. The newly computed digests were identical on all members in \AllDigestsAgree\ trials. These times are far below the 2~s heartbeat, so anti-entropy serves only as a repair path.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig_convergence.pdf}
+\caption{Median convergence time versus pool size; shading extends to the 95th percentile.}
+\label{fig:conv}
+\end{figure}
+
+Table~\ref{tab:ae} compares the idle heartbeat traffic of a converged full mesh for the original digest, which the prototype computed over $\T_i$, with the view digest $H(\V_i)$. Because $\T_i$ never contains $d_i$, two members never agree, so every heartbeat exchange triggered two full view transfers, i.e., $2N(N-1)$ messages per cycle. For 16 devices that is \AEMiBSixteen~MiB every 2~s, a constant \AEMbpsSixteen~Mbps of Wi-Fi airtime, whereas the view digest sends nothing.
+
+\begin{table}[t]
+\caption{Idle Synchronization Traffic per 2\,s Heartbeat Cycle}
+\label{tab:ae}
+\centering
+\footnotesize
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+& \multicolumn{3}{c}{Digest over $\T_i$ (original)} & $H(\V_i)$ \\
+\cmidrule(lr){2-4}\cmidrule(l){5-5}
+$N$ & messages & KiB & Mbps & messages \\
+\midrule
+\AETableRows
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Bulk Plane Goodput and CPU Cost}
+Table~\ref{tab:bulk} compares Plane~2 with raw TCP without encryption, an upper bound, and with the common alternative of sending Base64 chunks inside control-channel JSON packets (B64). On unshaped loopback, where CPU is the limit, Plane~2 reached \LinkUnshapedGbps~Gbps, \UnshapedSpeedup\ times the Base64 design, at \CpuRatioUnshaped\ times lower CPU cost per GiB. On a 300~Mbps link Plane~2 delivered \LinkWifiMbps~Mbps, equal to raw TCP (\RawWifiMbps~Mbps), whereas Base64 lost \MuxWifiLossPct\,\% of the goodput to the 4/3 encoding expansion. With 0.5\,\% random loss on a 100~Mbps link, TCP loss recovery limited every method to about \LinkLossyMbps~Mbps, and the ordering was unchanged.
+
+\begin{table}[t]
+\caption{Bulk Goodput and CPU Cost of Raw TCP, Link Plane~2 and Base64 in Control Packets (B64), Mean of 3 Runs}
+\label{tab:bulk}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+& \multicolumn{3}{c}{Goodput (Mbps)} & \multicolumn{2}{c}{CPU (s/GiB)} \\
+\cmidrule(lr){2-4}\cmidrule(l){5-6}
+Link condition & Raw & Link & B64 & Link & B64 \\
+\midrule
+\BulkTableRows
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Input Latency Under Concurrent Load}
+A sender emitted pointer events at 120~Hz for 15~s while a bulk transfer saturated a 200~Mbps link with 2$\pm$1~ms delay and a 400-packet queue. Three designs were compared: Link's UDP plane, a dedicated TCP control connection with Nagle's algorithm disabled, and a single TLS stream that also carries the bulk data. Fig.~\ref{fig:lat} shows the distributions. Random loss also throttles the competing TCP bulk flow and drains the queue, so the differences under loss stem from retransmission and in-stream ordering. At 1\,\% loss the 99th-percentile latency was \InpUdpOnePnn~ms for UDP, \InpTcpOnePnn~ms for dedicated TCP and \InpMuxOnePnn~ms for the multiplexed stream; at 3\,\% loss the values were \InpUdpThreePnn, \InpTcpThreePnn\ and \InpMuxThreePnn~ms. UDP delivered \InpUdpOneDel\,\% and \InpUdpThreeDel\,\% of the events, respectively; a lost relative-motion event is superseded 8~ms later, whereas a retransmission stalls all later events. Without loss the bulk flow keeps the queue full, so UDP and dedicated TCP both reach about 20~ms at the 99th percentile (\InpUdpZeroPnn\ and \InpTcpZeroPnn~ms) and the multiplexed stream \InpMuxZeroPnn~ms; plane separation removes head-of-line blocking inside a flow but not queueing at the access point.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{fig_latency_cdf.pdf}
+\caption{Distribution of one-way input latency with a concurrent bulk transfer on a 200~Mbps link. Curves are normalized to the events sent, so a plateau below 1 indicates lost events.}
+\label{fig:lat}
+\end{figure*}
+
+\subsection{Cost of the Security Primitives}
+Computing $H(\V)$ took \PoolHashSixteen~$\mu$s for 16 members and \PoolHashSixtyFour~$\mu$s for 64, the SAS \SasUs~$\mu$s, and sealing plus opening one 10~ms audio frame with AES-256-GCM \GcmOpusUs~$\mu$s. Opus encoding and decoding of a stereo 48~kHz frame (\OpusFrameBytes~bytes) took \OpusUs~$\mu$s, so the complete audio path uses \OpusBudgetPct\,\% of one core's real-time budget.
+
+\section{Security Analysis and Limitations}
+\label{sec:security}
+\textit{G1 and G2.} Control and bulk traffic run over TLS with pinned fingerprints, so an on-path adversary who redirects traffic with ARP or DNS spoofing fails the fingerprint check. A newcomer becomes trusted only through the SAS ceremony or through a view received from an already trusted peer. An adversarial test in our harness showed why the trusted-sender rule of Algorithm~\ref{alg:pool} is necessary. The prototype processed \texttt{pool.sync} and \texttt{pool.remove} before checking whether the sender was trusted, so an unpaired device that merely opened a TLS connection could insert its own certificate and become trusted, or evict a legitimate member. With the rule applied, both attacks failed; the same guard must be placed ahead of the membership handlers on both platforms.
+
+\textit{G3 and G4.} Convergence follows from the monotone-growth argument of Section~\ref{sec:trust}, and revocation reached all members within milliseconds. Revocation is not yet sticky: a stale \texttt{pool.sync} from a partitioned member can reinstate a removed device, which signed tombstones would prevent.
+
+\textit{Limitations.} Transitive trust amplifies compromise, because a compromised member can enroll arbitrary certificates; an owner-signed membership certificate, which an earlier prototype explored with Ed25519, would bind additions to a pool key. Input datagrams are authenticated only by source address and should receive a per-session key like the audio plane. The SAS has 32 bits. The evaluation uses emulation rather than radio hardware and one process for the trust experiments, so absolute times on phones will be higher; plane separation also cannot remove access-point queueing, for which DSCP or Wi-Fi multimedia marking of Plane~3 is a natural extension. Post-quantum key exchange for the TLS planes is future work \cite{montenegro2026pq}.
+
+\section{Conclusion}
+Link shows that a household of devices can form an authenticated mesh without any cloud service while reducing human pairing effort from $N(N-1)/2$ to $N-1$ ceremonies. A sixteen-device pool enrolled a newcomer in tens of milliseconds and revoked a device in under ten, the view-inclusive digest removed idle synchronization traffic, pinned one-shot TLS channels reached raw-TCP goodput at about half the CPU cost of in-band encoding, and UDP bounded input-latency tails under loss. Future work covers signed membership with tombstones, authenticated input datagrams and Wi-Fi traffic marking.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

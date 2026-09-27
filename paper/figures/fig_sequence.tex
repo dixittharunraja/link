@@ -1,0 +1,50 @@
+% Fig. 2 -- Transitive enrollment and cascaded revocation (vector TikZ, native \columnwidth).
+\begin{tikzpicture}[
+  font=\scriptsize,
+  >={Stealth[length=1.7mm,width=1.4mm]},
+  actor/.style={draw, rounded corners=1.5pt, fill=gray!10, minimum width=2.05cm, minimum height=0.5cm,
+                align=center, font=\scriptsize\bfseries, inner sep=1pt},
+  msg/.style={->, line width=0.6pt},
+  gossip/.style={->, line width=0.6pt, densely dashed},
+  lbl/.style={inner sep=0.6pt, align=center, anchor=south},
+  note/.style={draw, fill=yellow!12, rounded corners=1pt, align=center, inner sep=1.4pt}
+]
+\def\xn{1.05} \def\xg{4.35} \def\xj{7.65} \def\ybot{-8.05}
+\node[actor] at (\xn,0) {Newcomer $d_n$};
+\node[actor] at (\xg,0) {Gateway $d_g\in\mathcal{P}$};
+\node[actor] at (\xj,0) {Member $d_j\in\mathcal{P}$};
+\foreach \x in {\xn,\xg,\xj} \draw[gray!80, line width=0.4pt] (\x,-0.25) -- (\x,\ybot);
+% ---------------- enrollment ----------------
+\draw[msg] (\xn,-0.7) -- (\xg,-0.7);
+\node[lbl] at ({(\xn+\xg)/2},-0.67) {mutual TLS, \texttt{identity}};
+\draw[msg] (\xn,-1.2) -- (\xg,-1.2);
+\node[lbl] at ({(\xn+\xg)/2},-1.17) {\texttt{pair}\{\textit{true}, $\tau$\}};
+\node[note, align=center, anchor=north] at ({(\xn+\xg)/2},-1.34) {$\mathrm{SAS}(K_n,K_g,\tau)$ on both\\user confirms once};
+\draw[msg] (\xg,-2.42) -- (\xn,-2.42);
+\node[lbl] at ({(\xn+\xg)/2},-2.39) {\texttt{pair}\{\textit{true}\}};
+\node[fill=white, inner sep=0.6pt] at (\xn,-2.72) {$\mathcal{T}_n\cup\{d_g\}$};
+\node[fill=white, inner sep=0.6pt] at (\xg,-2.72) {$\mathcal{T}_g\cup\{d_n\}$};
+\draw[gossip] (\xg,-3.22) -- (\xn,-3.22);
+\node[lbl] at ({(\xn+\xg)/2},-3.19) {\texttt{pool.sync}$(\mathcal{V}_g)$};
+\draw[gossip] (\xg,-3.22) -- (\xj,-3.22);
+\node[lbl] at ({(\xg+\xj)/2},-3.19) {\texttt{pool.sync}$(\mathcal{V}_g)$};
+\node[note, text width=1.95cm, anchor=north] at (\xj,-3.38) {pins $C_n$, no second PIN};
+\draw[msg] (\xj,-4.3) -- (\xn,-4.3);
+\node[lbl, fill=white] at ({(\xn+\xj)/2},-4.27) {\texttt{pairing-state}\{Paired\}, pinned-fingerprint check};
+\draw[gossip] (\xj,-4.8) -- (\xg,-4.8);
+\node[lbl] at ({(\xg+\xj)/2},-4.77) {\texttt{pool.sync}$(\mathcal{V}_j)$ iff $\mathcal{V}_j$ changed};
+\draw[msg, gray!60!black] (\xn,-5.3) -- (\xg,-5.3);
+\node[lbl] at ({(\xn+\xg)/2},-5.27) {\texttt{heartbeat}\{$H(\mathcal{V}_n)$\}, every 2\,s};
+\node[anchor=north, align=center, font=\scriptsize\itshape, inner sep=1pt] at ({(\xn+\xg)/2},-5.36) {mismatch $\Rightarrow$ \texttt{pool.sync}};
+% ---------------- revocation ----------------
+\draw[gray, densely dotted] (-0.05,-5.95) -- (8.75,-5.95);
+\node[fill=white, inner sep=1.5pt, font=\scriptsize\bfseries] at (\xg,-5.95) {cascaded revocation of $d_n$};
+\draw[msg, red!60!black] (\xj,-6.5) -- (\xg,-6.5);
+\node[lbl] at ({(\xg+\xj)/2},-6.47) {\texttt{pool.remove}\{$d_n$\}};
+\draw[msg, red!60!black] (\xj,-7.0) -- (\xn,-7.0);
+\node[lbl, fill=white] at ({(\xn+\xg)/2},-6.97) {\texttt{pair}\{\textit{false}\}, close};
+\draw[msg, red!60!black] (\xg,-7.5) -- (\xn,-7.5);
+\node[lbl] at ({(\xn+\xg)/2},-7.47) {\texttt{pair}\{\textit{false}\}, close};
+\node[note, text width=2.2cm, anchor=north] at (\xj,-7.15) {purge $C_n$; forward to peers $\neq$ sender, $d_n$};
+\node[anchor=north, fill=white, inner sep=1pt] at (\xn,-7.6) {stranger state};
+\end{tikzpicture}

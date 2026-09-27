@@ -1,0 +1,93 @@
+
+PAGE 3
+Device Meshes via Transitive Trust-on-First-Use
+(T-TOFU)
+Abstract—Modern multi-device environments, encompassing
+smartphones, personal computers and embedded endpoints,
+frequently demand tight local network interoperability for
+telemetry, continuous synchronization and remote peripheral
+control.
+Despite the operational demand for continuous local inter-
+operability, establishing secure and user-friendly trust across
+these endpoints remains fundamentally challenging. System
+architectures in this domain inevitably encounter the Usable-
+illustrated in Fig. 1, wherein no conventional Security Trilemma,
+architecture satisfies all three properties simultaneously:
+
+PAGE 4
+T-TOFU reconciles all three vertices.
+usability challenge by delegating trust to centralized cloud
+identity infrastructures (Apple ID, Google Accounts, Microsoft
+Entra). While this offers an effortless out-of-the-box experience,
+it mandates WAN connectivity, introduces single points of
+failure, exposes personal metadata to cloud providers and
+nearby observers [3], [4], and enforces proprietary vendor
+lock-in.
+Conversely, open-source peer-to-peer (P2P) systems (e.g.,
+KDE Connect [5], SSH-based local tooling, standard Bluetooth
+pairing [6]) adopt a Trust-on-First-Use (TOFU) model using
+self-signed cryptographic certificates or pre-shared keys. While
+these systems achieve zero-cloud privacy, they suffer from
+2 O(N ) N an human pairing bottleneck: enrolling devices
+requires
+N
+
+PAGE 5
+C B Protocol Sequence Diagram of Transitive Trust-on-First-Use (T-TOFU): A single human-gated verification between New Node and Gateway
+C transitively enrolls across the entire mesh, verified via canonical pool digest convergence (PoolHash).
+d Upon first boot, each device generates a persistent i
+cryptographic identity consisting of:
+128 ∈ {0, 1} A 128-bit identifier ID , drawn from a i
+cryptographically secure random source and stored in
+hexadecimal form.
+A self-signed X.509 certificate Cert carrying a 2048-bit i
+RSA key pair.
+A canonical certificate fingerprint:
+All inter-device communication is transported over TLS;
+version 1.3 [10] is negotiated by default and version 1.2 is the
+minimum accepted. During the TLS handshake, peer certificates
+are validated not against a public CA root, but strictly against
+pinned fingerprints stored within the local [11]. If a TrustStore
+remote device presents a certificate whose fingerprint differs
+from the stored pinned value, the connection is instantly aborted
+with an alert.
+C When an unauthenticated device initiates contact with an
+B, existing mesh member they execute an initial handshake over
+an unpinned TLS channel. To prevent active MitM interception,
+the protocol derives an ephemeral visual verification code:
+(︂ (︁ = max(K , ) Code Hex SHA-256 K B,C B C
+(︂ (︁ max(K , SHA-256 K B ∥ ∥ min(K , ) K Salt B C
+(3) )︁)︂ ∥ ∥ min(K , ) [0..7] K Salt B C where K and K denote the DER-encoded public keys of B C
+the respective endpoints, ordered byte-wise so that both sides
+compute the same value, and Salt is the timestamp of the pairing
+session. This 8-character token is displayed simultaneously on
+both physical screens. Once the human operator confirms code
+T B C equality, device registers into its active trust store , B
+T C B and registers into . C
+To maintain decentralized state agreement across all mesh
+members without a consensus leader (e.g., Raft or Paxos),
+T-TOFU defines a canonical pool representation.
+
+PAGE 6
+Because
+B heartbeats flow in both directions, does the same.
+∈ T B k Node iterates through each entry . For any A
+∈ T ∈ T / B A entry where ID , node verifies that , k B B
+auto-ingests Cert , and pins FP . k k
+B Node updates its canonical pool hash and broadcasts
+to all other currently connected link.pool.sync
+peers.
+A When a user initiates an unpair action on device targeting
+X, A device node executes the following sequence:
+T A X removes from its local and severs any active A
+sockets.
+A constructs a revocation frame, carried only over
+authenticated TLS channels:
+{︁ R = : "type" "link.pool.remove",
+{︁ : "type" : ID "deviceId" X
+}︁ : ID "deviceId" X R \ {X}. A P floods to all active connections in
+R, ∈ T j Upon receiving peer checks if ID . If present, X j
+X’s it purges certificate, recalculates its PoolHash, and
+R propagates to its remaining active neighbors.
+We implemented the complete T-TOFU protocol in Link,
+an open-source cross-platform device mesh runtime.

@@ -75,3 +75,6 @@ local.properties
 
 # JetBrains IDE settings (Android Studio, WebStorm, etc.)
 .idea/
+
+node_modules/
+desktop/node_modules/

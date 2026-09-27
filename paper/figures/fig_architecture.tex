@@ -1,0 +1,43 @@
+% Fig. 1 -- Link system architecture (vector TikZ, drawn at native \textwidth; no scaling).
+\begin{tikzpicture}[
+  font=\footnotesize,
+  >={Stealth[length=2mm,width=1.6mm]},
+  mod/.style={draw, rounded corners=1pt, fill=white, text width=3.25cm, align=center,
+              minimum height=0.9cm, inner sep=1.5pt},
+  host/.style={draw, rounded corners=2pt, fill=gray!9, inner sep=0pt},
+  hostlbl/.style={font=\footnotesize\bfseries, anchor=south, align=center, text width=3.6cm, inner sep=2pt},
+  lane/.style={<->, line width=1.0pt},
+  lbl/.style={align=center, text width=8.9cm, inner sep=0pt, anchor=south}
+]
+\def\xl{1.8}    % desktop column centre
+\def\xr{15.2}   % android column centre
+\def\ll{3.72}   % lane start
+\def\lr{13.28}  % lane end
+\foreach \y/\txt in {
+  4.8/{Plugins: clipboard, notifications, media, volume},
+  3.6/{DeviceManager, pairing, TrustStore $\mathcal{T}_i$},
+  2.4/{WinFsp user-mode file-system driver (C\#)},
+  1.2/{Win32 input injection; WASAPI capture, Opus}}
+  \node[mod] at (\xl,\y) {\txt};
+\foreach \y/\txt in {
+  4.8/{Plugins: notifications, telephony, battery, DND},
+  3.6/{DeviceManager, pairing, TrustStore $\mathcal{T}_j$},
+  2.4/{WSS storage server over SAF (4\,MiB reads)},
+  1.2/{Touchpad, pen, presenter surfaces; Opus}}
+  \node[mod] at (\xr,\y) {\txt};
+\begin{scope}[on background layer]
+  \node[host, minimum width=3.55cm, minimum height=5.15cm] (D) at (\xl,3.0) {};
+  \node[host, minimum width=3.55cm, minimum height=5.15cm] (A) at (\xr,3.0) {};
+\end{scope}
+\node[hostlbl] at (D.north) {Desktop node\\(Windows, Electron)};
+\node[hostlbl] at (A.north) {Android node\\(Capacitor, Java)};
+\draw[lane, dashed, gray!70!black] (\ll,4.55) -- (\lr,4.55);
+\node[lbl] at ({(\ll+\lr)/2},4.62) {\textbf{Discovery:} UDP broadcast on port 1716, an identity beacon every 2\,s on each subnet};
+\draw[lane, blue!65!black] (\ll,3.35) -- (\lr,3.35);
+\node[lbl] at ({(\ll+\lr)/2},3.42) {\textbf{Plane 1 (control):} persistent mutually authenticated TLS on port 1739; JSON lines for \texttt{pair}, \texttt{pool.sync}, \texttt{pool.remove}, heartbeats with digest $H(\mathcal{V}_i)$ and feature packets};
+\draw[lane, green!40!black] (\ll,2.15) -- (\lr,2.15);
+\node[lbl] at ({(\ll+\lr)/2},2.22) {\textbf{Plane 2 (bulk):} one-shot TLS server on an OS-assigned port, SHA-256 certificate pinning, 64\,KiB writes with drain back-pressure};
+\draw[lane, red!60!black] (\ll,0.95) -- (\lr,0.95);
+\node[lbl] at ({(\ll+\lr)/2},1.02) {\textbf{Plane 3 (real time):} UDP port 1717 for touchpad, pen and pointer datagrams; UDP audio as 10\,ms Opus frames sealed with AES-256-GCM};
+\node[font=\footnotesize, align=center, text width=9.2cm, anchor=north] at ({(\ll+\lr)/2},0.6) {Guest sessions (Portal file transfer, audio, input) use dedicated WSS ports behind a public-key-derived PIN and never modify $\mathcal{T}$.};
+\end{tikzpicture}

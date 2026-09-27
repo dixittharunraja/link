@@ -1,0 +1,12 @@
+{
+  "unmodified": {
+    "enrolled": true,
+    "trustedLink": true,
+    "evicted": true
+  },
+  "patched": {
+    "enrolled": false,
+    "trustedLink": false,
+    "evicted": false
+  }
+}
