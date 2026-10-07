@@ -89,7 +89,7 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.0",
     "concurrently": "^9.1.2",
-    "electron": "^43.0.0",
+    "electron": "^44.5.1",
     "electron-builder": "^26.8.1",
     "eslint": "^10.9.0",
     "eslint-plugin-react-hooks": "^7.1.1",
