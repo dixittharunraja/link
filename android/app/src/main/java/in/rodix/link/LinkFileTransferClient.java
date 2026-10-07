@@ -88,8 +88,119 @@ public class LinkFileTransferClient {
      *  yet — guest-only v1, matching the actual ask). */
     private String localDeviceName = "Guest";
 
-    public void connect(String host, int port, X509Certificate myCert, PrivateKey myKey, String token, String localDeviceName) {
+    private volatile boolean resolved = false;
+    private final java.util.List<WebSocketClient> pendingClients = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    public void connect(final String host, final int port, final X509Certificate myCert, final PrivateKey myKey, final String token, String localDeviceName) {
         this.localDeviceName = localDeviceName != null ? localDeviceName : "Guest";
+        
+        String[] hosts = host.split(",");
+        for (int i = 0; i < hosts.length; i++) {
+            hosts[i] = hosts[i].trim();
+        }
+
+        if (hosts.length <= 1) {
+            connectSingle(host.trim(), port, myCert, myKey, token);
+            return;
+        }
+
+        resolved = false;
+        pendingClients.clear();
+
+        try {
+            final SSLContext sslContext = LinkTransport.buildSslContext(myCert, myKey);
+
+            for (final String singleHost : hosts) {
+                if (singleHost.isEmpty()) continue;
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            URI uri = new URI("wss://" + singleHost + ":" + port);
+                            final WebSocketClient ws = new WebSocketClient(uri) {
+                                @Override
+                                public void onOpen(ServerHandshake handshakedata) {
+                                    synchronized (LinkFileTransferClient.this) {
+                                        if (resolved) {
+                                            try { close(); } catch (Exception ignored) {}
+                                            return;
+                                        }
+                                        resolved = true;
+                                        client = this;
+
+                                        for (WebSocketClient c : pendingClients) {
+                                            if (c != this) {
+                                                try { c.close(); } catch (Exception ignored) {}
+                                            }
+                                        }
+                                        pendingClients.clear();
+                                    }
+
+                                    Log.i(TAG, "onOpen (" + singleHost + ") — TLS handshake complete, sending join message");
+                                    if (token != null) {
+                                        sendJoin("join-token", "token", token);
+                                    } else {
+                                        computeAndReportPin(myCert);
+                                        sendJoin("join-guest", null, null);
+                                    }
+                                }
+
+                                @Override
+                                public void onMessage(String message) {
+                                    if (client == this) {
+                                        handleControlMessage(message);
+                                    }
+                                }
+
+                                @Override
+                                public void onMessage(ByteBuffer bytes) {
+                                    if (client == this) {
+                                        handleBinaryMessage(bytes);
+                                    }
+                                }
+
+                                @Override
+                                public void onClose(int code, String reason, boolean remote) {
+                                    if (client == this) {
+                                        if (activeTransfer != null) {
+                                            try { activeTransfer.out.close(); } catch (Exception ignored) {}
+                                            activeTransfer = null;
+                                        }
+                                        batchState = null;
+                                        Log.i(TAG, "onClose code=" + code + " reason=" + reason + " remote=" + remote);
+                                        if (code == 1000 || code == 1001) {
+                                            listener.onEnded();
+                                        } else {
+                                            listener.onClosed(reason != null && !reason.isEmpty() ? reason : ("code " + code));
+                                        }
+                                    }
+                                }
+
+                                @Override
+                                public void onError(Exception ex) {
+                                    if (client == this) {
+                                        Log.e(TAG, "onError (" + singleHost + ")", ex);
+                                        listener.onError(ex.getMessage());
+                                    }
+                                }
+                            };
+
+                            ws.setSocketFactory(sslContext.getSocketFactory());
+                            ws.setConnectionLostTimeout(10);
+                            pendingClients.add(ws);
+                            ws.connect();
+                        } catch (Exception e) {
+                            Log.w(TAG, "Failed to start connection attempt to " + singleHost, e);
+                        }
+                    }
+                }).start();
+            }
+        } catch (Exception e) {
+            listener.onError("Failed to initialize TLS: " + e.getMessage());
+        }
+    }
+
+    private void connectSingle(String host, int port, X509Certificate myCert, PrivateKey myKey, String token) {
         try {
             URI uri = new URI("wss://" + host + ":" + port);
             SSLContext sslContext = LinkTransport.buildSslContext(myCert, myKey);
@@ -139,6 +250,7 @@ public class LinkFileTransferClient {
                 }
             };
             client.setSocketFactory(sslContext.getSocketFactory());
+            client.setConnectionLostTimeout(10);
             client.connect();
         } catch (Exception e) {
             listener.onError("Failed to connect: " + e.getMessage());

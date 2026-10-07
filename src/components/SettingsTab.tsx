@@ -3,6 +3,7 @@ import { PERMISSION_REASONS } from '../utils/permission-reasons';
 import { ModalCloseButton } from './DialogCard';
 import { DeviceIcon } from './DeviceIcon';
 import ToggleRow from './ToggleRow';
+import { checkForUpdates, CURRENT_VERSION, UpdateCheckResult } from '../utils/updater';
 
 interface SettingsTabProps {
   deviceName: string;
@@ -48,6 +49,20 @@ const SettingsTab: React.FC<SettingsTabProps> = ({
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameInput, setRenameInput] = useState(deviceName);
   const [showBlocklistModal, setShowBlocklistModal] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
+
+  const handleCheckUpdate = async () => {
+    setCheckingUpdate(true);
+    try {
+      const res = await checkForUpdates();
+      setUpdateResult(res);
+      setShowUpdateModal(true);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 
   const handleRenameSave = () => {
     const trimmed = renameInput.trim();
@@ -63,17 +78,19 @@ const SettingsTab: React.FC<SettingsTabProps> = ({
       <div className="card">
         <div className="card-title">Device Identity</div>
         {isRenaming ? (
-          <div className="flex-row">
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
             <input
               type="text"
               value={renameInput}
               onChange={(e) => setRenameInput(e.target.value)}
-              style={{ width: '180px' }}
+              style={{ flex: '1 1 180px', minWidth: 0 }}
             />
-            <button onClick={handleRenameSave}>Save</button>
-            <button onClick={() => setIsRenaming(false)} style={{ background: 'transparent' }}>
-              Cancel
-            </button>
+            <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+              <button onClick={handleRenameSave} style={{ whiteSpace: 'nowrap', padding: '10px 16px' }}>Save</button>
+              <button onClick={() => setIsRenaming(false)} style={{ background: 'transparent', whiteSpace: 'nowrap', padding: '10px 16px' }}>
+                Cancel
+              </button>
+            </div>
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -200,6 +217,52 @@ const SettingsTab: React.FC<SettingsTabProps> = ({
         </div>
       </div>
 
+      {/* About & Version Update */}
+      <div className="card">
+        <div className="card-title">About & Updates</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}>
+            <div>
+              <div style={{ fontSize: '13.5px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span>Link</span>
+                <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '12px', background: 'rgba(0, 155, 213, 0.15)', color: 'var(--accent-color)', fontWeight: 700 }}>
+                  v{CURRENT_VERSION}
+                </span>
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                Secure peer-to-peer local network device suite. Zero cloud, zero relay.
+              </div>
+            </div>
+            <button
+              onClick={handleCheckUpdate}
+              disabled={checkingUpdate}
+              style={{
+                padding: '6px 14px',
+                fontSize: '12.5px',
+                background: 'var(--accent-color)',
+                color: 'var(--btn-primary-text)',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: checkingUpdate ? 'not-allowed' : 'pointer',
+                fontWeight: 600,
+                opacity: checkingUpdate ? 0.7 : 1,
+              }}
+            >
+              {checkingUpdate ? 'Checking…' : 'Check for Updates'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Update Info Modal */}
+      {showUpdateModal && updateResult && (
+        <UpdateModal
+          result={updateResult}
+          isMobile={!!isMobile}
+          onClose={() => setShowUpdateModal(false)}
+        />
+      )}
+
       {/* Blocklist Modal Popup */}
       {showBlocklistModal && (
         <BlocklistModal onClose={() => setShowBlocklistModal(false)} />
@@ -288,14 +351,7 @@ const SettingsTab: React.FC<SettingsTabProps> = ({
                         type="checkbox"
                         checked={isGranted}
                         onChange={() => {
-                          // Device Admin toggles BOTH ways in-app: requestDeviceAdmin() grants
-                          // when off and deactivates (removeActiveAdmin) when on. Routing it here
-                          // regardless of state is what lets a user actually turn it off — the
-                          // required step before Android will allow uninstalling Link. Every other
-                          // permission is revoked through the OS's own app-settings page instead.
-                          if (key === 'deviceAdmin') {
-                            onRequestMobilePermission?.(key);
-                          } else if (!isGranted && onRequestMobilePermission) {
+                          if (!isGranted && onRequestMobilePermission) {
                             onRequestMobilePermission(key);
                           } else {
                             window.link?.openAppSettings();
@@ -429,4 +485,178 @@ const BlocklistModal: React.FC<BlocklistModalProps> = ({ onClose }) => {
   );
 };
 
+interface UpdateModalProps {
+  result: UpdateCheckResult;
+  isMobile: boolean;
+  onClose: () => void;
+}
+
+const UpdateModal: React.FC<UpdateModalProps> = ({ result, isMobile, onClose }) => {
+  const [downloading, setDownloading] = React.useState(false);
+  const [downloadStatus, setDownloadStatus] = React.useState<string | null>(null);
+
+  const release = result.release;
+  const targetAsset = release?.assets?.find((a) => {
+    if (isMobile) return a.name.endsWith('.apk');
+    return a.name.endsWith('.exe') || a.name.endsWith('.deb');
+  }) || release?.assets?.[0];
+
+  const handleDownload = () => {
+    if (!targetAsset) {
+      if (release?.htmlUrl) {
+        if (window.link?.openExternal) {
+          window.link.openExternal(release.htmlUrl);
+        } else {
+          window.open(release.htmlUrl, '_blank');
+        }
+      }
+      return;
+    }
+
+    setDownloading(true);
+    setDownloadStatus('Starting download…');
+
+    try {
+      if (window.link?.openExternal) {
+        window.link.openExternal(targetAsset.browser_download_url);
+      } else {
+        window.open(targetAsset.browser_download_url, '_blank');
+      }
+      setDownloadStatus('Download opened in browser / package installer.');
+    } catch (err: any) {
+      setDownloadStatus('Failed to start download: ' + err.message);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <div className="modal">
+      <div
+        className="modal-content"
+        style={{
+          width: '440px',
+          textAlign: 'left',
+          background: 'var(--modal-bg)',
+          border: '1px solid var(--border-color)',
+          boxShadow: '0 25px 60px var(--modal-shadow)',
+          padding: '28px',
+          maxHeight: '85vh',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '16px',
+          overflow: 'hidden',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+          <div style={{ fontSize: '18px', fontWeight: 800 }}>Software Update</div>
+          <ModalCloseButton onClose={onClose} />
+        </div>
+
+        {result.error ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ color: '#ef4444', fontSize: '13px' }}>
+              {result.error}
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+              Current version: <strong>v{result.currentVersion}</strong>
+            </div>
+          </div>
+        ) : result.hasUpdate ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div style={{
+                width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(16, 185, 129, 0.15)',
+                color: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
+              }}>
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2v14m-5-5l5 5 5-5" />
+                  <path d="M2 19h20" />
+                </svg>
+              </div>
+              <div>
+                <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-color)' }}>
+                  A new version is available!
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                  v{result.currentVersion} → <strong>v{result.latestVersion}</strong>
+                </div>
+              </div>
+            </div>
+
+            {release?.body && (
+              <div style={{
+                background: 'var(--input-bg)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '8px',
+                padding: '12px',
+                fontSize: '12px',
+                lineHeight: '1.5',
+                color: 'var(--text-muted)',
+                maxHeight: '140px',
+                overflowY: 'auto',
+                whiteSpace: 'pre-wrap'
+              }}>
+                {release.body}
+              </div>
+            )}
+
+            {targetAsset && (
+              <div style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                Package: <strong>{targetAsset.name}</strong> ({(targetAsset.size / (1024 * 1024)).toFixed(1)} MB)
+              </div>
+            )}
+
+            {downloadStatus && (
+              <div style={{ fontSize: '12px', color: 'var(--accent-color)' }}>{downloadStatus}</div>
+            )}
+
+            <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+              <button
+                onClick={onClose}
+                style={{ flex: 1, padding: '10px', background: 'transparent', border: '1px solid var(--border-color)', borderRadius: '6px', cursor: 'pointer', fontWeight: 600, color: 'var(--text-color)' }}
+              >
+                Later
+              </button>
+              <button
+                onClick={handleDownload}
+                disabled={downloading}
+                style={{ flex: 1.4, padding: '10px', background: 'var(--accent-color)', color: 'var(--btn-primary-text)', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 700 }}
+              >
+                {downloading ? 'Downloading…' : isMobile ? 'Download APK' : 'Download Update'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', alignItems: 'center', padding: '16px 0', textAlign: 'center' }}>
+            <div style={{
+              width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(16, 185, 129, 0.15)',
+              color: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center'
+            }}>
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+            </div>
+            <div>
+              <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-color)' }}>
+                You're up to date!
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                Link v{result.currentVersion} is currently the latest version.
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              style={{ marginTop: '8px', padding: '8px 20px', background: 'var(--accent-color)', color: 'var(--btn-primary-text)', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
+            >
+              OK
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 export default SettingsTab;
+

@@ -1,12 +1,20 @@
 import React from 'react';
+import LocalDeviceCard from './shared/LocalDeviceCard';
 
 interface SidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   isMobile?: boolean;
+  localIdentity?: {
+    deviceId: string;
+    deviceName: string;
+    ipAddress?: string;
+    ipAddresses?: string[];
+    deviceType?: string;
+  };
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isMobile }) => {
+const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isMobile, localIdentity }) => {
   const navItems = [
     {
       id: 'devices',
@@ -57,7 +65,6 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isMobile }) 
 
   return (
     <div className="sidebar">
-      
       <ul className="nav-list">
         {navItems.map(item => (
           <li
@@ -70,6 +77,17 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isMobile }) 
           </li>
         ))}
       </ul>
+
+      {localIdentity && (
+        <div className="sidebar-footer">
+          <LocalDeviceCard
+            deviceName={localIdentity.deviceName}
+            ipAddress={localIdentity.ipAddress}
+            ipAddresses={localIdentity.ipAddresses}
+            style={{ width: '100%', boxSizing: 'border-box' }}
+          />
+        </div>
+      )}
     </div>
   );
 };

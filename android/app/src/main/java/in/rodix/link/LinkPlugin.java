@@ -4,6 +4,7 @@ package in.rodix.link;
 // desktop's IPC bridge (preload.ts <-> main.ts) in spirit: the WebView never touches sockets
 // directly, it only calls plugin methods and listens for events.
 
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -59,7 +60,7 @@ public class LinkPlugin extends Plugin {
     // removed entirely rather than left toggled on here.
     private static final java.util.Set<String> ENABLED_PLUGINS = new java.util.HashSet<>(java.util.Arrays.asList(
         "Clipboard", "Battery", "Flashlight", "DND", "Connectivity", "Lock", "Notification", "RunCommand",
-        "Presenter", "Digitizer", "Touchpad", "Telephony", "MPRIS", "Joystick"
+        "Presenter", "Digitizer", "Touchpad", "Telephony", "MPRIS", "Joystick", "RemoteControl"
     ));
     // Package-private (not private) so LinkSendClipboard, in the same package, can reuse it.
     static boolean isEnabled(String name) {
@@ -157,8 +158,11 @@ public class LinkPlugin extends Plugin {
     // use the existing trusted connection instead (handleWalkieTalkieSignalPacket above).
     private static LinkWalkieTalkieServer sWalkieTalkieGuestServer;
     private static LinkWalkieTalkieClient sWalkieTalkieGuestClient;
+    private static LinkJoystickServer sJoystickServer;
     private static LinkJoystickClient sJoystickClient;
+    private static LinkInputGuestServer sInputGuestServer;
     private static LinkInputGuestClient sInputGuestClient;
+    private static LinkRemoteControlServer sRemoteControlServer;
     private LinkPacket lastTelephonyPacket = null;
     private String lastCallState = "";
     private String lastIncomingNumber = null;
@@ -240,9 +244,9 @@ public class LinkPlugin extends Plugin {
         }
     };
 
-    // App-level heartbeat/liveness cycle — detects a dead peer within ~5s.
-    private static final long HEARTBEAT_INTERVAL_MS = 2000;
-    private static final long HEARTBEAT_TIMEOUT_MS = 5000;
+    // App-level heartbeat/liveness cycle — 5s idle interval with 15s timeout for mobile battery efficiency.
+    private static final long HEARTBEAT_INTERVAL_MS = 5000;
+    private static final long HEARTBEAT_TIMEOUT_MS = 15000;
     private final android.os.Handler heartbeatHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable heartbeatRunnable = new Runnable() {
         @Override
@@ -362,6 +366,7 @@ public class LinkPlugin extends Plugin {
                 } catch (Exception ignored) {}
                 sInputUdpSocket = null;
             }
+
 
             myIdentity = LinkIdentity.loadOrCreate(getContext(), LinkCapabilitiesSchema.CAPABILITIES, LinkCapabilitiesSchema.CAPABILITIES);
             android.util.Log.i(TAG, "identity loaded: " + myIdentity.deviceId + " / " + myIdentity.deviceName);
@@ -591,7 +596,15 @@ public class LinkPlugin extends Plugin {
                         }
                     } else if (packet.type != null && packet.type.startsWith("link.walkietalkie.")) {
                         handleWalkieTalkieSignalPacket(deviceId, packet);
-                    } else if ("link.fs.response".equals(packet.type)) {
+                    } else if ("link.remotecontrol.signal".equals(packet.type)) {
+                        handleRemoteControlSignalPacket(deviceId, packet);
+                    } else if ("link.remotecontrol.stream".equals(packet.type)) {
+                        handleRemoteControlStreamPacket(deviceId, packet);
+                    } else if ("link.remotecontrol.input".equals(packet.type)) {
+                        handleRemoteControlInputPacket(deviceId, packet);
+                    } else if ("link.fs.request".equals(packet.type)) {
+                          handleFsRequestPacket(deviceId, packet);
+                      } else if ("link.fs.response".equals(packet.type)) {
                         handleFsResponsePacket(packet);
                     }
                 }
@@ -727,7 +740,10 @@ public class LinkPlugin extends Plugin {
                                 lastTelephonyPacket = np;
                                 broadcastToPermittedPeers("telephony", np);
                             } else if (android.telephony.TelephonyManager.EXTRA_STATE_OFFHOOK.equals(state)) {
-                                LinkPacket np = LinkTelephony.createCallPacket("talking", number, contactName, contactPhoto);
+                                String talkingNumber = number != null ? number : (previousIncomingNumber != null ? previousIncomingNumber : lastIncomingNumber);
+                                String talkingContact = LinkTelephony.lookupContactName(getContext(), talkingNumber);
+                                String talkingPhoto = LinkTelephony.lookupContactPhotoBase64(getContext(), talkingNumber);
+                                LinkPacket np = LinkTelephony.createCallPacket("talking", talkingNumber, talkingContact, talkingPhoto);
                                 lastTelephonyPacket = np;
                                 broadcastToPermittedPeers("telephony", np);
                             } else if (android.telephony.TelephonyManager.EXTRA_STATE_IDLE.equals(state)) {
@@ -822,7 +838,11 @@ public class LinkPlugin extends Plugin {
 
             startInputUdpServer();
 
-            discoveryWatcher = new LinkDiscovery.Watcher(getContext(), myIdentity, (ip, peer) -> {
+            String myFingerprint = "";
+            try {
+                myFingerprint = LinkTls.fingerprint(tls.certificate);
+            } catch (Exception ignored) {}
+            discoveryWatcher = new LinkDiscovery.Watcher(getContext(), myIdentity, myFingerprint, (ip, peer) -> {
                 if (LinkBlocklist.isBlocked(getContext(), peer.deviceId) || LinkBlocklist.isBlocked(getContext(), ip)) {
                     return;
                 }
@@ -911,13 +931,13 @@ public class LinkPlugin extends Plugin {
             discoveryWatcher.start(this.settings.discoveryVisibility);
             sDiscoveryWatcher = discoveryWatcher;
 
-            // Periodic trusted reconnect: attempt to connect to all trusted devices at their last known IP,
-            // every 10s. Works even when visibility is OFF and therefore no UDP broadcasts are sent.
+
+
+            // On-demand trusted reconnect: attempt to connect to all trusted devices at startup / on demand.
             this.trustedReconnectRunnable = new Runnable() {
                 @Override
                 public void run() {
                     attemptTrustedReconnects();
-                    trustedReconnectHandler.postDelayed(this, 10000);
                 }
             };
             trustedReconnectHandler.removeCallbacksAndMessages(null);
@@ -1027,6 +1047,10 @@ public class LinkPlugin extends Plugin {
     protected void handleOnResume() {
         super.handleOnResume();
         notifyListeners("appResumed", new JSObject());
+        if (discoveryWatcher != null) {
+            discoveryWatcher.broadcastNow();
+        }
+        attemptTrustedReconnects();
     }
 
     // Each packet type gets its own private handler below (previously one 290-line if-else chain
@@ -1149,6 +1173,7 @@ public class LinkPlugin extends Plugin {
         String contactName = packet.body.has("contactName") ? packet.body.optString("contactName") : null;
         String iconBase64 = packet.body.has("iconBase64") ? packet.body.optString("iconBase64") : null;
         LinkTelephony.showRemoteCallNotification(getContext(), deviceId, effectiveEvent, phoneNumber, contactName, iconBase64);
+        LinkPauseMusic.onCallStateChanged(getContext(), effectiveEvent, isCancel);
     }
 
     private void handleTelephonyRequestPacket(String deviceId, LinkPacket packet) {
@@ -1303,6 +1328,70 @@ public class LinkPlugin extends Plugin {
             service.injectDigitizerTouch(px, py, touching));
     }
 
+    private void handleRemoteControlSignalPacket(String deviceId, LinkPacket packet) {
+        JSObject data = new JSObject();
+        data.put("deviceId", deviceId);
+        try {
+            data.put("signal", new JSObject(packet.body.toString()));
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed parsing remote control signal json", e);
+        }
+        notifyListeners("remoteControlSignalReceived", data);
+    }
+
+    private void handleRemoteControlStreamPacket(String deviceId, LinkPacket packet) {
+        JSObject data = new JSObject();
+        data.put("deviceId", deviceId);
+        try {
+            data.put("frame", new JSObject(packet.body.toString()));
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed parsing remote control frame json", e);
+        }
+        notifyListeners("remoteControlStreamReceived", data);
+    }
+
+    private void handleRemoteControlInputPacket(String deviceId, LinkPacket packet) {
+        if (!LinkDevicePermissions.check(getContext(), deviceId, "remotecontrol")) {
+            android.util.Log.i(TAG, "Blocked Remote Control input from " + deviceId + " (Permission disabled)");
+            return;
+        }
+        LinkAccessibilityService service = LinkAccessibilityService.getInstance();
+        if (service == null) return;
+
+        try {
+            org.json.JSONObject body = packet.getBody();
+            String action = body.optString("action");
+            android.util.DisplayMetrics dm = getContext().getResources().getDisplayMetrics();
+
+            if ("tap".equals(action) || "click".equals(action)) {
+                double nx = body.optDouble("x", 0.5);
+                double ny = body.optDouble("y", 0.5);
+                float px = (float) (nx * dm.widthPixels);
+                float py = (float) (ny * dm.heightPixels);
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                    service.injectTap(px, py);
+                });
+            } else if ("scroll".equals(action) || "swipe".equals(action)) {
+                double sx = body.optDouble("startX", 0.5) * dm.widthPixels;
+                double sy = body.optDouble("startY", 0.5) * dm.heightPixels;
+                double ex = body.optDouble("endX", 0.5) * dm.widthPixels;
+                double ey = body.optDouble("endY", 0.5) * dm.heightPixels;
+                long dur = body.optLong("duration", 100);
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                    service.injectScroll((float) sx, (float) sy, (float) ex, (float) ey, dur);
+                });
+            } else if ("text".equals(action)) {
+                String text = body.optString("text", "");
+                LinkRemoteInput.injectText(text);
+            } else if ("key".equals(action)) {
+                String key = body.optString("key", "");
+                LinkRemoteInput.injectSpecialKey(getContext(), key);
+            }
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed handling remote control input packet", e);
+        }
+    }
+
     private void handleLockPacket(String deviceId, LinkPacket packet) {
         boolean isLocked = packet.body.optBoolean("isLocked", false);
         android.util.Log.i(TAG, "LOCK RECEIVED: locked=" + isLocked);
@@ -1322,21 +1411,16 @@ public class LinkPlugin extends Plugin {
 
     private void handleLockRequestPacket(String deviceId, LinkPacket packet) {
         if (!LinkDevicePermissions.check(getContext(), deviceId, "lock")) {
-            android.util.Log.i(TAG, "Blocked Lock request from " + deviceId + " (Permission disabled)");
+            android.util.Log.w(TAG, "Blocked lock request from " + deviceId + " — permission denied");
             return;
         }
-        boolean setLocked = packet.body.optBoolean("setLocked", false);
-        if (setLocked) {
-            boolean res = LinkLock.lock(getContext());
-            deviceManager.sendTo(deviceId, LinkLock.createLockPacket(getContext(), res));
-        } else {
-            // Either an explicit status query, or (defensively) a setLocked:false "unlock"
-            // request — no mainstream OS exposes a way to unlock a screen without the user's
-            // real credentials, so there is nothing to do for that case. Always reply with the
-            // REAL current state instead of silently ignoring it, which previously left the
-            // requester's optimistic "unlocked" UI permanently stuck out of sync.
-            deviceManager.sendTo(deviceId, LinkLock.createLockPacket(getContext(), null));
+
+        Boolean lockResult = null;
+        if (packet.body != null && packet.body.optBoolean("setLocked", false)) {
+            lockResult = LinkLock.lockDevice();
+            android.util.Log.i(TAG, "Remote lock executed: success=" + lockResult);
         }
+        deviceManager.sendTo(deviceId, LinkLock.createLockPacket(getContext(), lockResult));
     }
 
     private void handleRenameRequestPacket(String deviceId, LinkPacket packet) {
@@ -2467,6 +2551,136 @@ public class LinkPlugin extends Plugin {
         call.resolve();
     }
 
+    // ===== Remote Control =====
+    @PluginMethod
+    public void sendRemoteControlSignal(PluginCall call) {
+        String deviceId = call.getString("deviceId");
+        JSObject signalObj = call.getObject("signal");
+        if (deviceId == null || signalObj == null || deviceManager == null) {
+            call.reject("Missing arguments");
+            return;
+        }
+        try {
+            JSONObject body = new JSONObject(signalObj.toString());
+            deviceManager.sendTo(deviceId, new LinkPacket("link.remotecontrol.signal", body));
+            call.resolve();
+        } catch (Exception e) {
+            call.reject(e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void sendRemoteControlInput(PluginCall call) {
+        String deviceId = call.getString("deviceId");
+        JSObject inputObj = call.getObject("input");
+        if (deviceId == null || inputObj == null || deviceManager == null) {
+            call.reject("Missing arguments");
+            return;
+        }
+        try {
+            JSONObject body = new JSONObject(inputObj.toString());
+            deviceManager.sendTo(deviceId, new LinkPacket("link.remotecontrol.input", body));
+            call.resolve();
+        } catch (Exception e) {
+            call.reject(e.getMessage());
+        }
+    }
+
+    private String pendingRemoteControlDeviceId = null;
+
+    @PluginMethod
+    public void requestRemoteControlHost(PluginCall call) {
+        pendingRemoteControlDeviceId = call.getString("deviceId");
+        android.util.Log.i(TAG, "requestRemoteControlHost called for device: " + pendingRemoteControlDeviceId);
+
+        if (sRemoteControlServer != null && sRemoteControlServer.isRunning()) {
+            android.util.Log.i(TAG, "Remote control host is already running, resuming active session without re-prompting");
+            JSObject ret = new JSObject();
+            ret.put("granted", true);
+            call.resolve(ret);
+            return;
+        }
+
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+            try {
+                launchMediaProjectionConsentForRemoteControl(call);
+            } catch (Exception e) {
+                android.util.Log.e(TAG, "Failed launching MediaProjection consent for remote control", e);
+                JSObject ret = new JSObject();
+                ret.put("granted", false);
+                ret.put("error", e.getMessage());
+                call.resolve(ret);
+            }
+        });
+    }
+
+    private void launchMediaProjectionConsentForRemoteControl(PluginCall call) {
+        android.media.projection.MediaProjectionManager mgr =
+            (android.media.projection.MediaProjectionManager) getContext().getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE);
+        if (mgr == null) {
+            android.util.Log.e(TAG, "MediaProjectionManager is null");
+            JSObject ret = new JSObject();
+            ret.put("granted", false);
+            ret.put("error", "MediaProjectionManager unavailable");
+            call.resolve(ret);
+            return;
+        }
+        android.content.Intent intent = mgr.createScreenCaptureIntent();
+        startActivityForResult(call, intent, "onMediaProjectionResultRemoteControl");
+    }
+
+    @com.getcapacitor.annotation.ActivityCallback
+    private void onMediaProjectionResultRemoteControl(PluginCall call, androidx.activity.result.ActivityResult result) {
+        if (call == null) return;
+        android.util.Log.i(TAG, "onMediaProjectionResultRemoteControl: resultCode=" + result.getResultCode());
+        if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null) {
+            JSObject ret = new JSObject();
+            ret.put("granted", false);
+            ret.put("error", "Screen capture permission was denied");
+            call.resolve(ret);
+            return;
+        }
+
+        try {
+            if (sRemoteControlServer != null) {
+                sRemoteControlServer.stop();
+                sRemoteControlServer = null;
+            }
+
+            android.media.projection.MediaProjectionManager mgr =
+                (android.media.projection.MediaProjectionManager) getContext().getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE);
+            android.media.projection.MediaProjection projection = mgr.getMediaProjection(result.getResultCode(), result.getData());
+
+            sRemoteControlServer = new LinkRemoteControlServer(
+                getContext(),
+                projection,
+                pendingRemoteControlDeviceId,
+                deviceManager
+            );
+            sRemoteControlServer.start();
+
+            JSObject ret = new JSObject();
+            ret.put("granted", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed initializing remote control server", e);
+            JSObject ret = new JSObject();
+            ret.put("granted", false);
+            ret.put("error", e.getMessage());
+            call.resolve(ret);
+        }
+    }
+
+    @PluginMethod
+    public void stopRemoteControlHost(PluginCall call) {
+        android.util.Log.i(TAG, "stopRemoteControlHost called");
+        if (sRemoteControlServer != null) {
+            sRemoteControlServer.stop();
+            sRemoteControlServer = null;
+        }
+        call.resolve();
+    }
+
     // ===== Portal Mode (one-time file transfer to an untrusted/unpaired device) =====
     // Guest-only for v1, matching the actual ask — mirrors desktop's main.ts scoping exactly (see
     // that file's Portal Mode section comment). LinkPortalTransferServer/Client both already
@@ -2974,36 +3188,6 @@ public class LinkPlugin extends Plugin {
         call.resolve();
     }
 
-    @PluginMethod
-    public void checkDeviceAdmin(PluginCall call) {
-        JSObject ret = new JSObject();
-        ret.put("active", LinkLock.isAdminActive(getContext()));
-        call.resolve(ret);
-    }
-
-    @PluginMethod
-    public void requestDeviceAdmin(PluginCall call) {
-        // Toggling this off when already active: re-firing ACTION_ADD_DEVICE_ADMIN for an
-        // already-active admin doesn't lead anywhere useful (no revoke UI), so deactivate directly
-        // instead — see LinkLock.deactivate()'s comment for why that's safe to do with no prompt.
-        if (LinkLock.isAdminActive(getContext())) {
-            LinkLock.deactivate(getContext());
-            call.resolve();
-            return;
-        }
-        android.content.ComponentName cn = new android.content.ComponentName(getContext(), LinkDeviceAdminReceiver.class);
-        android.content.Intent intent = new android.content.Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN);
-        intent.putExtra(android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN, cn);
-        intent.putExtra(android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Enables remote locking of your device from paired PCs or mobile devices.");
-        if (getActivity() != null) {
-            getActivity().startActivity(intent);
-        } else {
-            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
-            getContext().startActivity(intent);
-        }
-        call.resolve();
-    }
-
     // Android's own Wi-Fi Hotspot (tethering) always brings its interface up on this subnet — a
     // long-standing AOSP default, distinct from Windows' own 192.168.137.x ICS default (see
     // desktop main.ts's WINDOWS_HOTSPOT_SUBNET_PREFIX for that side of the same class of bug).
@@ -3013,34 +3197,47 @@ public class LinkPlugin extends Plugin {
     // route to.
     private static final String ANDROID_HOTSPOT_SUBNET_PREFIX = "192.168.43.";
 
-    /** Lower = tried first — mirrors desktop main.ts's localIpPriority. */
+    /** Lower = prioritized as primary display / default bind.
+     *  Tier 0: Physical Wi-Fi / WLAN adapters
+     *  Tier 1: Hotspot / Tethering subnets
+     *  Tier 2: Other LAN interfaces */
     private static int localIpPriority(String address, String ifaceNameLower) {
-        if (address.startsWith(ANDROID_HOTSPOT_SUBNET_PREFIX)) return 0;
-        if (ifaceNameLower.contains("wlan") || ifaceNameLower.contains("wifi")) return 1;
+        if (ifaceNameLower.contains("wlan") || ifaceNameLower.contains("wifi") || ifaceNameLower.contains("eth")) return 0;
+        if (address.startsWith(ANDROID_HOTSPOT_SUBNET_PREFIX)) return 1;
         return 2;
     }
 
-    private String getLocalIpAddress() {
+    private java.util.List<String> getAllLocalIpAddresses() {
+        java.util.List<String> ips = new java.util.ArrayList<>();
         try {
-            String best = null;
-            int bestPriority = Integer.MAX_VALUE;
-            for (java.net.NetworkInterface intf : java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())) {
+            java.util.List<java.net.NetworkInterface> interfaces = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces());
+            for (java.net.NetworkInterface intf : interfaces) {
+                if (intf.isLoopback() || !intf.isUp()) continue;
                 String lowerName = intf.getName() == null ? "" : intf.getName().toLowerCase();
                 for (java.net.InetAddress addr : java.util.Collections.list(intf.getInetAddresses())) {
                     if (addr.isLoopbackAddress() || !(addr instanceof java.net.Inet4Address)) continue;
-                    int priority = localIpPriority(addr.getHostAddress(), lowerName);
-                    if (priority < bestPriority) {
-                        bestPriority = priority;
-                        best = addr.getHostAddress();
-                        if (bestPriority == 0) return best; // can't do better than the hotspot subnet
+                    String ip = addr.getHostAddress();
+                    if (ip != null && !ip.isEmpty() && !ips.contains(ip)) {
+                        if (localIpPriority(ip, lowerName) <= 1) {
+                            ips.add(0, ip); // high-priority wifi/hotspot first
+                        } else {
+                            ips.add(ip);
+                        }
                     }
                 }
             }
-            if (best != null) return best;
         } catch (Exception ex) {
-            android.util.Log.e(TAG, "Error getting IP address", ex);
+            android.util.Log.e(TAG, "Error getting all IP addresses", ex);
         }
-        return "127.0.0.1";
+        if (ips.isEmpty()) {
+            ips.add("127.0.0.1");
+        }
+        return ips;
+    }
+
+    private String getLocalIpAddress() {
+        java.util.List<String> all = getAllLocalIpAddresses();
+        return all.isEmpty() ? "127.0.0.1" : all.get(0);
     }
 
     @Override
@@ -3074,7 +3271,13 @@ public class LinkPlugin extends Plugin {
         data.put("deviceId", myIdentity.deviceId);
         data.put("deviceName", myIdentity.deviceName);
         data.put("deviceType", myIdentity.deviceType);
-        data.put("ipAddress", getLocalIpAddress());
+        java.util.List<String> allIps = getAllLocalIpAddresses();
+        data.put("ipAddress", allIps.isEmpty() ? "127.0.0.1" : allIps.get(0));
+        com.getcapacitor.JSArray arr = new com.getcapacitor.JSArray();
+        for (String ip : allIps) {
+            arr.put(ip);
+        }
+        data.put("ipAddresses", arr);
         call.resolve(data);
     }
 
@@ -3667,7 +3870,10 @@ public class LinkPlugin extends Plugin {
     @PluginMethod
     public void sendPresenterStop(PluginCall call) {
         String deviceId = call.getString("deviceId");
-        deviceManager.sendTo(deviceId, LinkPresenter.createStopPacket());
+        if (deviceId != null) {
+            deviceManager.sendTo(deviceId, LinkPresenter.createStopPacket());
+            sendUdpMessage(deviceId, "pstop");
+        }
         call.resolve();
     }
 
@@ -3966,7 +4172,7 @@ public class LinkPlugin extends Plugin {
                     notifyListeners("joystickHelloAck", data);
                 }
             });
-            LinkTls.TlsIdentity tls = LinkTls.loadOrCreate(getContext(), myIdentity.deviceId);
+            LinkTls.TlsIdentity tls = LinkTls.loadOrCreate(getContext(), myIdentity != null ? myIdentity.deviceId : "device");
             sJoystickClient.connect(host, LinkTransport.JOYSTICK_PORT, name, tls.certificate, tls.privateKey);
         }
         call.resolve();
@@ -3977,6 +4183,147 @@ public class LinkPlugin extends Plugin {
         if (sJoystickClient != null) {
             sJoystickClient.disconnect();
             sJoystickClient = null;
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void startJoystickHost(PluginCall call) {
+        if (sJoystickServer != null) {
+            call.resolve();
+            return;
+        }
+        try {
+            LinkTls.TlsIdentity tls = LinkTls.loadOrCreate(getContext(), myIdentity != null ? myIdentity.deviceId : "device");
+            sJoystickServer = new LinkJoystickServer(getContext(), LinkTransport.JOYSTICK_PORT, tls.certificate, tls.privateKey, new LinkJoystickServer.Listener() {
+                @Override
+                public void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName) {
+                    JSObject data = new JSObject();
+                    data.put("connId", connId);
+                    data.put("pin", pin);
+                    data.put("remoteAddress", remoteAddress);
+                    data.put("name", deviceName);
+                    notifyListeners("joystickGuestPinPending", data);
+                }
+
+                @Override
+                public void onControllerJoined(String remoteAddress, String deviceName, int padIndex) {
+                    notifyListeners("joystickRosterChanged", new JSObject());
+                }
+
+                @Override
+                public void onControllerLeft(String remoteAddress) {
+                    notifyListeners("joystickRosterChanged", new JSObject());
+                }
+
+                @Override
+                public void onDriverStatusChanged(String status, String error) {
+                    JSObject data = new JSObject();
+                    data.put("status", status);
+                    data.put("error", error);
+                    notifyListeners("joystickDriverStatus", data);
+                }
+
+                @Override
+                public void onError(String message) {
+                    android.util.Log.e(TAG, "JoystickServer error: " + message);
+                }
+            });
+            sJoystickServer.start();
+            call.resolve();
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Failed to start JoystickServer", e);
+            call.reject("Failed to start Joystick host: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void stopJoystickHost(PluginCall call) {
+        if (sJoystickServer != null) {
+            sJoystickServer.stopServer();
+            sJoystickServer = null;
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void getJoystickStatus(PluginCall call) {
+        JSObject ret = new JSObject();
+        boolean hosting = sJoystickServer != null;
+        ret.put("hosting", hosting);
+
+        JSArray controllers = new JSArray();
+        if (sJoystickServer != null) {
+            for (LinkJoystickServer.ControllerInfo ci : sJoystickServer.getConnectedControllers()) {
+                JSObject c = new JSObject();
+                c.put("ip", ci.ip);
+                c.put("name", ci.name);
+                c.put("padIndex", ci.padIndex);
+                controllers.put(c);
+            }
+            LinkUinputGamepad driver = sJoystickServer.getGamepadDriver();
+            boolean shizukuReady = driver != null && driver.hasShizukuPermission();
+            boolean shizukuRunning = driver != null && driver.isShizukuAvailable();
+            ret.put("driverStatus", shizukuReady ? "ready" : "missing");
+            ret.put("driverError", shizukuReady ? null : (shizukuRunning ? "permission_needed" : "shizuku_not_running"));
+        } else {
+            ret.put("driverStatus", "unknown");
+            ret.put("driverError", null);
+        }
+        ret.put("connectedControllers", controllers);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void checkJoystickDriver(PluginCall call) {
+        JSObject ret = new JSObject();
+        LinkUinputGamepad driver = sJoystickServer != null ? sJoystickServer.getGamepadDriver() : new LinkUinputGamepad(getContext(), null);
+        boolean shizukuReady = driver.hasShizukuPermission();
+        boolean shizukuRunning = driver.isShizukuAvailable();
+        ret.put("driverStatus", shizukuReady ? "ready" : "missing");
+        ret.put("driverError", shizukuReady ? null : (shizukuRunning ? "permission_needed" : "shizuku_not_running"));
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestShizukuPermission(PluginCall call) {
+        LinkUinputGamepad driver = sJoystickServer != null ? sJoystickServer.getGamepadDriver() : new LinkUinputGamepad(getContext(), null);
+        driver.requestShizukuPermission(1748);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void acceptJoystickGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sJoystickServer != null && connId != null) {
+            sJoystickServer.acceptGuest(connId);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void rejectJoystickGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sJoystickServer != null && connId != null) {
+            sJoystickServer.rejectGuest(connId);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void blockJoystickGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sJoystickServer != null && connId != null) {
+            sJoystickServer.blockGuest(connId);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void kickJoystickController(PluginCall call) {
+        String ip = call.getString("ip");
+        if (sJoystickServer != null && ip != null) {
+            sJoystickServer.kickController(ip, "removed by host");
         }
         call.resolve();
     }
@@ -3997,10 +4344,12 @@ public class LinkPlugin extends Plugin {
                 }
 
                 @Override
-                public void onAdmitted(String admittedMode) {
+                public void onAdmitted(String admittedMode, String resolvedHost, String hostDeviceType) {
                     JSObject data = new JSObject();
                     data.put("ok", true);
                     data.put("mode", admittedMode);
+                    if (resolvedHost != null) data.put("host", resolvedHost);
+                    if (hostDeviceType != null) data.put("hostDeviceType", hostDeviceType);
                     notifyListeners("inputGuestAdmitted", data);
                 }
 
@@ -4022,6 +4371,136 @@ public class LinkPlugin extends Plugin {
             });
             LinkTls.TlsIdentity tls = LinkTls.loadOrCreate(getContext(), myIdentity != null ? myIdentity.deviceId : "device");
             sInputGuestClient.connect(host, LinkTransport.INPUT_GUEST_PORT, name, mode, tls.certificate, tls.privateKey);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void startInputGuestHost(PluginCall call) {
+        if (sInputGuestServer != null) {
+            call.resolve();
+            return;
+        }
+        try {
+            LinkTls.TlsIdentity tls = LinkTls.loadOrCreate(getContext(), myIdentity != null ? myIdentity.deviceId : "device");
+            sInputGuestServer = new LinkInputGuestServer(getContext(), LinkTransport.INPUT_GUEST_PORT, tls.certificate, tls.privateKey, myIdentity != null ? myIdentity.deviceType : "phone", new LinkInputGuestServer.Listener() {
+                // Guards against resolving/rejecting `call` more than once — onStarted()/onError()
+                // fire exactly once for the start attempt itself, but onError() can ALSO fire
+                // later for an unrelated per-connection problem on an already-running server, by
+                // which point this call has long since been resolved.
+                private boolean startResultSent = false;
+
+                @Override
+                public void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName, String mode) {
+                    JSObject data = new JSObject();
+                    data.put("connId", connId);
+                    data.put("pin", pin);
+                    data.put("remoteAddress", remoteAddress);
+                    data.put("name", deviceName);
+                    data.put("mode", mode);
+                    notifyListeners("inputGuestPinPending", data);
+                }
+
+                @Override
+                public void onGuestJoined(String remoteAddress, String deviceName, String mode) {
+                    notifyListeners("inputGuestRosterChanged", new JSObject());
+                }
+
+                @Override
+                public void onGuestLeft(String remoteAddress) {
+                    notifyListeners("inputGuestRosterChanged", new JSObject());
+                }
+
+                @Override
+                public void onStarted() {
+                    if (!startResultSent) {
+                        startResultSent = true;
+                        call.resolve();
+                    }
+                }
+
+                @Override
+                public void onError(String message) {
+                    android.util.Log.e(TAG, "InputGuestServer error: " + message);
+                    if (!startResultSent) {
+                        startResultSent = true;
+                        // The bind itself failed — sInputGuestServer is not actually usable, so
+                        // clear it (matching the catch block below) rather than leaving a dead
+                        // reference that would make every future call here think it's running.
+                        sInputGuestServer = null;
+                        call.reject("Failed to start Input Guest server: " + message);
+                    }
+                }
+            });
+            sInputGuestServer.start();
+        } catch (Exception e) {
+            sInputGuestServer = null;
+            android.util.Log.e(TAG, "Failed to start InputGuestServer", e);
+            call.reject("Failed to start Input Guest server: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void stopInputGuestHost(PluginCall call) {
+        if (sInputGuestServer != null) {
+            sInputGuestServer.stopServer();
+            sInputGuestServer = null;
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void getInputGuestStatus(PluginCall call) {
+        JSObject ret = new JSObject();
+        boolean hosting = sInputGuestServer != null;
+        ret.put("hosting", hosting);
+
+        JSArray guests = new JSArray();
+        if (sInputGuestServer != null) {
+            for (LinkInputGuestServer.GuestInfo gi : sInputGuestServer.getAdmittedGuests()) {
+                JSObject g = new JSObject();
+                g.put("ip", gi.ip);
+                g.put("name", gi.name);
+                g.put("mode", gi.mode);
+                guests.put(g);
+            }
+        }
+        ret.put("admittedGuests", guests);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void acceptInputGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sInputGuestServer != null && connId != null) {
+            sInputGuestServer.acceptGuest(connId);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void rejectInputGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sInputGuestServer != null && connId != null) {
+            sInputGuestServer.rejectGuest(connId);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void blockInputGuest(PluginCall call) {
+        String connId = call.getString("connId");
+        if (sInputGuestServer != null && connId != null) {
+            sInputGuestServer.blockGuest(connId);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void kickInputGuest(PluginCall call) {
+        String ip = call.getString("ip");
+        if (sInputGuestServer != null && ip != null) {
+            sInputGuestServer.kickGuest(ip);
         }
         call.resolve();
     }
@@ -4202,6 +4681,38 @@ public class LinkPlugin extends Plugin {
                     }
                 } catch (Exception e) {
                     android.util.Log.e(TAG, "Failed to set immersive mode: " + e.getMessage());
+                }
+            });
+        }
+        call.resolve();
+    }
+
+    // Remote Control's fullscreen mirror needs EVERY touch — including ones starting at a screen
+    // edge — to reach the WebView and get forwarded to the mirrored device, not get intercepted
+    // by this phone's own edge-swipe back gesture. setImmersiveMode above hides the system bars
+    // but Android's gesture nav still claims edge swipes independently of that; excluding the
+    // whole decor view from system gesture handling is the documented way to give an app real
+    // control over edge touches (same technique games/drawing apps use). Only applied while this
+    // one fullscreen surface is active — cleared on unmount — so it doesn't affect the rest of
+    // the app's normal back-gesture navigation.
+    @PluginMethod
+    public void setSystemGestureExclusion(PluginCall call) {
+        boolean enabled = call.getBoolean("enabled", false);
+        if (getActivity() != null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            getActivity().runOnUiThread(() -> {
+                try {
+                    android.view.View decorView = getActivity().getWindow().getDecorView();
+                    if (enabled) {
+                        decorView.post(() -> {
+                            java.util.List<android.graphics.Rect> rects = new java.util.ArrayList<>();
+                            rects.add(new android.graphics.Rect(0, 0, decorView.getWidth(), decorView.getHeight()));
+                            decorView.setSystemGestureExclusionRects(rects);
+                        });
+                    } else {
+                        decorView.setSystemGestureExclusionRects(java.util.Collections.emptyList());
+                    }
+                } catch (Exception e) {
+                    android.util.Log.e(TAG, "Failed to set system gesture exclusion: " + e.getMessage());
                 }
             });
         }
@@ -4492,15 +5003,32 @@ public class LinkPlugin extends Plugin {
                         data.put("reason", line.substring(4));
                         notifyListeners("joystickForcedDisconnect", data);
                         continue;
+                    } else if (line.startsWith("js ")) {
+                        // High-speed UDP Joystick report arriving at Android Host
+                        if (sJoystickServer != null) {
+                            String[] parts = line.split(" ");
+                            if (parts.length >= 8) {
+                                int lx = Integer.parseInt(parts[1]);
+                                int ly = Integer.parseInt(parts[2]);
+                                int rx = Integer.parseInt(parts[3]);
+                                int ry = Integer.parseInt(parts[4]);
+                                int lt = Integer.parseInt(parts[5]);
+                                int rt = Integer.parseInt(parts[6]);
+                                int buttons = Integer.parseInt(parts[7]);
+                                sJoystickServer.handleUdpJoystickReport(senderIp, lx, ly, rx, ry, lt, rt, buttons);
+                            }
+                        }
+                        continue;
                     }
 
                     String senderId = deviceManager != null ? deviceManager.deviceIdForAddress(senderIp) : null;
-                    if (senderId == null) continue;
+                    boolean isPresenterAllowed = (senderId != null && LinkDevicePermissions.check(getContext(), senderId, "presenter"))
+                            || (sInputGuestServer != null && sInputGuestServer.isAdmitted(senderIp, "presenter"));
+                    boolean isRemoteInputAllowed = (senderId != null && LinkDevicePermissions.check(getContext(), senderId, "remoteinput"))
+                            || (sInputGuestServer != null && sInputGuestServer.isAdmitted(senderIp, "touchpad"));
 
-                    // Explicit stop travels over the reliable TCP channel instead (see
-                    // handlePresenterPacket) — only continuous moves need this low-latency path.
                     if (line.startsWith("pmove ")) {
-                        if (!LinkDevicePermissions.check(getContext(), senderId, "presenter")) continue;
+                        if (!isPresenterAllowed) continue;
                         String[] parts = line.split(" ");
                         double dx = Double.parseDouble(parts[1]);
                         double dy = Double.parseDouble(parts[2]);
@@ -4515,13 +5043,25 @@ public class LinkPlugin extends Plugin {
                             // Fallback: in-app-only dot (PresenterDotOverlay.tsx) — only visible
                             // while Link itself is the foreground app.
                             JSObject data = new JSObject();
-                            data.put("deviceId", senderId);
+                            data.put("deviceId", senderId != null ? senderId : senderIp);
                             data.put("dx", dx);
                             data.put("dy", dy);
                             notifyListeners("presenterPositionReceived", data);
                         }
+                    } else if (line.equals("pstop")) {
+                        if (!isPresenterAllowed) continue;
+                        LinkPresenterOverlay.hide(true);
+                        JSObject data = new JSObject();
+                        data.put("deviceId", senderId != null ? senderId : senderIp);
+                        data.put("stop", true);
+                        notifyListeners("presenterPositionReceived", data);
+                    } else if (line.startsWith("special ")) {
+                        if (!isPresenterAllowed && !isRemoteInputAllowed) continue;
+                        String[] parts = line.split(" ");
+                        int key = Integer.parseInt(parts[1]);
+                        LinkRemoteInput.injectSpecialKey(getContext(), key);
                     } else if (line.startsWith("dig ")) {
-                        if (!LinkDevicePermissions.check(getContext(), senderId, "remoteinput")) continue;
+                        if (!isRemoteInputAllowed) continue;
                         String[] parts = line.split(" ");
                         int x = Integer.parseInt(parts[1]);
                         int y = Integer.parseInt(parts[2]);
@@ -4737,11 +5277,7 @@ public class LinkPlugin extends Plugin {
     // ===== File Explorer download/upload (chunked read/write over the same link.fs.request/
     // response packet-relay protocol used above for listRoots/readdir/etc — mirrors desktop's
     // LinkSocketFsClient.read()/write(), which is what a desktop peer's handleFsRequest already
-    // understands, so this works against a desktop target out of the box. A phone target only
-    // understands this same protocol if IT also implements the incoming handler side (not yet
-    // true as of this writing — see handleFsRequestPacket's absence here — so phone-to-phone
-    // browsing/transfer remains a known gap, same as it already was for listRoots/readdir before
-    // this addition). Unlike sendFsRequest/pendingFsCalls above (one PluginCall per request, used
+    // understands, so this works against a desktop target out of the box. A phone target natively supports this via handleFsRequestPacket, enabling phone-to-phone browsing and transfer. Unlike sendFsRequest/pendingFsCalls above (one PluginCall per request, used
     // for the single-shot metadata ops), a download or upload needs MANY sequential request/
     // response round-trips per single JS-facing call, so it gets its own callback-based dispatch
     // (pendingFsCallbacks) that isn't tied to resolving/rejecting a PluginCall directly. =====
@@ -4834,8 +5370,9 @@ public class LinkPlugin extends Plugin {
         return buf;
     }
 
-    private void emitFsTransferProgress(String direction, String deviceId, String path, long transferred, long total) {
+    private void emitFsTransferProgress(String transferId, String direction, String deviceId, String path, long transferred, long total) {
         JSObject data = new JSObject();
+        data.put("transferId", transferId);
         data.put("direction", direction);
         data.put("deviceId", deviceId);
         data.put("path", path);
@@ -4912,7 +5449,7 @@ public class LinkPlugin extends Plugin {
                 downloadRemoteFile(deviceId, remotePath, destFile, statInfo.optLong("size", 0),
                     transferred, total, lastEmitAt, transferId);
             }
-            emitFsTransferProgress("download", deviceId, remotePath, transferred[0], total);
+            emitFsTransferProgress(transferId, "download", deviceId, remotePath, transferred[0], total);
             call.resolve();
         } catch (Exception e) {
             call.reject("Download failed: " + e.getMessage());
@@ -5001,7 +5538,7 @@ public class LinkPlugin extends Plugin {
                 long now = System.currentTimeMillis();
                 if (now - lastEmitAt[0] >= 100) {
                     lastEmitAt[0] = now;
-                    emitFsTransferProgress("download", deviceId, remotePath, transferred[0], total);
+                    emitFsTransferProgress(transferId, "download", deviceId, remotePath, transferred[0], total);
                 }
             }
         }
@@ -5154,7 +5691,7 @@ public class LinkPlugin extends Plugin {
                 long now = System.currentTimeMillis();
                 if (now - lastEmitAt >= 100 || transferred[0] >= total) {
                     lastEmitAt = now;
-                    emitFsTransferProgress("upload", deviceId, remotePath, transferred[0], total);
+                    emitFsTransferProgress(transferId, "upload", deviceId, remotePath, transferred[0], total);
                 }
             }
         }
@@ -5308,7 +5845,7 @@ public class LinkPlugin extends Plugin {
             long[] transferred = {0};
             long[] lastEmitAt = {0};
             downloadRemoteFile(deviceId, remotePath, destFile, size, transferred, size, lastEmitAt, transferId);
-            emitFsTransferProgress("download", deviceId, remotePath, transferred[0], size);
+            emitFsTransferProgress(transferId, "download", deviceId, remotePath, transferred[0], size);
 
             //noinspection ResultOfMethodCallIgnored
             destFile.setReadOnly();
@@ -5391,6 +5928,179 @@ public class LinkPlugin extends Plugin {
         ret.put("paths", uriStrings);
         call.resolve(ret);
     }
+
+        private void handleFsRequestPacket(String deviceId, LinkPacket packet) {
+        try {
+            org.json.JSONObject body = packet.body;
+            String requestId = body.optString("requestId");
+            String action = body.optString("action");
+
+            org.json.JSONObject resp = new org.json.JSONObject();
+            resp.put("requestId", requestId);
+
+            if (!LinkDevicePermissions.check(getContext(), deviceId, "fileaccess")) {
+                resp.put("success", false);
+                resp.put("error", "Permission denied");
+                deviceManager.sendTo(deviceId, new LinkPacket("link.fs.response", resp));
+                return;
+            }
+
+            if ("listRoots".equals(action)) {
+                org.json.JSONArray roots = new org.json.JSONArray();
+                java.io.File primary = android.os.Environment.getExternalStorageDirectory();
+                org.json.JSONObject primaryObj = new org.json.JSONObject();
+                primaryObj.put("name", "Internal Storage");
+                primaryObj.put("path", primary.getAbsolutePath());
+                primaryObj.put("totalSpace", primary.getTotalSpace());
+                primaryObj.put("freeSpace", primary.getUsableSpace());
+                roots.put(primaryObj);
+                
+                java.io.File storageDir = new java.io.File("/storage");
+                if (storageDir.exists() && storageDir.isDirectory()) {
+                    java.io.File[] files = storageDir.listFiles();
+                    if (files != null) {
+                        for (java.io.File f : files) {
+                            if (f.isDirectory() && f.canRead() && !f.getName().equals("self") && !f.getName().equals("emulated")) {
+                                org.json.JSONObject root = new org.json.JSONObject();
+                                root.put("name", f.getName());
+                                root.put("path", f.getAbsolutePath());
+                                root.put("totalSpace", f.getTotalSpace());
+                                root.put("freeSpace", f.getUsableSpace());
+                                roots.put(root);
+                            }
+                        }
+                    }
+                }
+                resp.put("success", true);
+                resp.put("result", roots);
+            } else if ("readdir".equals(action)) {
+                String path = body.getString("path");
+                java.io.File dir = new java.io.File(path);
+                if (!dir.exists() || !dir.isDirectory()) {
+                    resp.put("success", false);
+                    resp.put("error", "Directory not found");
+                } else {
+                    org.json.JSONArray files = new org.json.JSONArray();
+                    java.io.File[] list = dir.listFiles();
+                    if (list != null) {
+                        for (java.io.File f : list) {
+                            org.json.JSONObject fileObj = new org.json.JSONObject();
+                            fileObj.put("name", f.getName());
+                            fileObj.put("isDirectory", f.isDirectory());
+                            fileObj.put("size", f.isDirectory() ? 0 : f.length());
+                            fileObj.put("mtime", f.lastModified());
+                            files.put(fileObj);
+                        }
+                    }
+                    resp.put("success", true);
+                    resp.put("result", files);
+                }
+            } else if ("stat".equals(action)) {
+                String path = body.getString("path");
+                java.io.File f = new java.io.File(path);
+                if (!f.exists()) {
+                    resp.put("success", false);
+                    resp.put("error", "File not found");
+                } else {
+                    org.json.JSONObject fileObj = new org.json.JSONObject();
+                    fileObj.put("name", f.getName());
+                    fileObj.put("isDirectory", f.isDirectory());
+                    fileObj.put("size", f.isDirectory() ? 0 : f.length());
+                    fileObj.put("mtime", f.lastModified());
+                    resp.put("success", true);
+                    resp.put("result", fileObj);
+                }
+            } else if ("create".equals(action)) {
+                String path = body.getString("path");
+                boolean isDirectory = body.getBoolean("isDirectory");
+                java.io.File f = new java.io.File(path);
+                boolean created = false;
+                if (isDirectory) {
+                    created = f.mkdirs();
+                } else {
+                    java.io.File parent = f.getParentFile();
+                    if (parent != null && !parent.exists()) parent.mkdirs();
+                    created = f.createNewFile();
+                }
+                resp.put("success", true);
+                resp.put("result", created || f.exists());
+            } else if ("delete".equals(action)) {
+                String path = body.getString("path");
+                java.io.File f = new java.io.File(path);
+                boolean deleted = false;
+                if (f.isDirectory()) {
+                    java.io.File[] list = f.listFiles();
+                    if (list != null) {
+                        for (java.io.File child : list) { child.delete(); }
+                    }
+                }
+                deleted = f.delete();
+                resp.put("success", true);
+                resp.put("result", deleted);
+                        } else if ("read".equals(action)) {
+                String path = body.getString("path");
+                long offset = body.getLong("offset");
+                int length = body.getInt("length");
+                java.io.File f = new java.io.File(path);
+                if (!f.exists() || f.isDirectory()) {
+                    resp.put("success", false);
+                    resp.put("error", "File not found");
+                } else {
+                    long fileLen = f.length();
+                    int toRead = (int) Math.min(length, fileLen - offset);
+                    if (toRead <= 0) {
+                        resp.put("success", true);
+                        resp.put("result", bufferToJson(new byte[0]));
+                    } else {
+                        byte[] buffer = new byte[toRead];
+                        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "r")) {
+                            raf.seek(offset);
+                            raf.readFully(buffer);
+                        }
+                        resp.put("success", true);
+                        resp.put("result", bufferToJson(buffer));
+                    }
+                }
+            } else if ("write".equals(action)) {
+                String path = body.getString("path");
+                long offset = body.getLong("offset");
+                byte[] data = extractBufferBytes(body.get("buffer"));
+                java.io.File f = new java.io.File(path);
+                java.io.File parent = f.getParentFile();
+                if (parent != null && !parent.exists()) parent.mkdirs();
+                try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "rw")) {
+                    raf.seek(offset);
+                    raf.write(data);
+                }
+                resp.put("success", true);
+                resp.put("result", true);
+            } else if ("rename".equals(action)) {
+                String path = body.getString("path");
+                String newPath = body.getString("newPath");
+                java.io.File src = new java.io.File(path);
+                java.io.File dest = new java.io.File(newPath);
+                java.io.File parent = dest.getParentFile();
+                if (parent != null && !parent.exists()) parent.mkdirs();
+                boolean renamed = src.renameTo(dest);
+                resp.put("success", true);
+                resp.put("result", renamed);
+            } else {
+                resp.put("success", false);
+                resp.put("error", "Unsupported action: " + action);
+            }
+
+            deviceManager.sendTo(deviceId, new LinkPacket("link.fs.response", resp));
+        } catch (Exception e) {
+            try {
+                org.json.JSONObject err = new org.json.JSONObject();
+                err.put("requestId", packet.body.optString("requestId"));
+                err.put("success", false);
+                err.put("error", e.getMessage() != null ? e.getMessage() : "Unknown error");
+                deviceManager.sendTo(deviceId, new LinkPacket("link.fs.response", err));
+            } catch (Exception ignored) {}
+        }
+    }
+
 
     private void handleFsResponsePacket(LinkPacket packet) {
         try {

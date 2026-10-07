@@ -42,6 +42,7 @@ next-env.d.ts
 
 # trash bin
 .trash_bin/
+/scratch/
 
 # temporary build paths
 /api-temp/

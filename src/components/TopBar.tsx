@@ -1,26 +1,60 @@
-import brandLogo from '../icon.png';
+import React from 'react';
+import Logo from './shared/Logo';
+import LocalDeviceCard from './shared/LocalDeviceCard';
 
 interface TopBarProps {
-  deviceName: string;
+  deviceName?: string;
   ipAddress?: string;
+  ipAddresses?: string[];
+  isMobile?: boolean;
 }
 
-const TopBar: React.FC<TopBarProps> = ({ deviceName, ipAddress }) => {
+const TopBar: React.FC<TopBarProps> = ({
+  deviceName = '',
+  ipAddress,
+  ipAddresses,
+  isMobile = typeof window !== 'undefined' && typeof (window as any).Capacitor !== 'undefined',
+}) => {
+  const isDesktop = !isMobile;
+
   return (
-    <div className="top-bar">
-      <div className="brand" style={{ margin: 0, padding: 0 }}>
-        <img className="brand-logo" src={brandLogo} alt="Logo" style={{ width: '32px', height: '32px', borderRadius: '6px' }} />
-        <div className="brand-title" style={{ fontSize: '20px' }}>Link</div>
+    <header
+      className="top-bar"
+      style={{
+        paddingRight: isDesktop ? '148px' : '16px',
+        WebkitAppRegion: isDesktop ? 'drag' : 'no-drag',
+      } as React.CSSProperties}
+    >
+      {/* Brand & Logo on Left */}
+      <div
+        className="brand"
+        style={{
+          margin: 0,
+          padding: 0,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          WebkitAppRegion: 'no-drag',
+        } as React.CSSProperties}
+      >
+        <Logo size={24} showText={true} />
       </div>
 
-      <div className="local-device-card">
-        <div className="status-dot"></div>
-        <div className="device-details">
-          <span id="header-device-name">{deviceName || 'Loading...'}</span>
-          <span id="header-device-ip">{ipAddress || 'No IP Detected'}</span>
-        </div>
+      {/* Center draggable filler area */}
+      <div style={{ flex: 1, height: '100%' }} />
+
+      {/* Local device card in top right (visible in narrow screens & mobile via responsive CSS) */}
+      <div
+        className="topbar-device-card"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
+        <LocalDeviceCard
+          deviceName={deviceName}
+          ipAddress={ipAddress}
+          ipAddresses={ipAddresses}
+        />
       </div>
-    </div>
+    </header>
   );
 };
 

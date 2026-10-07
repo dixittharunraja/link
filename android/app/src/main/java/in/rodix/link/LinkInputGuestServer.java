@@ -1,0 +1,342 @@
+package in.rodix.link;
+
+import android.content.Context;
+import android.util.Log;
+
+import org.java_websocket.WebSocket;
+import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.DefaultSSLWebSocketServerFactory;
+import org.java_websocket.server.WebSocketServer;
+import org.json.JSONObject;
+
+import java.net.InetSocketAddress;
+import java.nio.channels.ByteChannel;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.SocketChannel;
+import java.security.PrivateKey;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLPeerUnverifiedException;
+
+/**
+ * Android Input Guest Server — allows ephemeral guest sessions for Presenter & Remote Input
+ * (Touchpad, Pointer, Stylus) on Android (Mobile/Tablet/TV).
+ */
+public class LinkInputGuestServer extends WebSocketServer {
+    private static final String TAG = "LinkInputGuestServer";
+    private static final long GUEST_CONFIRM_TIMEOUT_MS = 60000;
+
+    public interface Listener {
+        void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName, String mode);
+        void onGuestJoined(String remoteAddress, String deviceName, String mode);
+        void onGuestLeft(String remoteAddress);
+        void onError(String message);
+        // Fires once the underlying WebSocketServer has actually bound and is accepting
+        // connections — WebSocketServer.start() itself is fire-and-forget (spins up its accept
+        // thread and returns immediately), so a caller that resolves as soon as start() returns
+        // reports "success" even when the bind fails moments later on that thread (address in
+        // use, permission denied, etc.) — the only visible trace of that used to be a native
+        // logcat line nothing downstream ever saw, while the host's own QR/UI looked completely
+        // normal and every peer's connection attempt just got ECONNREFUSED.
+        void onStarted();
+    }
+
+    public static class GuestInfo {
+        public final String ip;
+        public final String name;
+        public final String mode;
+        GuestInfo(String ip, String name, String mode) {
+            this.ip = ip;
+            this.name = name;
+            this.mode = mode;
+        }
+    }
+
+    private static class PendingGuest {
+        final WebSocket conn;
+        final String pin;
+        final String mode;
+        final ScheduledFuture<?> timeoutFuture;
+        final String remoteAddress;
+        final String deviceName;
+        PendingGuest(WebSocket conn, String pin, String mode, ScheduledFuture<?> timeoutFuture, String remoteAddress, String deviceName) {
+            this.conn = conn;
+            this.pin = pin;
+            this.mode = mode;
+            this.timeoutFuture = timeoutFuture;
+            this.remoteAddress = remoteAddress;
+            this.deviceName = deviceName;
+        }
+    }
+
+    private static class AdmittedGuest {
+        final WebSocket conn;
+        final String remoteAddress;
+        final String deviceName;
+        final String mode;
+        AdmittedGuest(WebSocket conn, String remoteAddress, String deviceName, String mode) {
+            this.conn = conn;
+            this.remoteAddress = remoteAddress;
+            this.deviceName = deviceName;
+            this.mode = mode;
+        }
+    }
+
+    private final Context context;
+    private final Listener listener;
+    private final byte[] myPublicKeyDer;
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+
+    private final Map<String, PendingGuest> pendingGuests = new ConcurrentHashMap<>();
+    private final Map<String, AdmittedGuest> admittedGuests = new ConcurrentHashMap<>();
+    private final Map<WebSocket, String> connIds = new ConcurrentHashMap<>();
+    private final Map<String, SSLEngine> pendingEngines = new ConcurrentHashMap<>();
+
+    private class ClientAuthSSLFactory extends DefaultSSLWebSocketServerFactory {
+        ClientAuthSSLFactory(SSLContext sslContext) {
+            super(sslContext);
+        }
+
+        @Override
+        public ByteChannel wrapChannel(SocketChannel channel, SelectionKey key) throws java.io.IOException {
+            SSLEngine engine = sslcontext.createSSLEngine();
+            engine.setUseClientMode(false);
+            engine.setWantClientAuth(true);
+            String key2 = channel.socket().getRemoteSocketAddress().toString();
+            pendingEngines.put(key2, engine);
+            return new org.java_websocket.SSLSocketChannel2(channel, engine, exec, key);
+        }
+    }
+
+    private final String hostDeviceType;
+
+    public LinkInputGuestServer(Context context, int port, X509Certificate myCert, PrivateKey myKey, String hostDeviceType, Listener listener) throws Exception {
+        super(new InetSocketAddress(port));
+        this.context = context;
+        this.listener = listener;
+        this.hostDeviceType = hostDeviceType != null ? hostDeviceType : "phone";
+        this.myPublicKeyDer = myCert.getPublicKey().getEncoded();
+
+        SSLContext sslContext = LinkTransport.buildSslContext(myCert, myKey);
+        setWebSocketFactory(new ClientAuthSSLFactory(sslContext));
+        setReuseAddr(true);
+    }
+
+    private final Map<WebSocket, byte[]> peerKeysByConn = new ConcurrentHashMap<>();
+
+    @Override
+    public void onOpen(WebSocket conn, ClientHandshake handshake) {
+        String connId = UUID.randomUUID().toString();
+        connIds.put(conn, connId);
+
+        String socketKey = conn.getRemoteSocketAddress() != null ? conn.getRemoteSocketAddress().toString() : "";
+        SSLEngine engine = pendingEngines.remove(socketKey);
+        if (engine == null && pendingEngines.size() == 1) {
+            engine = pendingEngines.values().iterator().next();
+            pendingEngines.clear();
+        }
+        if (engine != null) {
+            try {
+                Certificate[] certs = engine.getSession().getPeerCertificates();
+                if (certs.length > 0) {
+                    peerKeysByConn.put(conn, certs[0].getPublicKey().getEncoded());
+                }
+            } catch (SSLPeerUnverifiedException ignored) {}
+        }
+    }
+
+    @Override
+    public void onClose(WebSocket conn, int code, String reason, boolean remote) {
+        peerKeysByConn.remove(conn);
+        String connId = connIds.remove(conn);
+        if (connId != null) {
+            PendingGuest pending = pendingGuests.remove(connId);
+            if (pending != null && pending.timeoutFuture != null) {
+                pending.timeoutFuture.cancel(false);
+            }
+        }
+
+        for (Map.Entry<String, AdmittedGuest> entry : admittedGuests.entrySet()) {
+            if (entry.getValue().conn == conn) {
+                String ip = entry.getKey();
+                admittedGuests.remove(ip);
+                if (listener != null) listener.onGuestLeft(ip);
+                break;
+            }
+        }
+    }
+
+    @Override
+    public void onMessage(WebSocket conn, String message) {
+        try {
+            JSONObject obj = new JSONObject(message);
+            String type = obj.optString("type");
+
+            if ("join-guest".equals(type)) {
+                handleJoinGuest(conn, obj);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error handling message", e);
+        }
+    }
+
+    @Override
+    public void onError(WebSocket conn, Exception ex) {
+        Log.e(TAG, "WebSocket error", ex);
+        if (listener != null) listener.onError(ex != null ? ex.getMessage() : "Unknown error");
+    }
+
+    @Override
+    public void onStart() {
+        Log.i(TAG, "LinkInputGuestServer started on port " + getPort());
+        if (listener != null) listener.onStarted();
+    }
+
+    private void handleJoinGuest(WebSocket conn, JSONObject msg) {
+        String connId = connIds.get(conn);
+        if (connId == null) return;
+
+        String remoteAddress = null;
+        if (conn.getRemoteSocketAddress() != null) {
+            remoteAddress = conn.getRemoteSocketAddress().getAddress().getHostAddress();
+        }
+        if (remoteAddress == null) remoteAddress = "unknown";
+
+        byte[] peerPublicKeyDer = peerKeysByConn.remove(conn);
+        if (peerPublicKeyDer == null) {
+            String socketKey = conn.getRemoteSocketAddress() != null ? conn.getRemoteSocketAddress().toString() : "";
+            SSLEngine engine = pendingEngines.remove(socketKey);
+            if (engine == null && pendingEngines.size() == 1) {
+                engine = pendingEngines.values().iterator().next();
+                pendingEngines.clear();
+            }
+            if (engine != null) {
+                try {
+                    Certificate[] certs = engine.getSession().getPeerCertificates();
+                    if (certs.length > 0) {
+                        peerPublicKeyDer = certs[0].getPublicKey().getEncoded();
+                    }
+                } catch (SSLPeerUnverifiedException ignored) {}
+            }
+        }
+
+        if (peerPublicKeyDer == null) {
+            conn.close(4001, "no client certificate presented");
+            return;
+        }
+
+        String deviceName = msg.optString("deviceName", "Remote Controller");
+        String mode = msg.optString("mode", "touchpad");
+        String pin = LinkVerification.computeCode(myPublicKeyDer, peerPublicKeyDer, "");
+
+        final String finalIp = remoteAddress;
+        ScheduledFuture<?> timeout = scheduler.schedule(() -> {
+            pendingGuests.remove(connId);
+            try { conn.close(4006, "confirmation timed out"); } catch (Exception ignored) {}
+        }, GUEST_CONFIRM_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+        pendingGuests.put(connId, new PendingGuest(conn, pin, mode, timeout, finalIp, deviceName));
+
+        try {
+            JSONObject pinMsg = new JSONObject();
+            pinMsg.put("type", "pin");
+            pinMsg.put("code", pin);
+            conn.send(pinMsg.toString());
+        } catch (Exception ignored) {}
+
+        if (listener != null) {
+            listener.onGuestPinPending(connId, pin, finalIp, deviceName, mode);
+        }
+    }
+
+    public synchronized boolean acceptGuest(String connId) {
+        PendingGuest pending = pendingGuests.remove(connId);
+        if (pending == null) return false;
+        if (pending.timeoutFuture != null) pending.timeoutFuture.cancel(false);
+
+        admittedGuests.put(pending.remoteAddress, new AdmittedGuest(pending.conn, pending.remoteAddress, pending.deviceName, pending.mode));
+
+        try {
+            JSONObject res = new JSONObject();
+            res.put("type", "admitted");
+            res.put("mode", pending.mode);
+            // Lets the guest's own UI (e.g. PresenterOverlay) pick portrait vs landscape by what
+            // it's actually controlling — this device's real declared type, not a guess.
+            res.put("hostDeviceType", hostDeviceType);
+            pending.conn.send(res.toString());
+        } catch (Exception ignored) {}
+
+        if (listener != null) {
+            listener.onGuestJoined(pending.remoteAddress, pending.deviceName, pending.mode);
+        }
+        return true;
+    }
+
+    public void rejectGuest(String connId) {
+        PendingGuest pending = pendingGuests.remove(connId);
+        if (pending == null) return;
+        if (pending.timeoutFuture != null) pending.timeoutFuture.cancel(false);
+        try { pending.conn.close(4007, "rejected by host"); } catch (Exception ignored) {}
+    }
+
+    public void blockGuest(String connId) {
+        PendingGuest pending = pendingGuests.remove(connId);
+        if (pending == null) return;
+        if (pending.timeoutFuture != null) pending.timeoutFuture.cancel(false);
+        try { pending.conn.close(4010, "blocked"); } catch (Exception ignored) {}
+    }
+
+    public void kickGuest(String ip) {
+        AdmittedGuest guest = admittedGuests.remove(ip);
+        if (guest != null) {
+            try { guest.conn.close(1000, "removed by host"); } catch (Exception ignored) {}
+            if (listener != null) listener.onGuestLeft(ip);
+        }
+    }
+
+    public boolean isAdmitted(String remoteAddress, String mode) {
+        if (remoteAddress == null) return false;
+        AdmittedGuest guest = admittedGuests.get(remoteAddress);
+        // Fall back to the sole admitted guest on an IP mismatch — mirrors desktop's
+        // RemoteInputServer.isAdmitted (see its comment for the full reasoning). A guest's
+        // high-rate input (pmove/touchpad move) rides a SEPARATE, unbound UDP DatagramSocket on
+        // the sender, independent from the TCP/WSS socket it was admitted over, so the OS is free
+        // to pick a different local interface/source IP for it even though it's unquestionably
+        // the same device. When exactly one guest is currently admitted, a mismatched IP can only
+        // mean this same fragility, never a different, unauthorized sender.
+        if (guest == null && admittedGuests.size() == 1) {
+            guest = admittedGuests.values().iterator().next();
+        }
+        if (guest == null) return false;
+        return mode == null || mode.equals(guest.mode);
+    }
+
+    public List<GuestInfo> getAdmittedGuests() {
+        List<GuestInfo> list = new ArrayList<>();
+        for (AdmittedGuest g : admittedGuests.values()) {
+            list.add(new GuestInfo(g.remoteAddress, g.deviceName, g.mode));
+        }
+        return list;
+    }
+
+    public void stopServer() {
+        try {
+            scheduler.shutdownNow();
+            super.stop();
+        } catch (Exception e) {
+            Log.e(TAG, "Error stopping server", e);
+        }
+    }
+}

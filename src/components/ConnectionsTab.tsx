@@ -26,6 +26,7 @@ interface ConnectionsTabProps {
   onShowPresenter?: (id: string) => void;
   onShowTouchpad?: (id: string) => void;
   onShowJoystick?: (id: string) => void;
+  onShowRemoteControl?: (id: string) => void;
   devicePermissions?: Record<string, Record<string, boolean | string>>;
   onSetPermission?: (deviceId: string, permKey: string, allowed: boolean | string) => void;
   onRenameTrustedDevice?: (deviceId: string, newName: string) => void;
@@ -56,6 +57,7 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
   onShowPresenter,
   onShowTouchpad,
   onShowJoystick,
+  onShowRemoteControl,
   devicePermissions = {},
   onSetPermission,
   onRenameTrustedDevice,
@@ -501,9 +503,11 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
                 {onVisibilityToggle && (
                   <div style={{ padding: '12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'rgba(255,255,255,0.02)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <div>
-                        <div style={{ fontSize: '13px', fontWeight: 600 }}>Visible to LAN</div>
-                        <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>Allow discovery broadcasts</div>
+                      <div style={{ marginRight: '12px' }}>
+                        <div style={{ fontSize: '13px', fontWeight: 600 }}>Device Visibility</div>
+                        <div style={{ fontSize: '10.5px', color: 'var(--text-muted)' }}>
+                          {visibilityEnabled ? 'Visible to Everyone (New devices can discover & pair)' : 'Trusted Devices Only (Hidden from strangers on public Wi-Fi)'}
+                        </div>
                       </div>
                       <label className="switch-container" style={{ margin: 0 }}>
                         <span className="switch">
@@ -627,6 +631,10 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
           onShowJoystick={(id) => {
             setActiveControlPanelDeviceId(null);
             onShowJoystick?.(id);
+          }}
+          onShowRemoteControl={(id) => {
+            setActiveControlPanelDeviceId(null);
+            onShowRemoteControl?.(id);
           }}
           onShowRemoteInput={(id) => setActiveRemoteKeyboardDeviceId(id)}
           onRunCommandTrigger={onRunCommandTrigger}

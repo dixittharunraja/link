@@ -9,13 +9,15 @@ import JoystickOverlay, {
 } from './JoystickOverlay';
 import { ScannerModal, IpScanField, ConnectingCard, PendingGuestsModal, PrimaryButton } from './ModalDialog';
 import { AudioListenerRow } from './AudioListenerRow';
+import { SessionHostQr } from './SessionHostQr';
+import { DialogCard } from './DialogCard';
 import { LinkApi } from '../vite-env';
 import { useHostQrCode } from '../utils/qr';
 
 const linkApi = (window as any).link as LinkApi;
 
 interface JoystickTabProps {
-  localIdentity: { deviceId: string; deviceName: string; ipAddress?: string; deviceType?: string };
+  localIdentity: { deviceId: string; deviceName: string; ipAddress?: string; ipAddresses?: string[]; deviceType?: string };
   isMobile: boolean;
 }
 
@@ -23,16 +25,15 @@ type DriverStatus = 'unknown' | 'ready' | 'missing' | 'error';
 interface JoystickController { ip: string; name: string; padIndex: number; }
 
 const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) => {
-  const isController = isMobile && localIdentity.deviceType !== 'tv';
-
-  // ----- Desktop (host) state -----
+  // Host state
   const [driverStatus, setDriverStatus] = useState<DriverStatus>('unknown');
   const [driverError, setDriverError] = useState<string | null>(null);
   const [checkingDriver, setCheckingDriver] = useState(false);
   const [controllers, setControllers] = useState<JoystickController[]>([]);
-  const qrDataUrl = useHostQrCode(!isController, localIdentity, 1717);
+  const qrDataUrl = useHostQrCode(true, localIdentity, 1748);
+  const [pendingGuests, setPendingGuests] = useState<{ connId: string; ip: string; name: string; pin: string }[]>([]);
 
-  // ----- Phone (controller) state -----
+  // Client (Controller) state
   const [activeHost, setActiveHost] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [connectingPhase, setConnectingPhase] = useState<'connecting' | 'waiting-pin'>('connecting');
@@ -40,7 +41,6 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
   const [connectError, setConnectError] = useState<string | null>(null);
   const [joinIpInput, setJoinIpInput] = useState('');
   const [showScannerModal, setShowScannerModal] = useState(false);
-  const [pendingGuests, setPendingGuests] = useState<{ connId: string; ip: string; name: string; pin: string }[]>([]);
   const [skin, setSkin] = useState<'xbox' | 'ps'>(loadJoystickSkinFromStorage);
   const [haptics, setHaptics] = useState<boolean>(loadJoystickHapticsFromStorage);
   const [customPresets, setCustomPresets] = useState<CustomPreset[]>(loadCustomPresetsFromStorage);
@@ -72,14 +72,9 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
     try { localStorage.setItem(BUILTIN_MODES_STORAGE_KEY, JSON.stringify(v)); } catch {}
   };
 
-  // A stored active-layout id can point at a preset that's since been deleted (or a stale legacy
-  // migration id) — fall back to Classic rather than handing JoystickOverlay a dangling reference.
   const resolvedLayout = isBuiltinLayout(layout) || customPresets.some((p) => p.id === layout)
     ? layout : 'classic';
 
-  // Wherever the active layout's LT/RT/LS modes + sensitivities actually live — a customPresets[]
-  // entry's .modes, or the small per-built-in record above — resolved once here so the rest of
-  // the component (and JoystickOverlay) can treat "the active layout's modes" as one uniform thing.
   const activePresetForModes = customPresets.find((p) => p.id === resolvedLayout);
   const activeModes: ActiveModes = isBuiltinLayout(resolvedLayout)
     ? builtinModes[resolvedLayout]
@@ -121,28 +116,27 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
     setAndPersistCustomPresets(customPresets.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   };
 
-  // Passive — just reads whatever's cached (roster + last-known driver status). Cheap, safe to
-  // call on every roster change; does NOT itself trigger a driver probe (see verifyDriver below).
   const refreshStatus = async () => {
-    if (isController || !linkApi) return;
-    const status = await linkApi.getJoystickStatus?.();
-    setDriverStatus(status?.driverStatus || 'unknown');
-    setDriverError(status?.driverError || null);
-    const connected = status?.connectedControllers || [];
-    setControllers(connected);
-    setPendingGuests((prev) => prev.filter((pg) => !connected.some((c: any) => c.ip === pg.ip)));
+    if (!linkApi) return;
+    try {
+      const status = await linkApi.getJoystickStatus?.();
+      setDriverStatus(status?.driverStatus || 'unknown');
+      setDriverError(status?.driverError || null);
+      const connected = status?.connectedControllers || [];
+      setControllers(connected);
+      setPendingGuests((prev) => prev.filter((pg) => !connected.some((c: any) => c.ip === pg.ip)));
+    } catch {}
   };
 
-  // Active — actually spawns/probes the helper. getJoystickStatus alone would stay 'unknown'
-  // forever on a fresh app start until a phone happens to connect first, since that's the only
-  // other thing that triggers the probe on the main-process side.
   const verifyDriver = async () => {
-    if (isController || !linkApi) return;
+    if (!linkApi) return;
     setCheckingDriver(true);
     try {
       const status = await linkApi.checkJoystickDriver?.();
       setDriverStatus(status?.driverStatus || 'unknown');
       setDriverError(status?.driverError || null);
+    } catch {
+      // Driver check error handled by state
     } finally {
       setCheckingDriver(false);
     }
@@ -151,43 +145,51 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
   useEffect(() => {
     if (!linkApi) return;
 
-    if (!isController) {
+    if (!isMobile) {
       verifyDriver();
       refreshStatus();
-      linkApi.onJoystickDriverStatus?.((status: DriverStatus, error: string | null) => {
-        setDriverStatus(status);
-        setDriverError(error);
-      });
-      linkApi.onJoystickRosterChanged?.(() => refreshStatus());
-      linkApi.onJoystickGuestPinPending?.((connId: string, pin: string, remoteAddress: string, name: string) => {
-        setPendingGuests((prev) => [...prev.filter((g) => g.connId !== connId), { connId, ip: remoteAddress, name, pin }]);
-      });
-
-      return;
     }
 
-    linkApi.onJoystickPinRequired?.((computedPin: string) => {
+    const unsubStatus = !isMobile ? linkApi.onJoystickDriverStatus?.((status: DriverStatus, error: string | null) => {
+      setDriverStatus(status);
+      setDriverError(error);
+    }) : undefined;
+    
+    const unsubRoster = !isMobile ? linkApi.onJoystickRosterChanged?.(() => refreshStatus()) : undefined;
+    
+    const unsubGuest = !isMobile ? linkApi.onJoystickGuestPinPending?.((connId: string, pinCode: string, remoteAddress: string, name: string) => {
+      setPendingGuests((prev) => [...prev.filter((g) => g.connId !== connId), { connId, ip: remoteAddress, name, pin: pinCode }]);
+    }) : undefined;
+
+    const unsubPinReq = linkApi.onJoystickPinRequired?.((computedPin: string) => {
       setPin(computedPin);
       setConnectingPhase('waiting-pin');
     });
 
-    linkApi.onJoystickHelloAck?.((ok: boolean, _padIndex: number | null, error: string | null) => {
+    const unsubHelloAck = linkApi.onJoystickHelloAck?.((ok: boolean, _padIndex: number | null, error: string | null) => {
       setConnecting(false);
       setPin(null);
       setConnectingPhase('connecting');
       if (!ok) {
-        // 'blocked' reads the same as a plain reject — it should never reveal that it was
-        // specifically blocked, just that it was turned away.
-        setConnectError(error === 'slots_full' ? 'That PC already has 4 controllers connected.'
-          : error === 'driver_missing' ? "That PC doesn't have the Joystick driver installed."
+        setConnectError(
+          error === 'slots_full' ? 'That host already has 4 controllers connected.'
+          : error === 'driver_missing' ? "That host doesn't have the Joystick driver installed."
           : error === 'rejected by host' || error === 'blocked' ? 'Rejected by host'
           : error === 'kicked' ? 'Removed by host'
-          : 'Failed to connect — try again.');
+          : 'Failed to connect — try again.'
+        );
         setActiveHost(null);
       }
     });
-  }, [isController]);
 
+    return () => {
+      unsubStatus?.();
+      unsubRoster?.();
+      unsubGuest?.();
+      unsubPinReq?.();
+      unsubHelloAck?.();
+    };
+  }, [isMobile]);
 
   const handleDecodedHost = (host: string) => {
     setShowScannerModal(false);
@@ -214,29 +216,19 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
     setConnectingPhase('connecting');
   };
 
-  // Session ended without the user tapping Exit — see JoystickOverlay's onDisconnected doc
-  // comment. No "bye" send here: the host either already knows (kicked/blocked/its own driver
-  // crashed) or is unreachable (connection_lost), so there's nothing productive to tell it.
-  //
-  // useCallback (with only setState setters inside, all of which React guarantees are stable)
-  // keeps this identity-stable across renders. JoystickOverlay guards against a churning
-  // callback on its own side too, but this stops the churn at the source — ToolsTab's 2s status
-  // poll re-renders this component constantly, which would otherwise hand the overlay a brand
-  // new function every couple of seconds.
   const handleDisconnected = useCallback((reason: string) => {
     setActiveHost(null);
     setConnecting(false);
     setConnectError(
-      // 'blocked' reads the same as a plain reject — see onJoystickHelloAck's comment.
       reason === 'kicked' ? 'Removed by host'
       : reason === 'blocked' ? 'Rejected by host'
       : reason === 'host_error' ? "The host's controller driver stopped working."
-      : reason === 'connection_lost' || reason === 'timeout' ? 'Lost connection to the PC.'
-      : 'Disconnected from the PC.'
+      : reason === 'connection_lost' || reason === 'timeout' ? 'Lost connection to the host.'
+      : 'Disconnected from the host.'
     );
   }, []);
 
-  if (isController && activeHost && !connecting) {
+  if (activeHost && !connecting) {
     return (
       <JoystickOverlay
         host={activeHost}
@@ -259,47 +251,8 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
     );
   }
 
-  if (isController) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', width: '100%', padding: '4px' }}>
-        <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {connecting ? (
-            <ConnectingCard
-              targetLabel={activeHost || ''}
-              phase={connectingPhase}
-              pin={pin}
-              onCancel={disconnect}
-              waitingLabel="Connecting..."
-            />
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: '1.4' }}>
-                Scan the QR code shown on the PC's Joystick tab, or enter its IP address.
-              </div>
-              <IpScanField
-                value={joinIpInput}
-                onChange={setJoinIpInput}
-                onEnter={() => connect(joinIpInput)}
-                onScanClick={() => setShowScannerModal(true)}
-                placeholder="PC's IP address"
-              />
-              <PrimaryButton onClick={() => connect(joinIpInput)} disabled={!joinIpInput}>
-                Connect
-              </PrimaryButton>
-              {connectError && <div style={{ color: '#e05c5c', fontSize: '12.5px', marginTop: '4px' }}>{connectError}</div>}
-            </div>
-          )}
-        </div>
-
-        <ScannerModal open={showScannerModal} onClose={() => setShowScannerModal(false)} onDecoded={handleDecodedHost} title="Scan PC's Joystick QR" />
-      </div>
-    );
-  }
-
-  // ----- Desktop host view -----
   return (
-    <div style={{ padding: '4px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '8px 0' }}>
       {(driverStatus === 'missing' || driverStatus === 'error') && (
         <div style={{
           background: 'rgba(224, 92, 92, 0.1)', border: '1px solid rgba(224, 92, 92, 0.3)',
@@ -311,51 +264,136 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
               <line x1="12" y1="9" x2="12" y2="13" />
               <line x1="12" y1="17" x2="12.01" y2="17" />
             </svg>
-            Virtual Controller Driver Missing
+            {isMobile ? 'Gamepad Permissions Required' : 'Virtual Controller Driver Missing'}
           </div>
           <div style={{ color: 'var(--text-muted)', fontSize: '12.5px', lineHeight: 1.5 }}>
-            Joystick emulates an Xbox controller using ViGEmBus, a free virtual gamepad driver for Windows.
-            {driverError === 'helper_not_bundled' && ' (The Joystick driver helper isn’t bundled in this build yet.)'}
+            {isMobile ? (
+              driverError === 'shizuku_not_running'
+                ? 'Shizuku is not running. Please start Shizuku (via Wireless Debugging or Root) to enable native virtual gamepad input for Android games and emulators.'
+                : 'Shizuku permission is required to inject gamepad buttons and analog sticks.'
+            ) : (
+              <>
+                Joystick emulates an Xbox controller using ViGEmBus, a free virtual gamepad driver for Windows.
+                {driverError === 'helper_not_bundled' && ' (The Joystick driver helper isn’t bundled in this build yet.)'}
+              </>
+            )}
           </div>
           <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
-            <a
-              href="https://github.com/ViGEm/ViGEmBus/releases"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="button"
-              style={{ padding: '6px 12px', fontSize: '11.5px', background: 'var(--accent-color, #007acc)', color: 'var(--btn-primary-text)', textDecoration: 'none', borderRadius: '4px', textAlign: 'center' }}
-            >
-              Download ViGEmBus (Free)
-            </a>
+            {isMobile ? (
+              <button
+                onClick={() => linkApi.requestShizukuPermission?.()}
+                style={{ padding: '6px 12px', fontSize: '11.5px', background: 'var(--accent-color, #007acc)', color: 'var(--btn-primary-text)', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+              >
+                Grant via Shizuku
+              </button>
+            ) : (
+              <a
+                href="https://github.com/ViGEm/ViGEmBus/releases"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="button"
+                style={{ padding: '6px 12px', fontSize: '11.5px', background: 'var(--accent-color, #007acc)', color: 'var(--btn-primary-text)', textDecoration: 'none', borderRadius: '4px', textAlign: 'center' }}
+              >
+                Download ViGEmBus (Free)
+              </a>
+            )}
             <button onClick={verifyDriver} disabled={checkingDriver} style={{ padding: '6px 12px', fontSize: '11.5px' }}>
-              {checkingDriver ? 'Verifying...' : 'Verify Installation'}
+              {checkingDriver ? 'Verifying...' : 'Verify Status'}
             </button>
           </div>
         </div>
       )}
 
-      {/* Stacked Layout: QR Code centered on top, Controllers list below */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
-        {qrDataUrl ? (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-            <div style={{ background: '#fff', padding: '8px', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-              <img src={qrDataUrl} alt="Joystick QR Code" style={{ display: 'block', width: '140px', height: '140px', imageRendering: 'pixelated' }} />
-            </div>
-            <div style={{ fontSize: '14px', fontWeight: 700, fontFamily: 'monospace', color: 'var(--text-color)' }}>
-              {localIdentity.ipAddress || 'unknown'}
-            </div>
-            <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center' }}>
-              Scan from a friend's phone's Joystick tab to connect, up to 4 at once.
-            </div>
-          </div>
-        ) : (
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Generating QR code…</div>
-        )}
-      </div>
+      {/* Top Section - QR Code */}
+      {!isMobile && (
+        <>
+          <SessionHostQr
+            qrDataUrl={qrDataUrl}
+            ipAddress={localIdentity?.ipAddress}
+            altText="Joystick Host QR"
+            subtitle="Scan with your phone to use it as a gamepad"
+          />
 
-      <div style={{ height: '1px', background: 'var(--border-color)', width: '100%', margin: '8px 0' }} />
+          <div style={{ height: '1px', background: 'var(--border-color)', width: '100%', margin: '2px 0' }} />
+        </>
+      )}
+
+      {/* Bottom Section - Either Connected Controllers or Connect Input */}
+      {!isMobile && controllers.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', width: '100%' }}>
+          <div style={{ fontWeight: 600, color: 'var(--text-color)', fontSize: '13px' }}>
+            Connected Controllers ({controllers.length}/4)
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {controllers.map((c) => (
+              <AudioListenerRow
+                key={c.ip}
+                label={`Pad ${c.padIndex + 1} — ${c.name}`}
+                statusText="Connected"
+                icon={
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: 'scale(0.95)' }}>
+                    <line x1="6" y1="12" x2="10" y2="12" /><line x1="8" y1="10" x2="8" y2="14" />
+                    <circle cx="15" cy="13" r="1" /><circle cx="18" cy="11" r="1" />
+                    <path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.544-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.152A4 4 0 0 0 17.32 5z" />
+                  </svg>
+                }
+                onKick={() => linkApi?.kickJoystickController?.(c.ip)}
+                onBlock={() => linkApi?.blockJoystickController?.(c.ip, c.name)}
+              />
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: '1.4' }}>
+            {isMobile ? "Enter a desktop's IP address or scan its QR code to use this device as a gamepad." : "Enter the host IP address or scan its QR code to use this device as a gamepad."}
+          </div>
+
+          <IpScanField
+            value={joinIpInput}
+            onChange={setJoinIpInput}
+            onScanClick={() => setShowScannerModal(true)}
+            onEnter={() => connect(joinIpInput)}
+            placeholder="Host IP address (e.g. 192.168.1.100)"
+          />
+
+          {connectError && (
+            <div style={{ color: '#e05c5c', fontSize: '12.5px' }}>
+              {connectError}
+            </div>
+          )}
+
+          <PrimaryButton
+            onClick={() => connect(joinIpInput)}
+            disabled={!joinIpInput.trim()}
+          >
+            Connect Gamepad
+          </PrimaryButton>
+        </div>
+      )}
+
+      {connecting && (
+        <DialogCard onCancel={disconnect} zIndex={2000}>
+          <ConnectingCard
+            targetLabel={activeHost || joinIpInput}
+            phase={connectingPhase}
+            pin={pin}
+            onCancel={disconnect}
+            waitingLabel="Connecting to gamepad host..."
+          />
+        </DialogCard>
+      )}
+
+      <ScannerModal
+        open={showScannerModal}
+        onClose={() => setShowScannerModal(false)}
+        onDecoded={handleDecodedHost}
+        title="Scan Joystick Host QR"
+      />
 
       <PendingGuestsModal
+        title="Joystick Request"
+        iconType="joystick"
         guests={pendingGuests.map((g) => ({
           connId: g.connId,
           pin: g.pin,
@@ -376,36 +414,6 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
           setPendingGuests((prev) => prev.filter((pg) => pg.connId !== connId));
         }}
       />
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', width: '100%' }}>
-        <div style={{ fontWeight: 600, color: 'var(--text-color)', fontSize: '13px' }}>
-          Connected Controllers ({controllers.length}/4)
-        </div>
-        {controllers.length === 0 ? (
-          <div style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', padding: '16px' }}>
-            No controllers connected yet.
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {controllers.map((c) => (
-              <AudioListenerRow
-                key={c.ip}
-                label={`Pad ${c.padIndex + 1} — ${c.name}`}
-                statusText="Connected"
-                icon={
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: 'scale(0.95)' }}>
-                    <line x1="6" y1="12" x2="10" y2="12" /><line x1="8" y1="10" x2="8" y2="14" />
-                    <circle cx="15" cy="13" r="1" /><circle cx="18" cy="11" r="1" />
-                    <path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.544-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.152A4 4 0 0 0 17.32 5z" />
-                  </svg>
-                }
-                onKick={() => linkApi?.kickJoystickController?.(c.ip)}
-                onBlock={() => linkApi?.blockJoystickController?.(c.ip, c.name)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 };

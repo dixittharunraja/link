@@ -1,5 +1,6 @@
 import * as dgram from 'dgram';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import { LinkPacket } from './packet';
 
 // Broadcast on each interface's own subnet, not 255.255.255.255 (picks wrong one on VPN/Docker).
@@ -35,6 +36,8 @@ export class DiscoveryService {
     private localIdentity: any,
     private onDeviceDiscovered: (ip: string, identity: any) => void,
     private onDeviceExpired?: (deviceId: string) => void,
+    private myCertFingerprint?: string,
+    private resolveAnonToken?: (token: string) => any,
   ) {}
 
   start(visibilityEnabled = true) {
@@ -55,6 +58,23 @@ export class DiscoveryService {
             });
             this.onDeviceDiscovered(rinfo.address, packet.body);
           }
+        } else if (packet.type === 'link.identity.anon' && packet.body?.token) {
+          // Anonymous token broadcast from a trusted peer in "Trusted Devices Only" mode.
+          if (this.resolveAnonToken) {
+            const matched = this.resolveAnonToken(packet.body.token);
+            if (matched && matched.deviceId !== this.localIdentity.deviceId) {
+              this.discoveredPeers.set(matched.deviceId, {
+                ip: rinfo.address,
+                lastSeen: Date.now(),
+              });
+              this.onDeviceDiscovered(rinfo.address, {
+                deviceId: matched.deviceId,
+                deviceName: matched.deviceName,
+                deviceType: 'phone',
+                visibility: false,
+              });
+            }
+          }
         }
       } catch {
         // Ignore parsing errors from other network traffic
@@ -73,33 +93,48 @@ export class DiscoveryService {
           console.warn('[Link] Failed to enable UDP broadcast flag:', err);
         }
       }
-      if (this.visibilityEnabled) {
-        this.startBroadcasting();
-      }
-      // Always start the expiry check regardless of visibility — we always listen for
-      // other devices' broadcasts, so we always need to expire stale ones.
+      this.startBroadcasting();
       this.startExpiryCheck();
     });
   }
 
   setVisibility(enabled: boolean) {
     this.visibilityEnabled = enabled;
-    if (enabled) {
-      this.startBroadcasting();
-    } else {
-      this.stopBroadcasting();
-    }
+    this.broadcastOnce();
+  }
+
+  broadcastNow() {
+    this.broadcastOnce();
   }
 
   private broadcastOnce() {
     if (!this.socket) return;
     try {
-      this.localIdentity.visibility = true;
-      const packet = {
-        id: Date.now(),
-        type: 'link.identity',
-        body: this.localIdentity,
-      };
+      let packet: any;
+      if (this.visibilityEnabled) {
+        // Mode 1: Visible to Everyone — announcements with real device name & ID
+        this.localIdentity.visibility = true;
+        packet = {
+          id: Date.now(),
+          type: 'link.identity',
+          body: this.localIdentity,
+        };
+      } else {
+        // Mode 2: Trusted Devices Only — anonymous token that only paired devices can recognize
+        const token = crypto
+          .createHash('sha256')
+          .update(this.localIdentity.deviceId + ':' + (this.myCertFingerprint || ''))
+          .digest('hex')
+          .substring(0, 32);
+        packet = {
+          id: Date.now(),
+          type: 'link.identity.anon',
+          body: {
+            token,
+            port: 1716,
+          },
+        };
+      }
       const payload = JSON.stringify(packet) + '\n';
       // Send on every real interface's own subnet broadcast address, not just the global limited-
       // broadcast address — see getInterfaceBroadcastAddresses() for why.
@@ -115,9 +150,6 @@ export class DiscoveryService {
 
   private startBroadcasting() {
     if (this.broadcastInterval) return;
-    // setInterval's first tick fires only after the full delay — without this, a device that just
-    // launched or just re-enabled visibility stayed invisible to peers for up to a full interval
-    // for no reason, when there's nothing to wait for.
     this.broadcastOnce();
     this.broadcastInterval = setInterval(() => this.broadcastOnce(), DISCOVERY_INTERVAL_MS);
   }
@@ -133,9 +165,6 @@ export class DiscoveryService {
    * Periodically checks the last-seen timestamp for each discovered peer. If a peer has not
    * sent a UDP broadcast within PEER_EXPIRY_MS (3 missed intervals), it is considered gone
    * and the onDeviceExpired callback fires so the caller can close any open TCP connection.
-   *
-   * This makes discovery realtime: a device that toggles visibility OFF will stop sending
-   * broadcasts, and will automatically disappear from every peer's Nearby list after ~9s.
    */
   private startExpiryCheck() {
     this.expiryInterval = setInterval(() => {

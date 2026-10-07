@@ -384,21 +384,30 @@ select option {
 .top-bar {
   position: relative;
   flex-shrink: 0;
-  height: 80px;
+  height: 48px;
   border-bottom: 1px solid var(--border-color);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 40px;
+  padding: 0 16px 0 20px;
   background: var(--topbar-bg);
   backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   z-index: 5;
+  user-select: none;
 }
 
 .top-bar .brand {
   margin: 0 !important;
   padding: 0 !important;
   margin-bottom: 0 !important;
+}
+
+.top-bar .brand-title {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
 }
 
 #main-content-split {
@@ -417,31 +426,54 @@ select option {
   color: var(--text-color);
 }
 
-/* Premium Local Device Card (Top Right) */
+/* Premium Local Device Card */
 .local-device-card {
   display: flex;
   align-items: center;
-  gap: 14px;
-  background: rgba(255, 255, 255, 0.02);
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border-color);
-  border-radius: 12px;
-  padding: 10px 18px;
+  border-radius: 8px;
+  padding: 4px 10px;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-sizing: border-box;
+}
+
+.sidebar .local-device-card {
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.sidebar-footer {
+  display: block;
+  margin-top: auto;
+  padding-top: 16px;
+  width: 100%;
+}
+
+.topbar-device-card {
+  display: none;
 }
 
 .local-device-card:hover {
   border-color: var(--border-hover);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.05);
   transform: translateY(-1px);
 }
 
 .local-device-card .status-dot {
   position: relative;
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background-color: var(--active-dot);
-  box-shadow: 0 0 10px var(--active-dot);
+  box-shadow: 0 0 8px var(--active-dot);
+}
+
+.local-device-card .status-dot.status-offline {
+  background-color: var(--text-muted, #71717a);
+  box-shadow: none;
 }
 
 /* The expanding ring was an animated box-shadow. box-shadow cannot be composited, so it
@@ -449,7 +481,7 @@ select option {
    backdrop-filtered sidebar, each of those repaints also forced the sidebar's blur to be
    recomputed. A scaled/faded pseudo-element looks the same and stays on the compositor.
    Geometry matches the original: an 8px dot with an 8px spread is a 24px ring, i.e. scale(3). */
-.local-device-card .status-dot::after {
+.local-device-card .status-dot:not(.status-offline)::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -468,18 +500,18 @@ select option {
 .device-details {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 #header-device-name {
-  font-size: 13.5px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: -0.1px;
   color: var(--text-color);
 }
 
 #header-device-ip {
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 500;
   color: var(--text-muted);
 }
@@ -538,6 +570,7 @@ button {
   font-weight: 500;
   letter-spacing: -0.1px;
   cursor: pointer;
+  white-space: nowrap;
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -670,6 +703,15 @@ input:checked + .slider:before {
     background: var(--sidebar-bg) !important;
     backdrop-filter: blur(20px) !important;
     transition: none !important;
+  }
+
+  .sidebar-footer {
+    display: none !important;
+  }
+
+  .topbar-device-card {
+    display: flex !important;
+    align-items: center;
   }
 
   .nav-list {

@@ -29,10 +29,6 @@ export const PERMISSION_REASONS: Record<string, { title: string; reason: string 
     title: 'Microphone Access',
     reason: 'Allows your phone to act as a wireless microphone for your PC during Remote Mic sessions. Your phone\'s mic input streams directly to your computer\'s audio.',
   },
-  deviceAdmin: {
-    title: 'Device Administrator',
-    reason: 'Enables remote screen lock — lets a paired PC lock this phone\'s screen remotely. Note: Android prevents app uninstall while Device Admin is active. To uninstall, first disable this in Settings → Permissions.',
-  },
   batteryOpt: {
     title: 'Battery Optimization Exemption',
     reason: 'Prevents Android from killing Link when your phone screen is off. Without this exemption, background sync stops after a few minutes of inactivity, breaking mesh connectivity.',

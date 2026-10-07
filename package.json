@@ -12,7 +12,7 @@
     "build:linux": "npm run build && electron-builder --linux deb",
     "build:android": "vite build --base=./ && npx cap sync android && powershell -Command \"if (-not $env:JAVA_HOME -and (Test-Path 'C:\\Program Files\\Android\\Android Studio\\jbr')) { $env:JAVA_HOME='C:\\Program Files\\Android\\Android Studio\\jbr'; $env:Path+=';C:\\Program Files\\Android\\Android Studio\\jbr\\bin' }; cd android; .\\gradlew.bat clean assembleRelease; cd ..\"",
     "release": "node scripts/upload-release.mjs",
-    "install:android": "powershell -Command \"$env:Path += ';' + $env:LOCALAPPDATA + '\\Android\\Sdk\\platform-tools'; adb install -r android/app/build/outputs/apk/release/app-release.apk\"",
+    "install:android": "powershell -Command \"& ${env:LOCALAPPDATA}\\Android\\Sdk\\platform-tools\\adb.exe -d install -r android/app/build/outputs/apk/release/app-release.apk\"",
     "dev": "tsc -p tsconfig.json && node --no-deprecation -e \"require('fs').mkdirSync('dist/scripts',{recursive:true});for (const f of ['audio-endpoint-volume','screensaver-inhibit','mpris-control','audio-capture']) require('fs').copyFileSync('electron/scripts/'+f+'.ps1','dist/scripts/'+f+'.ps1')\" && concurrently \"vite --strictPort --port 5173\" \"electron --no-deprecation dist/main/main.js --dev\"",
     "dev:desktop": "npm run dev",
     "prepare": "husky",

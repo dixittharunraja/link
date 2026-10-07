@@ -83,6 +83,13 @@ public class LinkAccessibilityService extends AccessibilityService {
         }
     }
 
+    public boolean lockScreen() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            return performGlobalAction(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN);
+        }
+        return false;
+    }
+
     // Real absolute touch injection for Digitizer's TV target — dispatchGesture is the one
     // AccessibilityService capability that goes beyond node actions/global actions: it injects a
     // genuine synthetic touch stream system-wide (whatever app currently has focus), which is
@@ -119,6 +126,23 @@ public class LinkAccessibilityService extends AccessibilityService {
         digitizerLastX = x;
         digitizerLastY = y;
         dispatchGesture(new GestureDescription.Builder().addStroke(digitizerStroke).build(), null, null);
+    }
+
+    // Real tap injection at absolute (x, y) coordinates
+    public void injectTap(float x, float y) {
+        Path path = new Path();
+        path.moveTo(x, y);
+        GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, 50);
+        dispatchGesture(new GestureDescription.Builder().addStroke(stroke).build(), null, null);
+    }
+
+    // Real swipe/scroll injection from (startX, startY) to (endX, endY)
+    public void injectScroll(float startX, float startY, float endX, float endY, long durationMs) {
+        Path path = new Path();
+        path.moveTo(startX, startY);
+        path.lineTo(endX, endY);
+        GestureDescription.StrokeDescription stroke = new GestureDescription.StrokeDescription(path, 0, Math.max(50, durationMs));
+        dispatchGesture(new GestureDescription.Builder().addStroke(stroke).build(), null, null);
     }
 
     // Called when a digitizer session ends (pen mode toggled off / overlay closed) while a

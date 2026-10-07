@@ -30,12 +30,130 @@ public class LinkJoystickClient {
     private final Listener listener;
     private WebSocketClient client;
     private boolean pinComputedLocally = false;
+    private volatile boolean resolved = false;
+    private final java.util.List<WebSocketClient> pendingClients = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     public LinkJoystickClient(Listener listener) {
         this.listener = listener;
     }
 
-    public void connect(String host, int port, String deviceName, X509Certificate myCert, PrivateKey myKey) {
+    private String sanitizeHost(String raw) {
+        if (raw == null) return "";
+        String clean = raw.trim();
+        if (clean.startsWith("link:")) {
+            String[] parts = clean.split(":");
+            if (parts.length >= 2) clean = parts[1];
+        } else if (clean.startsWith("http://") || clean.startsWith("https://")) {
+            clean = clean.replaceFirst("^https?://", "").split("/")[0].split(":")[0];
+        } else if (clean.contains(":")) {
+            clean = clean.split(":")[0];
+        }
+        return clean.trim();
+    }
+
+    public void connect(final String host, final int port, final String deviceName, final X509Certificate myCert, final PrivateKey myKey) {
+        String[] rawHosts = host.split(",");
+        java.util.List<String> validHosts = new java.util.ArrayList<>();
+        for (String rh : rawHosts) {
+            String sanitized = sanitizeHost(rh);
+            if (!sanitized.isEmpty() && !validHosts.contains(sanitized)) {
+                validHosts.add(sanitized);
+            }
+        }
+
+        if (validHosts.isEmpty()) {
+            listener.onError("Invalid host address");
+            return;
+        }
+
+        if (validHosts.size() == 1) {
+            connectSingle(validHosts.get(0), port, deviceName, myCert, myKey);
+            return;
+        }
+
+        resolved = false;
+        pendingClients.clear();
+
+        try {
+            final SSLContext sslContext = LinkTransport.buildSslContext(myCert, myKey);
+
+            for (final String singleHost : validHosts) {
+                new Thread(() -> {
+                    try {
+                        URI uri = new URI("wss://" + singleHost + ":" + port);
+                        final WebSocketClient ws = new WebSocketClient(uri) {
+                            @Override
+                            public void onOpen(ServerHandshake handshakedata) {
+                                synchronized (LinkJoystickClient.this) {
+                                    if (resolved) {
+                                        try { close(); } catch (Exception ignored) {}
+                                        return;
+                                    }
+                                    resolved = true;
+                                    client = this;
+
+                                    for (WebSocketClient c : pendingClients) {
+                                        if (c != this) {
+                                            try { c.close(); } catch (Exception ignored) {}
+                                        }
+                                    }
+                                    pendingClients.clear();
+                                }
+
+                                Log.i(TAG, "onOpen (" + singleHost + ") — joystick guest connected");
+                                computeAndReportPin(myCert);
+                                try {
+                                    JSONObject msg = new JSONObject();
+                                    msg.put("type", "join-guest");
+                                    msg.put("deviceName", deviceName);
+                                    send(msg.toString());
+                                } catch (Exception e) {
+                                    listener.onError("Failed to send join message: " + e.getMessage());
+                                }
+                            }
+
+                            @Override
+                            public void onMessage(String message) {
+                                if (client == this) {
+                                    handleControlMessage(message);
+                                }
+                            }
+
+                            @Override
+                            public void onMessage(java.nio.ByteBuffer bytes) {}
+
+                            @Override
+                            public void onClose(int code, String reason, boolean remote) {
+                                if (client == this) {
+                                    Log.i(TAG, "onClose code=" + code + " reason=" + reason + " remote=" + remote);
+                                    listener.onClosed(reason != null && !reason.isEmpty() ? reason : ("code " + code));
+                                }
+                            }
+
+                            @Override
+                            public void onError(Exception ex) {
+                                if (client == this) {
+                                    Log.e(TAG, "onError (" + singleHost + ")", ex);
+                                    listener.onError(ex.getMessage());
+                                }
+                            }
+                        };
+
+                        ws.setSocketFactory(sslContext.getSocketFactory());
+                        ws.setConnectionLostTimeout(10);
+                        pendingClients.add(ws);
+                        ws.connect();
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed connection attempt to " + singleHost, e);
+                    }
+                }).start();
+            }
+        } catch (Exception e) {
+            listener.onError("Failed to connect: " + e.getMessage());
+        }
+    }
+
+    private void connectSingle(String host, int port, String deviceName, X509Certificate myCert, PrivateKey myKey) {
         try {
             URI uri = new URI("wss://" + host + ":" + port);
             SSLContext sslContext = LinkTransport.buildSslContext(myCert, myKey);
@@ -64,12 +182,6 @@ public class LinkJoystickClient {
 
                 @Override
                 public void onClose(int code, String reason, boolean remote) {
-                    // Stale-instance guard, mirroring LinkAudioSinkClient.java/
-                    // LinkWalkieTalkieClient.java's identical check — disconnect() below nulls
-                    // the outer `client` field synchronously, so by the time THIS async callback
-                    // lands after our own intentional disconnect, `client` no longer points at `this`
-                    // and the (now-meaningless) close reason/code is silently dropped instead of
-                    // surfacing as an error the user never asked about (e.g. "code 1000").
                     if (client != this) return;
                     Log.i(TAG, "onClose code=" + code + " reason=" + reason + " remote=" + remote);
                     listener.onClosed(reason != null && !reason.isEmpty() ? reason : ("code " + code));
@@ -83,6 +195,7 @@ public class LinkJoystickClient {
                 }
             };
             client.setSocketFactory(sslContext.getSocketFactory());
+            client.setConnectionLostTimeout(10);
             client.connect();
         } catch (Exception e) {
             listener.onError("Failed to connect: " + e.getMessage());
@@ -127,5 +240,9 @@ public class LinkJoystickClient {
             try { client.close(); } catch (Exception ignored) {}
             client = null;
         }
+        for (WebSocketClient c : pendingClients) {
+            try { c.close(); } catch (Exception ignored) {}
+        }
+        pendingClients.clear();
     }
 }

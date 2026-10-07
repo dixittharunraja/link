@@ -164,6 +164,14 @@ const DevicePermissionsModal: React.FC<DevicePermissionsModalProps> = ({
             />
           )}
 
+          {/* Remote Control — screen streaming and interactive control */}
+          <ToggleRow
+            title="Allow Remote Control"
+            description="Let this device view your screen and interact with touch, mouse, and keyboard input."
+            checked={getPermission('remotecontrol')}
+            onChange={(v) => setPermission('remotecontrol', v)}
+          />
+
           {/* Run Command — only desktop ever executes/whitelists commands; Android has no
               executor at all (it only receives a peer's list and triggers on THEM). */}
           {isLocalDesktop && (

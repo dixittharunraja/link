@@ -67,7 +67,22 @@ export class RemoteInputServer extends EventEmitter {
 
   isAdmitted(ip: string, mode?: InputMode): boolean {
     const cleanIp = ip.replace(/^::ffff:/, '');
-    const guest = this.admittedGuests.get(cleanIp);
+    let guest = this.admittedGuests.get(cleanIp);
+    // Fall back to the sole admitted guest on an IP mismatch. A guest's high-rate input (pmove/
+    // touchpad move) rides a SEPARATE, unbound UDP DatagramSocket on the phone (see
+    // LinkPlugin.java's getOrCreateOutboundSocket) — independent from the TCP/WSS socket this
+    // guest was originally admitted over, so the OS is free to pick a different local
+    // interface/source IP for it (a freshly-joined Wi-Fi network, a dual-network device, etc.),
+    // even though it's unquestionably the same phone. acceptGuest()/handleConnection() above both
+    // clear every other guest before admitting a new one, so at most one guest is EVER admitted
+    // at a time — given that invariant, a mismatched IP with exactly one guest present can only
+    // mean this same fragility, never a different, unauthorized sender. This was silently
+    // dropping every presenter/touchpad packet from an ad-hoc (untrusted) guest whenever the two
+    // sockets happened to disagree — the connection itself looked fine (that's the TCP/WSS side),
+    // but nothing ever moved because this UDP-side check kept failing.
+    if (!guest && this.admittedGuests.size === 1) {
+      guest = this.admittedGuests.values().next().value;
+    }
     if (!guest) return false;
     if (mode && guest.mode !== mode && guest.mode !== 'touchpad') return false;
     return true;
@@ -102,7 +117,10 @@ export class RemoteInputServer extends EventEmitter {
       mode: pending.mode,
     });
     try {
-      pending.ws.send(JSON.stringify({ type: 'admitted', mode: pending.mode }));
+      // hostDeviceType: this process IS the desktop, always — lets the guest's own UI (e.g.
+      // PresenterOverlay) pick portrait vs landscape by what it's actually controlling, the same
+      // way RemoteControlViewer already does from the real mirrored frame's aspect.
+      pending.ws.send(JSON.stringify({ type: 'admitted', mode: pending.mode, hostDeviceType: 'desktop' }));
     } catch {}
     this.emit('guestJoined', pending.remoteAddress, pending.deviceName, pending.mode);
     this.emit('rosterChanged');
@@ -185,7 +203,7 @@ export class RemoteInputServer extends EventEmitter {
 
           this.admittedGuests.set(remoteAddress, { ws, remoteAddress, deviceName, mode });
           try {
-            ws.send(JSON.stringify({ type: 'admitted', mode }));
+            ws.send(JSON.stringify({ type: 'admitted', mode, hostDeviceType: 'desktop' }));
           } catch {}
           this.emit('guestJoined', remoteAddress, deviceName, mode);
           this.emit('rosterChanged');

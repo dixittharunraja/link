@@ -96,6 +96,7 @@ export class PeerConnection extends EventEmitter {
   }
 
   send(packet: LinkPacket): void {
+    this.lastActivityAt = Date.now();
     this.socket.write(serializePacket(packet));
   }
 
@@ -143,6 +144,7 @@ export class LinkServer extends EventEmitter {
         minVersion: 'TLSv1.2',
       },
       (socket) => {
+        socket.setNoDelay(true);
         socket.setKeepAlive(true, 10000);
         const conn = new PeerConnection(socket, opts.myIdentity, false);
         this.emit('connection', conn);
@@ -177,6 +179,7 @@ export function connectToPeer(host: string, port: number, opts: TransportOptions
       },
       () => {
         socket.setTimeout(0);
+        socket.setNoDelay(true);
         socket.setKeepAlive(true, 10000);
         const conn = new PeerConnection(socket, opts.myIdentity, true);
         resolve(conn);

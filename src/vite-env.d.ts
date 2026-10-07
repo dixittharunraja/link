@@ -85,8 +85,6 @@ export interface LinkApi {
   requestAllFilesAccess: () => Promise<any>;
   checkDndPermission: () => Promise<any>;
   requestDndPermission: () => Promise<any>;
-  checkDeviceAdmin: () => Promise<any>;
-  requestDeviceAdmin: () => Promise<any>;
   isBatteryOptimizationIgnored: () => Promise<any>;
   requestIgnoreBatteryOptimizations: () => Promise<any>;
   checkAccessibility: () => Promise<any>;
@@ -97,6 +95,10 @@ export interface LinkApi {
 
   // Input Relays
   sendRemoteInput: (deviceId: string, text?: string, specialKey?: string) => Promise<any>;
+  sendRemoteControlSignal?: (deviceId: string, signalBody: any) => Promise<any>;
+  sendRemoteControlInput?: (deviceId: string, inputBody: any) => Promise<any>;
+  requestRemoteControlHost?: (deviceId?: string) => Promise<boolean>;
+  stopRemoteControlHost?: () => Promise<any>;
   sendPresenterMove: (deviceId: string, dx: number, dy: number) => Promise<any>;
   cycleTargetDisplay: (deviceId: string) => Promise<any>;
   sendPresenterStop: (deviceId: string) => Promise<any>;
@@ -116,6 +118,9 @@ export interface LinkApi {
   onJoystickPinRequired: (cb: (pin: string) => void) => () => void;
   onJoystickPing: (cb: () => void) => () => void;
   onJoystickForcedDisconnect: (cb: (reason: string) => void) => () => void;
+  startJoystickHost?: () => Promise<any>;
+  stopJoystickHost?: () => Promise<any>;
+  requestShizukuPermission?: () => Promise<any>;
   getJoystickStatus?: () => Promise<any>;
   checkJoystickDriver?: () => Promise<any>;
   acceptJoystickGuest?: (connId: string) => Promise<any>;
@@ -128,6 +133,8 @@ export interface LinkApi {
   onJoystickRosterChanged?: (cb: () => void) => () => void;
   onJoystickGuestPinPending?: (cb: (connId: string, pin: string, remoteAddress: string, name: string) => void) => () => void;
   // Input Guest Session (Presenter & Remote Control)
+  startInputGuestHost?: () => Promise<any>;
+  stopInputGuestHost?: () => Promise<any>;
   joinInputGuest?: (host: string, name?: string, mode?: 'presenter' | 'touchpad') => Promise<any>;
   leaveInputGuest?: () => Promise<any>;
   getInputGuestStatus?: () => Promise<any>;
@@ -137,7 +144,7 @@ export interface LinkApi {
   kickInputGuest?: (ip: string) => Promise<any>;
   onInputGuestPinPending?: (cb: (connId: string, pin: string, remoteAddress: string, name: string, mode: 'presenter' | 'touchpad') => void) => () => void;
   onInputGuestPinRequired?: (cb: (pin: string) => void) => () => void;
-  onInputGuestAdmitted?: (cb: (mode: 'presenter' | 'touchpad') => void) => () => void;
+  onInputGuestAdmitted?: (cb: (mode: 'presenter' | 'touchpad', resolvedHost?: string, hostDeviceType?: string) => void) => () => void;
   onInputGuestClosed?: (cb: (reason: string) => void) => () => void;
   onInputGuestError?: (cb: (error: string) => void) => () => void;
   onInputGuestRosterChanged?: (cb: () => void) => () => void;
@@ -292,8 +299,10 @@ export interface LinkApi {
   getConnectedDevices: () => Promise<any[]>;
   resyncDevices: () => Promise<any>;
   openAppSettings: () => Promise<any>;
+  openExternal?: (url: string) => Promise<any>;
   renameTrustedDevice: (deviceId: string, newName: string) => Promise<any>;
   setImmersiveMode?: (enabled: boolean) => Promise<any>;
+  setSystemGestureExclusion?: (enabled: boolean) => Promise<any>;
 
   // Event Listeners
   onDeviceConnected: (cb: (identity: any, trusted: boolean) => void) => () => void;
@@ -326,6 +335,8 @@ export interface LinkApi {
   onCommandListReceived: (cb: (deviceId: string, commands: any) => void) => () => void;
   onDeviceRenamed: (cb: (deviceId: string, newName: string) => void) => () => void;
   onOwnDeviceRenamed?: (cb: (newName: string) => void) => () => void;
+  onRemoteControlSignal?: (cb: (deviceId: string, signalBody: any) => void) => () => void;
+  onRemoteControlStream?: (cb: (deviceId: string, frame: any) => void) => () => void;
 }
 
 declare global {

@@ -112,16 +112,16 @@ const AudioSinkTab: React.FC<AudioSinkTabProps> = ({ peers, localIdentity, isMob
       }
     });
 
-    linkApi.onAudioSinkPairedSessionStarted((deviceId: string, token: string, host: string) => {
+    const unsubStarted = linkApi.onAudioSinkPairedSessionStarted((deviceId: string, token: string, host: string) => {
       upsertPairedSession(setPairedSessions, peers, deviceId, token, host);
     });
-    linkApi.onAudioSinkPairedSessionEnded((deviceId: string) => {
+    const unsubEnded = linkApi.onAudioSinkPairedSessionEnded((deviceId: string) => {
       removePairedSession(setPairedSessions, deviceId);
     });
 
     linkApi.onAudioSinkStats?.((s) => setStats(s));
 
-    linkApi.onAudioSinkAdmitted((hostLabel: string) => {
+    const unsubAdmitted = linkApi.onAudioSinkAdmitted((hostLabel: string) => {
       if (hostLabel) setActiveHostLabel(hostLabel);
       setListenerPhase('listening');
       // Mobile plays natively (AudioTrack, driven entirely from Java) — no chunks ever reach JS
@@ -131,18 +131,18 @@ const AudioSinkTab: React.FC<AudioSinkTabProps> = ({ peers, localIdentity, isMob
         playerRef.current.setVolume(volume);
       }
     });
-    linkApi.onAudioSinkFormat((format: AudioFormat) => {
+    const unsubFormat = linkApi.onAudioSinkFormat((format: AudioFormat) => {
       formatRef.current = format;
     });
-    linkApi.onAudioSinkAudioChunk((pcm: Uint8Array) => {
+    const unsubAudio = linkApi.onAudioSinkAudioChunk((pcm: Uint8Array) => {
       if (playerRef.current && formatRef.current) {
         playerRef.current.enqueue(pcm, formatRef.current);
       }
     });
-    linkApi.onAudioSinkEnded((reason?: string) => {
+    const unsubHostEnded = linkApi.onAudioSinkEnded((reason?: string) => {
       handleListenerSessionEnd(reason, setListenerPhase, setActiveHostLabel, setPin, setListenerError, playerRef);
     });
-    linkApi.onAudioSinkClosed((reason: string) => {
+    const unsubClosed = linkApi.onAudioSinkClosed((reason: string) => {
       // Straight back to the connect page rather than a separate error screen to dismiss first —
       // but unlike a mid-session kick (onAudioSinkEnded, which needs no explanation), this also
       // covers a host REJECTING the join/PIN request before ever connecting, which the connect
@@ -182,6 +182,12 @@ const AudioSinkTab: React.FC<AudioSinkTabProps> = ({ peers, localIdentity, isMob
         if (Array.isArray(devs)) setOutputDevices(devs);
       }).catch(() => {});
     }
+
+    const unsubDisconnect = linkApi.onDeviceDisconnected?.((deviceId: string) => {
+      removePairedSession(setPairedSessions, deviceId);
+    });
+
+    return () => { unsubDisconnect?.(); unsubStarted?.(); unsubEnded?.(); unsubStats?.(); unsubFormat?.(); unsubAudio?.(); unsubHostEnded?.(); unsubClosed?.(); unsubAdmitted?.(); };
   }, []);
 
   useEffect(() => {
@@ -270,7 +276,7 @@ const AudioSinkTab: React.FC<AudioSinkTabProps> = ({ peers, localIdentity, isMob
     }
 
     setJoinIpInput(candidates[0]);
-    joinAsGuest(candidates[0]);
+    joinAsGuest(rawHost);
   };
 
   const leaveListening = async () => {
@@ -632,6 +638,8 @@ const AudioSinkTab: React.FC<AudioSinkTabProps> = ({ peers, localIdentity, isMob
 
               <PendingGuestsModal
                 guests={pendingGuests}
+                title="Audio Relay Request"
+                iconType="audio"
                 subtitle="wants to listen to your audio"
                 onAccept={(connId) => {
                   linkApi.acceptAudioSinkGuest?.(connId);
@@ -657,7 +665,17 @@ const AudioSinkTab: React.FC<AudioSinkTabProps> = ({ peers, localIdentity, isMob
                     No listeners connected yet.
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                      maxHeight: '260px',
+                      overflowY: 'auto',
+                      paddingRight: '4px',
+                    }}
+                    className="custom-scrollbar"
+                  >
                     {listeners.map((l) => (
                       <AudioListenerRow
                         key={l.id}

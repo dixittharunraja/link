@@ -120,8 +120,6 @@ if (isCapacitor) {
     requestAllFilesAccess: () => CapacitorLink.requestAllFilesAccess(),
     checkDndPermission: () => CapacitorLink.checkDndPermission(),
     requestDndPermission: () => CapacitorLink.requestDndPermission(),
-    checkDeviceAdmin: () => CapacitorLink.checkDeviceAdmin(),
-    requestDeviceAdmin: () => CapacitorLink.requestDeviceAdmin(),
     isBatteryOptimizationIgnored: () => CapacitorLink.isBatteryOptimizationIgnored(),
     requestIgnoreBatteryOptimizations: () => CapacitorLink.requestIgnoreBatteryOptimizations(),
     checkAccessibility: () => CapacitorLink.checkAccessibility(),
@@ -165,6 +163,18 @@ if (isCapacitor) {
     // High-frequency (~60Hz) — raw UDP:1717, same channel/cadence as sendMouseMove above.
     sendJoystickState: (host: string, lx: number, ly: number, rx: number, ry: number, lt: number, rt: number, buttons: number) =>
       CapacitorLink.sendJoystickState({ host, lx, ly, rx, ry, lt, rt, buttons }),
+    
+    // Joystick Host Methods
+    startJoystickHost: () => CapacitorLink.startJoystickHost(),
+    stopJoystickHost: () => CapacitorLink.stopJoystickHost(),
+    getJoystickStatus: () => CapacitorLink.getJoystickStatus(),
+    checkJoystickDriver: () => CapacitorLink.checkJoystickDriver(),
+    requestShizukuPermission: () => CapacitorLink.requestShizukuPermission(),
+    acceptJoystickGuest: (connId: string) => CapacitorLink.acceptJoystickGuest({ connId }),
+    rejectJoystickGuest: (connId: string) => CapacitorLink.rejectJoystickGuest({ connId }),
+    blockJoystickGuest: (connId: string) => CapacitorLink.blockJoystickGuest({ connId }),
+    kickJoystickController: (ip: string) => CapacitorLink.kickJoystickController({ ip }),
+
     onJoystickHelloAck: (cb: (ok: boolean, padIndex: number | null, error: string | null) => void) => {
       subscribe('joystickHelloAck', (data: any) => cb(!!data.ok, data.padIndex ?? null, data.error || null));
     },
@@ -179,21 +189,43 @@ if (isCapacitor) {
     onJoystickForcedDisconnect: (cb: (reason: string) => void) => {
       subscribe('joystickForcedDisconnect', (data: any) => cb(data.reason || 'disconnected'));
     },
+    onJoystickDriverStatus: (cb: (status: string, error: string | null) => void) => {
+      subscribe('joystickDriverStatus', (data: any) => cb(data.status, data.error || null));
+    },
+    onJoystickRosterChanged: (cb: () => void) => {
+      subscribe('joystickRosterChanged', () => cb());
+    },
+    onJoystickGuestPinPending: (cb: (connId: string, pinCode: string, remoteAddress: string, name: string) => void) => {
+      subscribe('joystickGuestPinPending', (data: any) => cb(data.connId, data.pin, data.remoteAddress, data.name));
+    },
     // Input Guest Session (Presenter & Remote Control)
+    startInputGuestHost: () => CapacitorLink.startInputGuestHost(),
+    stopInputGuestHost: () => CapacitorLink.stopInputGuestHost(),
+    getInputGuestStatus: () => CapacitorLink.getInputGuestStatus(),
+    acceptInputGuest: (connId: string) => CapacitorLink.acceptInputGuest({ connId }),
+    rejectInputGuest: (connId: string) => CapacitorLink.rejectInputGuest({ connId }),
+    blockInputGuest: (connId: string) => CapacitorLink.blockInputGuest({ connId }),
+    kickInputGuest: (ip: string) => CapacitorLink.kickInputGuest({ ip }),
     joinInputGuest: (host: string, name?: string, mode?: 'presenter' | 'touchpad') =>
       CapacitorLink.joinInputGuest({ host, name, mode }),
     leaveInputGuest: () => CapacitorLink.leaveInputGuest(),
+    onInputGuestPinPending: (cb: (connId: string, pin: string, remoteAddress: string, name: string, mode: 'presenter' | 'touchpad') => void) => {
+      subscribe('inputGuestPinPending', (data: any) => cb(data.connId, data.pin, data.remoteAddress, data.name, data.mode));
+    },
     onInputGuestPinRequired: (cb: (pin: string) => void) => {
       subscribe('inputGuestPinRequired', (data: any) => cb(data.pin));
     },
-    onInputGuestAdmitted: (cb: (mode: 'presenter' | 'touchpad') => void) => {
-      subscribe('inputGuestAdmitted', (data: any) => cb(data.mode || 'touchpad'));
+    onInputGuestAdmitted: (cb: (mode: 'presenter' | 'touchpad', resolvedHost?: string, hostDeviceType?: string) => void) => {
+      subscribe('inputGuestAdmitted', (data: any) => cb(data.mode || 'touchpad', data.host, data.hostDeviceType));
     },
     onInputGuestClosed: (cb: (reason: string) => void) => {
       subscribe('inputGuestClosed', (data: any) => cb(data.error || 'disconnected'));
     },
     onInputGuestError: (cb: (error: string) => void) => {
       subscribe('inputGuestError', (data: any) => cb(data.error || 'Failed to connect'));
+    },
+    onInputGuestRosterChanged: (cb: () => void) => {
+      subscribe('inputGuestRosterChanged', () => cb());
     },
     vibrate: (amplitude: number, durationMs: number) => CapacitorLink.vibrate({ amplitude, durationMs }),
 
@@ -211,6 +243,7 @@ if (isCapacitor) {
     renameTrustedDevice: (deviceId: string, newName: string) => 
       CapacitorLink.renameTrustedDevice({ deviceId, name: newName }),
     setImmersiveMode: (enabled: boolean) => CapacitorLink.setImmersiveMode({ enabled }),
+    setSystemGestureExclusion: (enabled: boolean) => CapacitorLink.setSystemGestureExclusion({ enabled }),
 
     // --- Dynamic Event Listener Shims ---
     onDeviceConnected: (cb: (identity: any, trusted: boolean) => void) => {
@@ -606,6 +639,26 @@ if (isCapacitor) {
       CapacitorLink.fsOpenDocument({ deviceId, remotePath }).then(() => true),
     onFsTransferProgress: (cb: (info: { transferId: string; direction: 'download' | 'upload'; deviceId: string; path: string; transferred: number; total: number }) => void) => {
       subscribe('fsTransferProgress', (data: any) => cb(data));
+    },
+
+    // ===== Remote Control =====
+    sendRemoteControlSignal: (deviceId: string, signalBody: any) =>
+      CapacitorLink.sendRemoteControlSignal({ deviceId, signal: signalBody }),
+    sendRemoteControlInput: (deviceId: string, inputBody: any) =>
+      CapacitorLink.sendRemoteControlInput({ deviceId, input: inputBody }),
+    requestRemoteControlHost: (deviceId?: string) =>
+      CapacitorLink.requestRemoteControlHost({ deviceId }).then((res: any) => !!res?.granted),
+    stopRemoteControlHost: () =>
+      CapacitorLink.stopRemoteControlHost(),
+    onRemoteControlSignal: (cb: (deviceId: string, signalBody: any) => void) => {
+      return subscribe('remoteControlSignalReceived', (data: any) => {
+        cb(data.deviceId, data.signal);
+      });
+    },
+    onRemoteControlStream: (cb: (deviceId: string, frame: any) => void) => {
+      return subscribe('remoteControlStreamReceived', (data: any) => {
+        cb(data.deviceId, data.frame);
+      });
     },
   };
 }

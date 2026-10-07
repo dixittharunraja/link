@@ -207,7 +207,6 @@ function extractHost(raw: string): string {
       host = cleaned;
     }
   }
-  if (host.includes(',')) host = host.split(',')[0].trim();
   return host;
 }
 
@@ -460,68 +459,154 @@ interface PendingGuestCardProps {
   onBlock?: () => void;
   title?: string;
   subtitle?: string;
+  acceptLabel?: string;
+  iconType?: 'trust' | 'audio' | 'mic' | 'portal' | 'input' | 'presenter' | 'walkie' | 'joystick' | 'default';
 }
 
-export const PendingGuestCard: React.FC<PendingGuestCardProps> = ({ guest, onAccept, onReject, onBlock, title = 'Connection Request', subtitle }) => (
-  <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-      <div style={{
-        width: '40px',
-        height: '40px',
-        borderRadius: '50%',
-        background: 'rgba(0, 122, 204, 0.1)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        color: 'var(--accent-color)',
-      }}>
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
-          <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
-          <line x1="12" y1="18" x2="12.01" y2="18" />
-        </svg>
-      </div>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: '16px', fontWeight: 700 }}>{title}</div>
-        <div style={{ fontSize: '12px', color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>
-          {subtitle
-            ? `${guest.deviceName || 'Guest'} ${subtitle} (${guest.remoteAddress.replace(/^::ffff:/, '')})`
-            : `From ${guest.deviceName || 'Guest'} (${guest.remoteAddress.replace(/^::ffff:/, '')})`}
+export const PendingGuestCard: React.FC<PendingGuestCardProps> = ({
+  guest,
+  onAccept,
+  onReject,
+  onBlock,
+  title = 'Connection Request',
+  subtitle,
+  acceptLabel = 'Accept',
+  iconType = 'default',
+}) => {
+  const renderIcon = () => {
+    switch (iconType) {
+      case 'trust':
+        return (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+        );
+      case 'joystick':
+        return (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="2" y="6" width="20" height="12" rx="6" />
+            <path d="M6 12h4m-2-2v4" />
+            <circle cx="15" cy="11" r="1" fill="currentColor" />
+            <circle cx="18" cy="13" r="1" fill="currentColor" />
+          </svg>
+        );
+      case 'audio':
+        return (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+            <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
+          </svg>
+        );
+      case 'mic':
+        return (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
+          </svg>
+        );
+      case 'portal':
+        return (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          </svg>
+        );
+      case 'presenter':
+        return (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="5 3 19 12 5 21 5 3" />
+          </svg>
+        );
+      case 'input':
+        return (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="5" y="2" width="14" height="20" rx="4" />
+            <line x1="12" y1="6" x2="12" y2="10" />
+          </svg>
+        );
+      case 'walkie':
+        return (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9" />
+            <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5" />
+            <circle cx="12" cy="12" r="2" />
+            <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5" />
+            <path d="M19.1 4.9C23 8.8 23 15.1 19.1 19.1" />
+          </svg>
+        );
+      default:
+        return (
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
+            <line x1="12" y1="18" x2="12.01" y2="18" />
+          </svg>
+        );
+    }
+  };
+
+  return (
+    <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={{
+          width: '40px',
+          height: '40px',
+          borderRadius: '50%',
+          background: 'rgba(0, 122, 204, 0.12)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'var(--accent-color)',
+          flexShrink: 0,
+        }}>
+          {renderIcon()}
+        </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-color)' }}>{title}</div>
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>
+            {subtitle
+              ? `${guest.deviceName || 'Guest'} ${subtitle} (${guest.remoteAddress.replace(/^::ffff:/, '')})`
+              : `From ${guest.deviceName || 'Guest'} (${guest.remoteAddress.replace(/^::ffff:/, '')})`}
+          </div>
         </div>
       </div>
-    </div>
 
-    {/* Shared Uniform PIN Box */}
-    <PinDisplayBox pin={guest.pin} />
+      {/* Shared Uniform PIN Box */}
+      <PinDisplayBox pin={guest.pin} />
 
-    <div style={{ display: 'flex', gap: '8px' }}>
-      <button
-        onClick={onReject}
-        style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--text-color)', cursor: 'pointer', fontWeight: 600 }}
-      >
-        Reject
-      </button>
-      <button
-        onClick={onAccept}
-        style={{ flex: 1, padding: '10px', borderRadius: '6px', border: 'none', background: 'var(--accent-color)', color: 'var(--btn-primary-text)', cursor: 'pointer', fontWeight: 700 }}
-      >
-        Accept
-      </button>
-      {onBlock && (
+      <div style={{ display: 'flex', gap: '8px' }}>
         <button
-          onClick={onBlock}
-          title="Reject and block this IP from future requests"
-          style={{ padding: '10px 14px', borderRadius: '6px', border: 'none', background: 'var(--inactive-dot)', color: '#fff', cursor: 'pointer', fontWeight: 600 }}
+          onClick={onReject}
+          style={{ flex: 1, padding: '10px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'transparent', color: 'var(--text-color)', cursor: 'pointer', fontWeight: 600 }}
         >
-          Block
+          Reject
         </button>
-      )}
+        <button
+          onClick={onAccept}
+          style={{ flex: 1.4, padding: '10px', borderRadius: '6px', border: 'none', background: 'var(--accent-color)', color: 'var(--btn-primary-text)', cursor: 'pointer', fontWeight: 700 }}
+        >
+          {acceptLabel}
+        </button>
+        {onBlock && (
+          <button
+            onClick={onBlock}
+            title="Reject and block this IP from future requests"
+            style={{ padding: '10px 14px', borderRadius: '6px', border: 'none', background: 'var(--inactive-dot)', color: '#fff', cursor: 'pointer', fontWeight: 600 }}
+          >
+            Block
+          </button>
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 export interface PendingGuestsModalProps {
   guests: PendingGuestLike[];
   subtitle?: string;
+  title?: string;
+  acceptLabel?: string;
+  iconType?: 'trust' | 'audio' | 'mic' | 'portal' | 'input' | 'presenter' | 'walkie' | 'joystick' | 'default';
   onAccept: (connId: string) => void;
   onReject: (connId: string) => void;
   onBlock?: (connId: string) => void;
@@ -530,6 +615,9 @@ export interface PendingGuestsModalProps {
 export const PendingGuestsModal: React.FC<PendingGuestsModalProps> = ({
   guests,
   subtitle,
+  title,
+  acceptLabel,
+  iconType,
   onAccept,
   onReject,
   onBlock,
@@ -563,7 +651,10 @@ export const PendingGuestsModal: React.FC<PendingGuestsModalProps> = ({
           >
             <PendingGuestCard
               guest={g}
+              title={title}
               subtitle={subtitle}
+              acceptLabel={acceptLabel}
+              iconType={iconType}
               onAccept={() => onAccept(g.connId)}
               onReject={() => onReject(g.connId)}
               onBlock={onBlock ? () => onBlock(g.connId) : undefined}

@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ICoAC 2026</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+
+body{
+font-family:'Poppins',sans-serif;
+background:#eef4fb;
+color:#0f172a;
+}
+
+.navbar{
+background:#0f172a;
+padding:18px 50px;
+display:flex;
+justify-content:space-between;
+align-items:center;
+flex-wrap:wrap;
+}
+
+.logo-wrap{
+display:flex;
+gap:15px;
+align-items:center;
+}
+
+.logo-wrap img{
+height:58px;
+}
+
+.menu{
+display:flex;
+gap:18px;
+flex-wrap:wrap;
+}
+
+.menu a{
+color:#f8fafc;
+text-decoration:none;
+font-size:14px;
+font-weight:500;
+padding:10px 14px;
+border-radius:10px;
+transition:.3s ease;
+}
+
+.menu a:hover{
+background:rgba(255,255,255,0.08);
+color:#7dd3fc;
+}
+
+.hero{
+background:
+linear-gradient(rgba(15,23,42,.82),rgba(15,23,42,.82)),
+url('images/mit-front.jpg');
+background-size:cover;
+background-position:center;
+padding:120px 20px;
+color:white;
+}
+
+.hero-content{
+max-width:1100px;
+margin:auto;
+display:flex;
+align-items:center;
+gap:25px;
+}
+
+.hero-content img{
+height:95px;
+}
+
+.hero h1{
+font-size:58px;
+font-weight:700;
+}
+
+.hero p{
+font-size:20px;
+margin-top:10px;
+color:#dbeafe;
+}
+
+.main-layout{
+max-width:1400px;
+margin:50px auto;
+padding:0 20px;
+display:grid;
+grid-template-columns:1fr 2fr 1fr;
+gap:30px;
+}
+
+.modern-card{
+background:white;
+padding:30px;
+border-radius:24px;
+box-shadow:0 10px 35px rgba(15,23,42,.08);
+height:100%;
+}
+
+.section-title{
+font-size:24px;
+font-weight:700;
+margin-bottom:25px;
+text-align:center;
+color:#0f172a;
+}
+
+.conference-list{
+display:flex;
+flex-direction:column;
+gap:14px;
+}
+
+.conf-btn{
+display:block;
+background:linear-gradient(135deg,#0891b2,#06b6d4);
+color:white;
+text-align:center;
+padding:12px;
+border-radius:12px;
+text-decoration:none;
+font-weight:600;
+transition:.3s ease;
+}
+
+.conf-btn:hover{
+transform:translateY(-2px);
+background:linear-gradient(135deg,#0284c7,#0891b2);
+}
+
+.department-message{
+font-size:17px;
+line-height:2;
+color:#475569;
+}
+
+.department-message ul{
+padding-left:20px;
+margin-top:15px;
+}
+
+.deadline-item{
+padding:16px 0;
+border-bottom:1px solid #e2e8f0;
+display:flex;
+flex-direction:column;
+}
+
+.deadline-item span{
+font-weight:600;
+color:#0f172a;
+}
+
+.deadline-item strong{
+margin-top:5px;
+color:#38bdf8;
+}
+
+.deadline-buttons{
+display:flex;
+gap:12px;
+margin-top:25px;
+flex-wrap:wrap;
+}
+
+.modern-btn{
+background:linear-gradient(135deg,#0891b2,#06b6d4);
+border:none;
+color:white;
+padding:12px 18px;
+border-radius:12px;
+font-weight:600;
+cursor:pointer;
+transition:.3s ease;
+}
+
+.footer{
+background:#0f172a;
+color:#cbd5e1;
+text-align:center;
+padding:22px;
+margin-top:50px;
+}
+
+@media(max-width:991px){
+
+.navbar{
+padding:18px 20px;
+justify-content:center;
+gap:20px;
+}
+
+.menu{
+justify-content:center;
+}
+
+.hero-content{
+flex-direction:column;
+text-align:center;
+}
+
+.hero h1{
+font-size:42px;
+}
+
+.main-layout{
+grid-template-columns:1fr;
+}
+}
+.menu a.active{
+background:linear-gradient(135deg,#0891b2,#06b6d4);
+color:white !important;
+border-radius:12px;
+box-shadow:0 6px 20px rgba(8,145,178,.25);
+}
+
+}
+</style>
+</head>
+
+<body>
+
+<nav class="navbar">
+
+<div class="logo-wrap">
+<img src="images/annaunivlogo2.png">
+<img src="images/mitlogo.jpg">
+</div>
+
+<div class="menu">
+<a href="index.html">HOME</a>
+<a href="aboutus.html">ABOUT US</a>
+<a href="callforpapers.html">CALL FOR PAPERS</a>
+<a href="papersubmission.html">PAPER SUBMISSION</a>
+<a href="registration.html">REGISTRATION</a>
+<a href="schedule.html">SCHEDULE</a>
+<a href="keynote.html">KEYNOTE</a>
+<a href="committee.html">COMMITTEE</a>
+<a href="callforpatrons.html">PATRONS</a>
+<a href="contactus.html">CONTACT</a>
+</div>
+
+</nav>
+
+<section class="hero">
+
+<div class="hero-content">
+
+<!--<img src="images/75english.jpg">-->
+
+<div>
+<h1>ICoAC 2026</h1>
+<p>13th International Conference on Advanced Computing</p>
+<p>December 17 - 19, 2026</p>
+</div>
+
+</div>
+
+</section>
+
+<section class="main-layout">
+
+<div class="left-panel">
+
+<div class="modern-card">
+
+<h3 class="section-title">PREVIOUS CONFERENCES</h3>
+
+<div class="conference-list">
+
+<a href="icoac2023/index.html" class="conf-btn">ICoAC 2023</a>
+<a href="icoac2019/index.html" class="conf-btn">ICoAC 2019</a>
+<a href="icoac2018/index18.html" class="conf-btn">ICoAC 2018</a>
+<a href="icoac2017/index.html" class="conf-btn">ICoAC 2017</a>
+<a href="icoac2016/index.html" class="conf-btn">ICoAC 2016</a>
+<a href="https://www.annauniv.edu/ICoAC%202015" class="conf-btn">ICoAC 2015</a>
+<a href="https://ieeexplore.ieee.org/xpl/conhome/7203815/proceeding" class="conf-btn">ICoAC 2014</a>
+<a href="https://ieeexplore.ieee.org/xpl/conhome/6915272/proceeding" class="conf-btn">ICoAC 2013</a>
+<a href="https://ieeexplore.ieee.org/xpl/conhome/6412848/proceeding" class="conf-btn">ICoAC 2012</a>
+<a href="https://ieeexplore.ieee.org/xpl/conhome/6156880/proceeding" class="conf-btn">ICoAC 2011</a>
+<a href="https://ieeexplore.ieee.org/xpl/conhome/5723180/proceeding" class="conf-btn">ICoAC 2010</a>
+<a href="https://ieeexplore.ieee.org/xpl/conhome/5368576/proceeding" class="conf-btn">ICoAC 2009</a>
+
+</div>
+
+</div>
+
+</div>
+
+<div class="center-panel">
+
+<div class="modern-card">
+
+<h3 class="section-title">ICoAC 2026</h3>
+
+<div class="department-message">
+
+<p>
+<p align="justify"><strong>ICoAC 2026</strong> is the 13<sup>th</sup> International Conference on Advanced Computing organized by the <b>Department of Computer Technology, MIT Campus, Anna University, Chennai.</b><!-- in association with IEEE Madras Section-->. Centered around the theme <b>“Actionable AI for Sustainability and Resilience”</b>, the conference serves as a premier global platform for researchers, academicians, industry professionals, and students to exchange innovative ideas and present cutting-edge research in advanced computing technologies. ICoAC 2026 will feature keynote lectures, technical sessions, tutorials, and research presentations spanning domains such as Artificial Intelligence, Large Language Models, Quantum Computing, Sustainable Computing, Cloud and Edge Computing, IoT, Healthcare AI, Cyber-Physical Systems, Autonomous Systems, and Intelligent Networks.
+</p>
+<center> <h4> Publications </h4></center>
+<p align="justify">Accepted and Presented research papers will be submitted for inclusion in <span class="awesome"><!--IEEE Xplore--> Digital Library</span>. </p>
+</p>
+<!--<p align="justify"> The Microsoft CMT service was used for managing the peer-reviewing process for this conference.This service was provided by Microsoft and they bore all expenses, including costs for Azure Cloud services as well as software development and support.</p>-->
+
+<div style="margin-top:30px;text-align:center;">
+
+<a target="_blank" href="Pamphlets/ICoAC2026.pdf">
+
+<button class="modern-btn" style="
+padding:14px 28px;
+font-size:16px;
+border-radius:14px;
+box-shadow:0 8px 25px rgba(8,145,178,.25);
+">
+ Download Brochure
+</button>
+
+</a>
+
+</div>
+
+
+<!--<p>
+This section can later include:
+</p>
+
+<ul>
+<li>Welcome message from HoD</li>
+<li>Research vision and mission</li>
+<li>About MIT Campus</li>
+<li>Conference objectives</li>
+<li>Department achievements</li>
+</ul>-->
+
+</div>
+
+</div>
+
+</div>
+
+<div class="right-panel">
+
+<div class="modern-card">
+
+<h3 class="section-title">IMPORTANT DEADLINES</h3>
+
+<div class="deadline-item">
+<span>Paper Submission</span>
+<strong>
+<span style="
+text-decoration:line-through;
+color:#94a3b8;
+display:block;
+font-weight:500;
+">
+30<sup>th</sup> June, 2026
+</span>
+
+<span style="
+text-decoration:line-through;
+color:#94a3b8;
+display:block;
+margin-top:4px;
+font-weight:500;
+">
+31<sup>st</sup> July, 2026
+</span>
+
+<span style="
+color:#38bdf8;
+display:block;
+margin-top:4px;
+font-weight:700;
+">
+Extended upto 5<sup>th</sup> Oct, 2026
+</span>
+
+</strong>
+</div>
+
+<div class="deadline-item">
+<span>Notification of Acceptance</span>
+<strong>
+<span style="
+text-decoration:line-through;
+color:#94a3b8;
+display:block;
+font-weight:500;
+">
+20<sup>th</sup> Aug, 2026
+</span>
+<span style="
+color:#38bdf8;
+display:block;
+margin-top:4px;
+font-weight:700;
+">
+16<sup>th</sup> Oct, 2026
+</span>
+</strong>
+</div>
+
+<div class="deadline-item">
+<span>Paper Registration</span>
+<strong>
+<span style="
+text-decoration:line-through;
+color:#94a3b8;
+display:block;
+font-weight:500;
+">
+31<sup>st</sup> Aug, 2026
+</span>
+<span style="
+color:#38bdf8;
+display:block;
+margin-top:4px;
+font-weight:700;
+">
+23<sup>rd</sup> Oct, 2026
+</span>
+</strong>
+</div>
+
+<div class="deadline-item">
+<span>Camera Ready Copy</span>
+<strong>
+<span style="
+text-decoration:line-through;
+color:#94a3b8;
+display:block;
+font-weight:500;
+">
+10<sup>th</sup> Sep, 2026
+</span>
+<span style="
+color:#38bdf8;
+display:block;
+margin-top:4px;
+font-weight:700;
+">
+23<sup>rd</sup> Oct, 2026
+</span>
+</strong>
+</div>
+
+<div class="deadline-item">
+<span>Pre-Conference Tutorial</span>
+<strong>17<sup>th</sup> Dec, 2026</strong>
+</div>
+
+<div class="deadline-item">
+<span>Conference Dates</span>
+<strong>Dec 17<sup>th</sup>-19<sup>th</sup>, 2026</strong>
+</div>
+
+<div class="deadline-buttons">
+<a href="https://cmt3.research.microsoft.com/ICOAC2026" target="_blank">
+<button class="modern-btn">
+Submit Article
+</button>
+
+<!--<a target="_blank" href="Pamphlets/ICoAC2026.pdf">
+<button class="modern-btn">
+Brochure
+</button>-->
+</a>
+
+</div>
+
+</div>
+
+</div>
+
+</section>
+
+<footer class="footer">
+© ICoAC 2026 | Anna University MIT Campus
+</footer>
+
+</body>
+</html>

@@ -18,6 +18,7 @@
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
+            android:screenOrientation="portrait"
             android:exported="true">
 
             <intent-filter>
@@ -44,6 +45,13 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         <service android:name="in.rodix.link.LinkForegroundService"
                  android:foregroundServiceType="connectedDevice|mediaProjection|microphone"
                  android:stopWithTask="false"
@@ -56,19 +64,6 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
-        <receiver android:name="in.rodix.link.LinkDeviceAdminReceiver"
-            android:label="Link Device Administrator"
-            android:description="@string/device_admin_description"
-            android:permission="android.permission.BIND_DEVICE_ADMIN"
-            android:exported="true">
-            <meta-data
-                android:name="android.app.device_admin"
-                android:resource="@xml/device_admin_rules" />
-            <intent-filter>
-                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
-            </intent-filter>
-        </receiver>
-
         <service android:name="in.rodix.link.LinkAccessibilityService"
                  android:label="Link"
                  android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
@@ -110,6 +105,10 @@
          and is genuinely applicable — this app does manage LAN/Wi-Fi device connections. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+                     android:usesPermissionFlags="neverForLocation"
+                     tools:targetApi="tiramisu" />
     <!-- Needed to hold a WifiManager.MulticastLock while the discovery UDP receiver is running —
          see LinkDiscovery.Watcher.start() for why broadcast reception needs it on some chipsets. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />

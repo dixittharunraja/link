@@ -23,6 +23,7 @@ interface DeviceControlPanelProps {
   onShowTouchpad?: (id: string) => void;
   onShowJoystick?: (id: string) => void;
   onShowRemoteInput?: (id: string) => void;
+  onShowRemoteControl?: (id: string) => void;
   onRunCommandTrigger: (deviceId: string, key: string) => void;
   onSetVolume: (id: string, sinkName: string, vol: number) => void;
   onToggleMute: (id: string, sinkName: string) => void;
@@ -144,6 +145,16 @@ const PLUGIN_REGISTRY: PluginDescriptor[] = [
     },
   },
   {
+    id: 'remotecontrol',
+    permissionKey: 'remotecontrol',
+    packetType: 'link.remotecontrol.signal',
+    allowedTargetTypes: ['phone', 'tv', 'desktop'],
+    allowedLocalTypes: ['desktop', 'mobile'],
+    requiresCallback: (ctx) => !!ctx.onShowRemoteControl,
+    title: () => 'Remote Control',
+    onClick: (id, ctx) => ctx.onShowRemoteControl(id),
+  },
+  {
     id: 'joystick',
     allowedTargetTypes: ['desktop'],
     allowedLocalTypes: ['mobile'],
@@ -176,6 +187,7 @@ const DeviceControlPanel: React.FC<DeviceControlPanelProps> = ({
   onShowTouchpad,
   onShowJoystick,
   onShowRemoteInput,
+  onShowRemoteControl,
   onRunCommandTrigger,
   onSetVolume,
   onToggleMute,
@@ -255,6 +267,7 @@ const DeviceControlPanel: React.FC<DeviceControlPanelProps> = ({
     onShowTouchpad,
     onShowJoystick,
     onShowRemoteInput,
+    onShowRemoteControl,
     activeSpeedTestDeviceId,
   };
 
@@ -487,9 +500,32 @@ const DeviceControlPanel: React.FC<DeviceControlPanelProps> = ({
                 <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '10px' }}>
                   Media Controller
                 </div>
-                <div style={{ padding: '16px', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
-                  <div style={{ fontSize: '13.5px', fontWeight: 600 }}>{mprisState?.title || 'Unknown Track'}</div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>{mprisState?.artist || 'Unknown Artist'}</div>
+                <div style={{ padding: '16px', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-color)', borderRadius: '10px', overflow: 'hidden' }}>
+                  <div
+                    title={mprisState?.title ? (mprisState.title.includes('?') ? mprisState.title.split('?')[0] : mprisState.title) : 'Unknown Track'}
+                    style={{
+                      fontSize: '13.5px',
+                      fontWeight: 600,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {mprisState?.title ? (mprisState.title.includes('?') ? mprisState.title.split('?')[0] : mprisState.title) : 'Unknown Track'}
+                  </div>
+                  <div
+                    title={mprisState?.artist || 'Unknown Artist'}
+                    style={{
+                      fontSize: '12px',
+                      color: 'var(--text-muted)',
+                      marginBottom: '12px',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {mprisState?.artist || 'Unknown Artist'}
+                  </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                     <button
                       onClick={onMprisPrev}

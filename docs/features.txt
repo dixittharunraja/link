@@ -68,7 +68,7 @@ FEATURES (KDE Connect plugin catalog)
                            dismiss, since we don't have the notification/activity UI stack built.
                            Desktop's "ring this PC" direction (loops Alarm01.wav via PowerShell)
                            implemented but not yet live-tested phone->desktop.
-[x] lockdevice           — fully symmetric. Peers can lock target desktops or mobile devices. Desktop lock triggers screensavers/system locks. Mobile locking is implemented using Android Device Administrator APIs to programmatically lock the phone screen. Status checks query current Keyguard lock states.
+[x] lockdevice           — fully symmetric. Peers can lock target desktops or mobile devices. Desktop lock triggers screensavers/system locks. Mobile and TV locking is implemented using Android Accessibility Service (GLOBAL_ACTION_LOCK_SCREEN, API 28+) to programmatically lock the phone or put TV in standby without requiring Device Admin permissions or uninstall blocks. Status checks query current Keyguard lock states.
 [x] touchpad / remotecontrol / remotekeyboard — proven cross-platform: cursor movement, clicks,
                            scroll, and the double-tap-then-hold-then-drag gesture all confirmed
                            working via native Win32 mouse_event/keybd_event injection from the
@@ -238,7 +238,6 @@ PLANNED TWEAKS
 ------------------------------------------------------
 [ ] TV casting / media streaming integration
 [ ] Mouse Without Borders plugin (Desktop-to-Desktop screen-edge KVM input switching / coordination)
-[ ] DJ Controller — mobile DJ mixing surface with crossfader and deck controls
 [x] joystick / gamepad           — Link-original. Phone acts as a wireless virtual gamepad controller
                            targeting a Desktop (Windows) or TV (V2 backlog). Desktop host uses
                            ViGEmBus driver to expose a virtual Xbox controller to the OS; phone

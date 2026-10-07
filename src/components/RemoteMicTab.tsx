@@ -164,8 +164,13 @@ const RemoteMicTab: React.FC<RemoteMicTabProps> = ({ peers, localIdentity, isMob
       }
     }).catch(() => {});
 
+    const unsubDisconnect = linkApi.onDeviceDisconnected?.((deviceId: string) => {
+      removePairedSession(setPairedSessions, deviceId);
+    });
+
     linkApi.queryRemoteMicSessions?.();
     return () => {
+      unsubDisconnect?.();
       playerRef.current?.close();
       playerRef.current = null;
     };
@@ -436,6 +441,8 @@ const RemoteMicTab: React.FC<RemoteMicTabProps> = ({ peers, localIdentity, isMob
 
                 <PendingGuestsModal
                   guests={pendingGuests}
+                  title="Remote Mic Request"
+                  iconType="mic"
                   subtitle="wants to receive your microphone"
                   onAccept={(connId) => {
                     linkApi?.acceptRemoteMicGuest?.(connId);

@@ -13,6 +13,7 @@ export const ALL_PERMISSION_KEYS = [
   'dnd',
   'clipboard',
   'remoteinput',
+  'remotecontrol',
 ] as const;
 
 export type PermissionKey = typeof ALL_PERMISSION_KEYS[number];
@@ -34,4 +35,5 @@ export const GATED_CAPABILITY_KEYS: PermissionKey[] = [
   'remoteinput',
   'flashlight',
   'fileaccess',
+  'remotecontrol',
 ];

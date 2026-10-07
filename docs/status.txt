@@ -18,59 +18,34 @@ and removal all working. Deferred hardening: owner-key encryption-at-rest, full 
 
 ## Topology Capabilities & Compatibility Matrix
 
-### 1. Core Topologies (Mobile & PC)
-
-| Feature                       | P-P | M-P | M-M | P-M | Mesh | Rating |
-| :---------------------------- | :-: | :-: | :-: | :-: | :--: | :----: |
-| Connectivity Report           |  -  |  x  |  x  |  -  |  x   |  8/10  |
-| Battery Status                |  x  |  x  |  x  |  x  |  x   |  9/10  |
-| Clipboard Sync                |  x  |  x  |  x  |  x  |  x   |  8/10  |
-| Find My Device                |  x  |  x  |  x  |  x  |  x   |  9/10  |
-| Lock Device                   |  x  |  x  |  o  |  o  |  o   |  8/10  |
-| Run Command                   |  x  |  x  |  -  |  -  |  o   |  8/10  |
-| Presenter Pointer             |  -  |  x  |  -  |  -  |  x   |  9/10  |
-| Digitizer Tablet              |  -  |  x  |  -  |  -  |  x   |  8/10  |
-| MPRIS Media Control           |  x  |  x  |  x  |  x  |  x   |  8/10  |
-| System Volume Control         |  x  |  x  |  x  |  x  |  x   |  8/10  |
-| Telephony Alerts              |  -  |  x  |  x  |  -  |  x   |  8/10  |
-| Notification Mirroring        |  -  |  x  |  -  |  -  |  o   |  8/10  |
-| WSS + WebDAV File System      |  o  |  o  |  o  |  o  |  o   |  9/10  |
-| Device Rename                 |  x  |  x  |  x  |  x  |  x   |  8/10  |
-| Screensaver Inhibit           |  -  |  o  |  -  |  -  |  o   |  8/10  |
-| Flashlight Toggle             |  -  |  -  |  x  |  x  |  x   |  9/10  |
-| Do Not Disturb (DND)          |  -  |  -  |  x  |  x  |  x   |  8/10  |
-| Connected Speed Test          |  x  |  x  |  x  |  x  |  x   | 10/10  |
-| Audio Relay                   |  o  |  x  |  x  |  x  |  x   |  8/10  |
-| Remote Mic                    |  -  |  x  |  -  |  -  |  x   |  7/10  |
-| Walkie Talkie                 |  o  |  x  |  x  |  x  |  x   |  8/10  |
-| Blocklist / Banlist           |  o  |  x  |  x  |  x  |  x   |  9/10  |
-| Portal (File Transfer)        |  o  |  x  |  x  |  x  |  -   |  9/10  |
-| Remote Input                  |  o  |  x  |  x  |  x  |  o   |  9/10  |
-| Joystick / Gamepad            |  -  |  x  |  -  |  -  |  x   |  8/10  |
-
-### 2. TV Extension Topologies (Smart TV)
-
-| Feature                       | P-T | M-T | T-T | T-P | T-M | Rating |
-| :---------------------------- | :-: | :-: | :-: | :-: | :-: | :----: |
-| Connectivity Report           |  o  |  o  |  -  |  -  |  -  |  8/10  |
-| MPRIS Media Control           |  o  |  o  |  o  |  o  |  o  |  8/10  |
-| System Volume Control         |  o  |  o  |  o  |  o  |  o  |  8/10  |
-| Telephony Alerts (Toasts)     |  -  |  o  |  -  |  -  |  -  |  8/10  |
-| Notification Mirroring        |  -  |  o  |  -  |  -  |  -  |  8/10  |
-| Find My Device                |  o  |  o  |  o  |  o  |  o  |  9/10  |
-| WSS + WebDAV (Storage Read)   |  o  |  -  |  -  |  -  |  -  |  9/10  |
-| Device Rename                 |  o  |  o  |  o  |  o  |  o  |  8/10  |
-| Screensaver Inhibit           |  -  |  o  |  -  |  -  |  -  |  8/10  |
-| Run Command                   |  -  |  -  |  -  |  o  |  -  |  8/10  |
-| Flashlight Toggle             |  -  |  -  |  -  |  -  |  o  |  9/10  |
-| Do Not Disturb (DND)          |  o  |  o  |  o  |  -  |  o  |  8/10  |
-| Connected Speed Test          |  o  |  o  |  o  |  o  |  o  | 10/10  |
-| Audio Relay                   |  o  |  o  |  o  |  o  |  o  |  8/10  |
-| Remote Mic (TV Listener)      |  o  |  o  |  -  |  -  |  -  |  7/10  |
-| Blocklist / Banlist           |  o  |  o  |  o  |  o  |  o  |  9/10  |
-| Portal (Receiver Mode)        |  o  |  o  |  -  |  -  |  -  |  9/10  |
-| Remote Input                  |  o  |  o  |  -  |  -  |  -  |  9/10  |
-| Joystick (Host/Target)        |  o  |  o  |  -  |  -  |  -  |  7/10  |
+| Feature                       | P-P | M-P | M-M | P-M | P-T | M-T | T-P | T-M | T-T | Rating |
+| :---------------------------- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :----: |
+| Connectivity Report           |  -  |  x  |  x  |  -  |  -  |  o  |  -  |  -  |  -  |  8/10  |
+| Battery Status                |  x  |  x  |  x  |  x  |  o  |  o  |  -  |  -  |  -  |  9/10  |
+| Clipboard Sync                |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| Find My Device                |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  9/10  |
+| Lock Device                   |  x  |  x  |  o  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| Run Command                   |  x  |  x  |  -  |  -  |  -  |  -  |  o  |  -  |  -  |  8/10  |
+| Presenter Pointer             |  -  |  x  |  -  |  -  |  -  |  o  |  -  |  -  |  -  |  9/10  |
+| Digitizer Tablet              |  -  |  x  |  -  |  -  |  -  |  o  |  -  |  -  |  -  |  8/10  |
+| MPRIS Media Control           |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| System Volume Control         |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| Telephony Alerts              |  -  |  x  |  x  |  -  |  -  |  o  |  -  |  -  |  -  |  8/10  |
+| Notification Mirroring        |  -  |  x  |  -  |  -  |  -  |  o  |  o  |  o  |  o  |  8/10  |
+| WSS + WebDAV File System      |  o  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  9/10  |
+| Device Rename                 |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| Screensaver Inhibit           |  -  |  x  |  -  |  -  |  -  |  o  |  -  |  -  |  -  |  8/10  |
+| Flashlight Toggle             |  -  |  -  |  x  |  x  |  -  |  -  |  -  |  o  |  -  |  9/10  |
+| Do Not Disturb (DND)          |  -  |  -  |  x  |  x  |  o  |  o  |  -  |  o  |  o  |  8/10  |
+| Connected Speed Test          |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  | 10/10  |
+| Audio Relay                   |  o  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| Remote Mic                    |  -  |  x  |  -  |  -  |  -  |  o  |  -  |  -  |  -  |  7/10  |
+| Walkie Talkie                 |  o  |  x  |  x  |  x  |  -  |  -  |  -  |  -  |  -  |  8/10  |
+| Blocklist / Banlist           |  o  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  9/10  |
+| Portal (File Transfer)        |  o  |  x  |  x  |  x  |  o  |  o  |  -  |  -  |  -  |  9/10  |
+| Remote Input                  |  o  |  x  |  x  |  x  |  o  |  o  |  -  |  -  |  -  |  9/10  |
+| Joystick / Gamepad            |  -  |  x  |  -  |  -  |  -  |  o  |  -  |  -  |  -  |  8/10  |
+| Pause Music on Call           |  -  |  x  |  x  |  -  |  -  |  x  |  -  |  -  |  -  |  9/10  |
 
 ### Legend
 * `M` Mobile | `P` PC | `T` TV
@@ -91,7 +66,7 @@ This matrix lists the structural directionality and device category scopes for e
 | Connectivity Report        | Mobile                | Mobile, Desktop, TV         | Cellular signal and carrier updates.          |
 | Battery Status             | Mobile, Desktop       | Mobile, Desktop, TV         | Real-time level and charging state updates.   |
 | Clipboard Sync             | Mobile, Desktop       | Mobile, Desktop, TV         | Bidirectional text & file sync.               |
-| Find My Device (Ring)      | Mobile, Desktop       | Mobile, Desktop, TV         | Trigger a sound alert on a lost device.       |
+| Find My Device (Ring)      | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Trigger a sound alert on a lost device.       |
 | Lock Device                | Mobile, Desktop       | Mobile, Desktop, TV         | Initiates a remote system lock.               |
 | Run Command                | Mobile, Desktop, TV   | Desktop                     | Executes whitelist scripts on the target host.|
 | Remote Input               | Mobile, Desktop       | Mobile, Desktop, TV         | Mobile->PC (touchpad/key), PC/Mobile->TV (D-pad), PC->Mobile (key) |
@@ -100,19 +75,20 @@ This matrix lists the structural directionality and device category scopes for e
 | MPRIS Media Control        | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Displays track metadata and controls playback.|
 | System Volume Control      | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Adjusts stream volume levels remotely.        |
 | Telephony Alerts           | Mobile                | Mobile, Desktop, TV         | Mirror incoming/missed calls.                 |
+| Pause Music on Call        | Mobile                | Mobile, Desktop, TV         | Automatically pauses media during calls.      |
 | Notification Mirroring     | Mobile                | Desktop, TV                 | Replicate alerts on the PC screen.            |
-| WSS + WebDAV FS            | Mobile, Desktop       | Mobile, Desktop, TV         | Pipelined file system mounting.               |
-| Device Rename              | Mobile, Desktop       | Mobile, Desktop, TV         | Mesh-wide name propagation.                   |
+| WSS + WebDAV FS            | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Pipelined file system mounting.               |
+| Device Rename              | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Mesh-wide name propagation.                   |
 | Screensaver Inhibit        | Desktop               | Desktop                     | Prevent sleep during active media / slides.   |
-| Flashlight Toggle          | Mobile, Desktop       | Mobile                      | Turn phone camera flash on or off.            |
-| Do Not Disturb (DND)       | Mobile, Desktop       | Mobile, TV                  | Sets priority interrupts remotely.            |
+| Flashlight Toggle          | Mobile, Desktop, TV   | Mobile                      | Turn phone camera flash on or off.            |
+| Do Not Disturb (DND)       | Mobile, Desktop, TV   | Mobile, TV                  | Sets priority interrupts remotely.            |
 | Connected Speed Test       | Mobile, Desktop       | Mobile, Desktop, TV         | Dynamic bandwidth & latency benchmarks.       |
 | Audio Relay                | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Stream host system audio to other devices.    |
 | Remote Mic                 | Mobile                | Desktop, TV                 | Use phone as wireless microphone.             |
-| Walkie Talkie              | Mobile, Desktop       | Mobile, Desktop, TV         | Multi-master clustered WebRTC voice calls.    |
+| Walkie Talkie              | Mobile, Desktop       | Mobile, Desktop             | Multi-master clustered WebRTC voice calls.    |
 | Blocklist / Banlist        | Mobile, Desktop       | Mobile, Desktop, TV         | Deny untrusted guests or spam requests.       |
-| Portal (File Transfer)     | Mobile, Desktop       | Mobile, Desktop, TV         | One-time PIN-gated transfer to guest.         |
-| Joystick / Gamepad         | Mobile                | Desktop, TV (V2)            | Phone as virtual gamepad controller. Desktop uses ViGEmBus; TV input injection is V2 backlog. |
+| File Transfer              | Mobile, Desktop       | Mobile, Desktop, TV         | One-time PIN-gated transfer to guest.         |
+| Joystick / Gamepad         | Mobile                | Desktop, TV                 | Phone as virtual gamepad controller. Desktop uses ViGEmBus; TV input injection is V2 backlog. |
 +----------------------------+-----------------------+-----------------------------+-----------------------------------------------+
 
 ================================================================================

@@ -362,6 +362,12 @@ contextBridge.exposeInMainWorld('link', {
   onFsTransferProgress: (cb: (info: { transferId: string; direction: 'download' | 'upload'; deviceId: string; path: string; transferred: number; total: number }) => void) =>
     subscribe('fs-transfer-progress', (_e, info) => cb(info)),
 
+  // ===== Remote Control =====
+  sendRemoteControlSignal: (deviceId: string, signalBody: any) => ipcRenderer.invoke('send-remote-control-signal', deviceId, signalBody),
+  sendRemoteControlInput: (deviceId: string, inputBody: any) => ipcRenderer.invoke('send-remote-control-input', deviceId, inputBody),
+  onRemoteControlSignal: (cb: (deviceId: string, signalBody: any) => void) => subscribe('remote-control-signal', (_e, deviceId, signalBody) => cb(deviceId, signalBody)),
+  onRemoteControlStream: (cb: (deviceId: string, frame: any) => void) => subscribe('remote-control-stream', (_e, deviceId, frame) => cb(deviceId, frame)),
+
   onAppResumed: (_cb: () => void) => { /* no-op on desktop */ },
   onLocalIdentityUpdated: (cb: (identity: any) => void) => subscribe('local-identity-updated', (_e, identity) => cb(identity))
 });

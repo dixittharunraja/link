@@ -17,7 +17,7 @@ interface ToolsTabProps {
   isMobile: boolean;
   walkieTalkieActive: boolean;
   onOpenWalkieTalkie: () => void;
-  onShowPresenter?: (deviceId: string) => void;
+  onShowPresenter?: (deviceId: string, hostDeviceType?: string) => void;
   onShowTouchpad?: (deviceId: string) => void;
 }
 
@@ -243,15 +243,29 @@ const ToolsTab: React.FC<ToolsTabProps> = ({
             style={{
               width: '100%',
               maxWidth: selected === 'file-transfer' ? '640px' : '540px',
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
               backgroundColor: 'var(--modal-bg)',
               border: '1px solid var(--border-color)',
               borderRadius: '16px',
               padding: '20px 24px',
               boxShadow: '0 20px 50px var(--modal-shadow)',
               animation: 'scaleUp 0.15s ease',
+              overflow: 'hidden',
             }}
           >
             <ToolModalHeader title={selectedTool.title} onClose={() => setSelected(null)} />
+
+            <div
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                marginRight: '-8px',
+                paddingRight: '8px',
+              }}
+              className="custom-scrollbar"
+            >
 
             {selected === 'audio-sink' && (
               <AudioSinkTab peers={peers} localIdentity={localIdentity} isMobile={isMobile} />
@@ -273,9 +287,9 @@ const ToolsTab: React.FC<ToolsTabProps> = ({
               <PresenterTab
                 localIdentity={localIdentity}
                 isMobile={isMobile}
-                onLaunchPresenter={(targetId) => {
+                onLaunchPresenter={(targetId, hostDeviceType) => {
                   setSelected(null);
-                  onShowPresenter?.(targetId);
+                  onShowPresenter?.(targetId, hostDeviceType);
                 }}
               />
             )}
@@ -318,6 +332,7 @@ const ToolsTab: React.FC<ToolsTabProps> = ({
                 </div>
               </div>
             )}
+            </div>
           </div>
         </div>
       )}

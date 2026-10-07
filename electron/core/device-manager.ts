@@ -424,13 +424,15 @@ export class DeviceManager extends EventEmitter {
       .map((p) => ({ identity: p.conn.peerIdentity as DeviceIdentity, trusted: p.trusted }));
   }
 
-  // Detect dead peers via TCP silence; send heartbeat to keep idle connections alive.
+  // Detect dead peers via TCP silence; send heartbeat only when idle to keep connection alive.
   runHeartbeatCycle(timeoutMs: number): void {
     const currentHash = this.trustStore.computePoolHash();
+    const now = Date.now();
     for (const peer of this.peers.values()) {
       if (peer.conn.isStale(timeoutMs)) {
         peer.conn.close();
-      } else {
+      } else if (now - peer.conn.lastActivityAt >= 4000) {
+        // Only send keepalive when idle for >= 4s, saving power and avoiding redundant pings
         peer.conn.sendHeartbeat(false, currentHash);
       }
     }

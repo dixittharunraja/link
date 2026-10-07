@@ -269,7 +269,22 @@ export class LinkFsMountService {
         }
         try {
           const parsed = new URL(req.url ?? '/', `http://127.0.0.1:${this.streamPort}`);
-          const filePath = parsed.searchParams.get('path');
+          let filePath = parsed.searchParams.get('path');
+          if (!filePath) {
+            // Path was passed in the URL pathname (e.g. /Internal Storage/DCIM/Screenshots/pic.png)
+            const decodedPath = decodeURIComponent(parsed.pathname);
+            // Match against rootsCache
+            for (const root of this.rootsCache) {
+              const prefix = `/${root.name}`;
+              if (decodedPath === prefix || decodedPath.startsWith(prefix + '/')) {
+                const subPath = decodedPath.substring(prefix.length);
+                const rootBase = root.path.endsWith('/') ? root.path.slice(0, -1) : root.path;
+                filePath = `${rootBase}${subPath.startsWith('/') ? subPath : '/' + subPath}`;
+                break;
+              }
+            }
+          }
+
           if (!filePath) {
             res.writeHead(400);
             res.end('Missing path');
@@ -294,7 +309,7 @@ export class LinkFsMountService {
             });
             res.end(buffer);
           } else {
-            const buffer = await this.client.read(filePath, 0, Math.min(stat.size, 10 * 1024 * 1024));
+            const buffer = await this.client.read(filePath, 0, stat.size);
             res.writeHead(200, {
               'Content-Length': stat.size,
               'Content-Type': mimeForPath(filePath),

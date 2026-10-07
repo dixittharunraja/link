@@ -188,6 +188,7 @@ public class LinkTransport {
             try {
                 writeExecutor.execute(() -> {
                     try {
+                        lastActivityAt = System.currentTimeMillis();
                         OutputStream out = socket.getOutputStream();
                         out.write(packet.serialize());
                         out.flush();
@@ -272,8 +273,7 @@ public class LinkTransport {
                     try {
                         SSLSocket socket = (SSLSocket) serverSocket.accept();
                         in.rodix.link.connection.LinkCryptoProvider.configureTlsSocket(socket);
-                        // See connectToPeer()'s keepalive comment — same half-open-connection risk
-                        // applies to inbound connections (e.g. a PC dialing into this phone).
+                        socket.setTcpNoDelay(true);
                         socket.setKeepAlive(true);
                         PeerConnection conn = new PeerConnection(socket, myIdentity, false);
                         listener.onConnection(conn);
@@ -306,13 +306,12 @@ public class LinkTransport {
     public static PeerConnection connectToPeer(String host, int port, X509Certificate cert, PrivateKey key, LinkIdentity.Identity myIdentity) throws Exception {
         SSLContext context = buildSslContext(cert, key);
         java.net.Socket rawSocket = new java.net.Socket();
+        rawSocket.setTcpNoDelay(true);
+        rawSocket.setKeepAlive(true);
         rawSocket.connect(new java.net.InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
         SSLSocket socket = (SSLSocket) context.getSocketFactory().createSocket(rawSocket, host, port, true);
         in.rodix.link.connection.LinkCryptoProvider.configureTlsSocket(socket);
-        // A connection can go half-open (peer's radio slept, NAT/AP session dropped) without
-        // either end noticing for a long time — the OS default TCP keepalive is hours. Without
-        // this, a "connected" peer that's actually gone silently swallows anything sent to it
-        // (including a pair request) instead of the socket ever reporting closed.
+        socket.setTcpNoDelay(true);
         socket.setKeepAlive(true);
         return new PeerConnection(socket, myIdentity, true);
     }

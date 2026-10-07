@@ -1,0 +1,557 @@
+Defeating the Usable-Security Trilemma in Personal
+Device Meshes via Transitive Trust-on-First-Use
+(T-TOFU)
+Dixit Tharun Raja P
+
+Dharaneesh D
+
+Deepanandham P
+
+Department of Computer Science
+and Engineering
+KPR Institute of Engineering
+and Technology
+Coimbatore, Tamil Nadu, India
+23cs044@kpriet.ac.in
+
+Department of Computer Science
+and Engineering
+KPR Institute of Engineering
+and Technology
+Coimbatore, Tamil Nadu, India
+23cs036@kpriet.ac.in
+
+Department of Computer Science
+and Engineering
+KPR Institute of Engineering
+and Technology
+Coimbatore, Tamil Nadu, India
+23csl02@kpriet.ac.in
+
+Gohul S
+
+Nandhini N
+
+Department of Computer Science
+and Engineering
+KPR Institute of Engineering
+and Technology
+Coimbatore, Tamil Nadu, India
+23cs049@kpriet.ac.in
+
+Department of Computer Science
+and Engineering (Faculty Mentor)
+KPR Institute of Engineering
+and Technology
+Coimbatore, Tamil Nadu, India
+nandhini.n@kpriet.ac.in
+
+Abstract—Users routinely work across a personal mix of
+laptops, phones, and desktop computers, expecting them to share
+clipboards, stream files, and forward inputs over a local network.
+Yet establishing secure mutual trust across these devices on a
+home or office LAN remains an unsolved operational problem.
+Current ecosystems force an uncomfortable compromise: commercial tools (such as Apple Continuity and Google Quick Share)
+rely on cloud identity servers that leak metadata and fail when
+offline, while decentralized tools (such as KDE Connect) enforce
+pairwise Trust-on-First-Use (TOFU) that requires O(N 2 ) manual
+pairing operations. This paper presents Transitive Trust-on-FirstUse (T-TOFU), a zero-coordinator trust framework designed for
+personal device meshes. Under T-TOFU, a user performs an
+out-of-band verification ceremony on a single gateway device,
+which automatically enrolls the newcomer across the entire mesh.
+We introduce a canonical pool digest (PoolHash) computed over
+sorted device fingerprints, coupled with anti-entropy heartbeat
+gossip, to keep the trust state synchronized across dynamic LAN
+nodes without an online certificate authority. We also detail
+a flooded revocation mechanism that deterministically purges
+de-authorized nodes. We built and evaluated T-TOFU within
+Link, an open-source cross-platform runtime for Windows and
+Android. Our measurements show that T-TOFU reduces human
+pairing complexity to O(1) marginal effort per device while
+achieving sub-100ms pool convergence with under 0.05 KB/s of
+background network overhead.
+Index Terms—Transitive Trust, Trust-on-First-Use, Usable
+Security, Decentralized Device Mesh, Canonical Hash Gossip,
+Mutual TLS, Personal Area Networks.
+
+I. I NTRODUCTION
+Most people now carry a smartphone alongside one or more
+desktop and laptop computers [1]. Naturally, users want these
+
+devices to talk to each other: copying text on a phone and
+pasting it on a PC, mounting phone storage as a native drive
+letter, forwarding touch gestures, or streaming audio across the
+room. Doing this over a local Wi-Fi network without thirdparty servers ought to be straightforward, but securing such a
+mesh without frustrating the user is notoriously difficult [2].
+Any system attempting to bridge personal devices on a
+Local Area Network (LAN) runs directly into what we term
+the Usable-Security Trilemma (Fig. 1):
+1) Local-First Independence: All communication, key
+exchange, and state synchronization must stay strictly on
+the local network, with zero reliance on cloud accounts
+or external identity servers.
+2) Cryptographic Rigor: The system must guarantee mutual authentication and data confidentiality over TLS
+1.3, remaining resilient against active on-path attackers,
+rogue APs, and ARP spoofing.
+3) Minimal Human Friction: The manual effort needed
+to enroll and manage devices must remain small and
+constant as the user adds more hardware.
+A. Shortcomings of Current Approaches
+Commercial device-sync ecosystems, such as Apple Continuity/AirDrop, Google Quick Share, and Microsoft Phone
+Link, bypass the usability barrier by tying all endpoints to
+a corporate account (Apple ID or Google Account). While
+setup is easy, this model forces devices to contact remote
+WAN infrastructure, leaks user identity metadata over wireless
+
+II. T HREAT M ODEL AND S ECURITY I NVARIANTS
+A. Adversary Capabilities and Assumptions
+1. Zero-Cloud
+Decentralization
+
+Pairwise TOFU
+(KDE Connect)
+Quadratic: O(N 2 )
+
+Cloud IdP
+(Apple / Google)
+WAN & privacy leak
+
+Link (T-TOFU)
+Simultaneously
+Satisfies All Three
+
+3. Frictionless
+2. Cryptographic
+Usability (O(1))
+Rigor (TLS 1.3)
+Unauthenticated LAN (Vulnerable to MitM)
+
+Fig. 1. The Usable-Security Trilemma in Personal Device Meshes: Existing
+paradigms compromise either cloud independence, human scalability, or
+cryptographic safety. T-TOFU satisfies all three simultaneously.
+
+advertisements [3], [4], creates a central point of failure, and
+locks consumers into a single vendor’s operating system.
+On the other hand, decentralized tools like KDE Connect [5] and Bluetooth Personal Area Networks [6] avoid
+cloud dependencies by pairing devices directly with selfsigned certificates. The downside is steep: pairing is strictly
+pairwise. Setting up N devices requires N (N − 1)/2 separate
+pairing steps. In a household with five personal devices, the
+user must perform ten distinct manual verification ceremonies.
+Under such friction, users routinely skip certificate fingerprint
+comparisons [7], leaving connections exposed to trivial onpath attacks.
+B. Our Contributions
+We address this problem with Transitive Trust-on-FirstUse (T-TOFU), an open, coordinator-free trust architecture
+for personal device networks. Specifically, this paper delivers:
+A Transitive Trust Protocol: A mechanism allowing a
+single human-verified pairing between an incoming node
+and any active pool member to safely propagate mutual
+authenticated trust to every other device in the mesh.
+• A Canonical Pool Digest Algorithm: A lightweight
+hashing technique (PoolHash) that lets nodes detect state
+drift during routine heartbeats and reconcile trust tables
+via anti-entropy gossip without a central server.
+• Cascaded Revocation: A flood-based eviction routine
+that reliably scrubs de-listed device certificates across all
+mesh members.
+• Working Reference Implementation: Complete integration into Link, our open-source multi-device suite spanning Windows (Electron, TypeScript, C#) and Android
+(Capacitor, Java), along with empirical benchmarks on
+convergence time and resource usage.
+
+•
+
+We assume an untrusted Local Area Network populated by
+honest devices alongside malicious entities, modeled after the
+standard Dolev-Yao network adversary [8]. In this environment, network location provides zero inherent authority [9].
+An attacker A on the same broadcast domain can:
+• Sniff, alter, replay, or inject arbitrary TCP and UDP
+packets.
+• Execute ARP spoofing, rogue mDNS advertisements, and
+DNS redirection.
+• Attempt on-path Man-in-the-Middle (MitM) attacks during initial TLS handshakes using rogue self-signed certificates.
+Security Bounds: We assume standard cryptographic
+primitives—SHA-256 collision resistance, asymmetric signature safety, and TLS 1.3 cipher suites [10]—are computationally secure. We also assume the adversary cannot access
+physical device screens or intercept user inputs during the outof-band (OOB) visual verification step.
+B. Core Security Invariants
+T-TOFU enforces three operational security invariants:
+• Guaranteed Mutual Authenticity: An outsider node
+cannot join the mesh or establish authenticated TLS
+sessions with any pool member without completing an
+explicit OOB visual verification ceremony with at least
+one active peer.
+• Transitive Trust Propagation: An authorized gateway
+node B in pool P that authenticates a new node A
+automatically vouches for A to all other pool members
+C ∈ P . Trust between C and A is established through
+secure gossip without requiring additional human verification.
+• Eventual Revocation Convergence: When an authorized
+user triggers an unpair action targeting a device, the
+revocation notice floods across all reachable mesh links
+within O(diameter(P )) hops, purging the target’s pinned
+certificate from every member’s trust store.
+III. T-TOFU P ROTOCOL A RCHITECTURE
+A. Device Keys and Certificate Pinning
+On initial startup, Link assigns each device a persistent 128bit identifier (UUID v4) and generates a self-signed X.509
+certificate backed by a 2048-bit RSA key pair. The application
+then computes a SHA-256 fingerprint over the DER-encoded
+certificate bytes:
+FPi = SHA-256(DER(Certi ))
+
+(1)
+
+All inter-device communication runs over TLS 1.3 (with TLS
+1.2 as a legacy floor). Rather than trusting public certificate
+authorities, each node checks peer certificates directly against
+pinned fingerprints recorded in its local trust store [11]. Any
+fingerprint mismatch during the TLS handshake causes the
+connection to abort immediately.
+
+New Node C
+
+Gateway Node B
+
+Mesh Node A
+
+(Incoming Endpoint)
+
+(Pool Member)
+
+(Existing Peer)
+
+1. UDP Discovery & Initial TLS 1.3 Handshake (Unpinned)
+2. Out-of-Band (OOB) Human Verification Gate
+Compute CodeB,C
+=
+Hex(SHA-256(min(KB , KC ) ∥ . . . ))[0..7]
+User visually confirms matching 8char codes on both physical displays
+3. Mutual Trust Confirmation (link.pair: true)
+Pin CertB
+
+Pin CertC
+
+4a. link.pool.sync TB = {(IDA , CertA ), (IDB , CertB )}
+
+
+4b. Gossip Broadcast link.pool.sync {(IDC , CertC )}
+
+5a. Transitive Ingestion
+Node C auto-pins CertA
+No human PIN required
+
+
+
+5b. Transitive Ingestion
+Node A auto-pins CertC
+No human PIN required
+
+6a. Periodic Heartbeat (PoolHashC == PoolHashB )
+6b. Periodic Heartbeat (PoolHashB == PoolHashA )
+
+Fig. 2. Protocol Sequence Diagram of Transitive Trust-on-First-Use (T-TOFU): A single human-gated verification between New Node C and Gateway B
+transitively enrolls C across the entire mesh, verified via canonical pool digest convergence (PoolHash).
+
+B. Human-in-the-Loop Gateway Pairing
+When an untrusted node C connects to an existing pool
+gateway B, they initiate an unpinned TLS handshake. To
+prevent active on-path eavesdropping, both devices compute
+a deterministic verification code:
+
+CodeB,C = Hex SHA-256 min(KB , KC )
+(2)
+
+∥ max(KB , KC ) ∥ Salt [0..7]
+where KB and KC represent the raw public keys sorted bytewise, and Salt denotes the session timestamp. The resulting 8character token is shown on both physical displays. Once the
+user confirms code equality, gateway B writes C’s certificate
+to its local trust store, and C saves B’s credentials.
+C. The Canonical Pool Digest Algorithm
+To maintain state agreement without a centralized server or
+heavy consensus protocols like Raft, T-TOFU uses a canonical
+digest over the active device pool P = {d1 , . . . , dn }. For each
+device, the system builds an entry string si = IDi ∥ ”:” ∥
+Hex(FPi ). All strings are sorted lexicographically and joined
+with pipe delimiters:
+
+C(P ) = Join Sort({s1 , . . . , sn }), ”—”
+(3)
+The 16-character pool digest is then extracted from the cryptographic hash:
+
+
+PoolHash(P ) = SubStr Hex SHA-256(C(P )) ,
+
+(4)
+0, 16
+Because sorting is deterministic, any two nodes possessing identical membership rosters arrive at the exact same
+PoolHash, independent of device discovery order.
+
+D. Gossip Synchronization and Transitive Ingestion
+Peers maintain persistent TLS WebSockets carrying JSON
+control messages. Every two seconds (Theartbeat = 2 s), each
+device broadcasts its current PoolHash. If a peer stays silent
+for five seconds, its link is marked offline.
+When node A receives a heartbeat from trusted peer B
+with a differing digest (PoolHashB ̸= PoolHashA ), it initiates
+anti-entropy reconciliation: nodes reciprocally exchange their
+active trust tables through link.pool.sync. When node
+B encounters unfamiliar device records sent by A, it verifies
+that A is an authentic peer, saves the received certificates, and
+pins their fingerprints. Node B then recomputes its pool hash
+and gossips the update to remaining peers.
+E. Cascaded Eviction and Revocation
+When a user removes device X from the mesh via device
+A, node A removes X from its database and closes all active
+sockets to X. It then floods an authenticated revocation frame
+(link.pool.remove) across the network. Receiving peers
+check their local stores; if the target is found, they delete
+the certificate, update their PoolHash, and forward the packet
+outward until the mesh converges.
+IV. S YSTEM I MPLEMENTATION
+We implemented the complete T-TOFU protocol inside
+Link, our open-source cross-platform device mesh. The codebase is organized cleanly across desktop and mobile targets:
+A. Desktop Runtime (Windows and Linux)
+The desktop application uses Electron, TypeScript, and
+Node.js:
+• Trust Store (core/trust.ts): Handles local storage
+of paired peers. On Windows, trust records are encrypted with the operating system’s DPAPI via Electron’s
+safeStorage API.
+
+Device Manager (core/device-manager.ts):
+Runs the heartbeat loop, evaluates PoolHash equality,
+and elevates newly received transitive certificates into
+the active trusted pool.
+• OS Integration: Exposes remote mobile storage as a
+native Windows drive letter (Z :) through WinFsp [12]
+and WebDAV, and simulates low-latency mouse/keyboard
+events via C# P/Invoke wrappers.
+
+•
+
+Ceremonies (C)
+50
+
+40
+
+30
+
+20
+
+T-TOFU Total O(N )
+
+B. Mobile Runtime (Android)
+
+10
+
+The Android application combines native Java services with
+a Capacitor web interface:
+• Trust Store (LinkTrustStore.java): Stores certificates securely in internal app storage and computes the
+canonical SHA-256 pool digest.
+• Device Manager (LinkDeviceManager.java): Resolves simultaneous connection attempts by comparing
+device IDs lexicographically, dropping redundant sockets.
+• Transport Engine (LinkTransport.java): Dispatches outbound network writes through background
+executor queues, avoiding UI-thread network stalls.
+V. E VALUATION AND C OMPARATIVE A NALYSIS
+A. Human Pairing Effort
+We evaluate usability by comparing the total number of
+manual verification ceremonies needed to build a fully connected N -device mesh.
+In traditional pairwise systems like KDE Connect or Bluetooth, every possible device pair requires its own manual
+pairing ceremony:
+N (N − 1)
+= O(N 2 )
+(5)
+2
+With T-TOFU, bringing a new (N + 1)-th device into an
+existing pool of N devices requires pairing with only one
+existing gateway device. Gossip handles the remaining N − 1
+associations automatically. Thus, building an N -node mesh
+from scratch requires only:
+Cpairwise (N ) =
+
+CT-TOFU (N ) = N − 1 = O(N )
+
+Pairwise O(N 2 )
+
+(6)
+
+Adding an additional device to an established pool requires
+exactly O(1) human effort.
+As summarized in Table I and plotted in Fig. 3, T-TOFU
+delivers the single-action convenience of cloud ecosystems
+without their privacy and uptime downsides.
+B. Network Overhead and Convergence Speed
+We tested T-TOFU on a local network testbed consisting
+of four physical machines (two Windows 11 PCs on Gigabit
+Ethernet and two Android 14 phones over Wi-Fi 6):
+• Idle Background Traffic: The 16-byte PoolHash string,
+packaged in its JSON envelope, produces a 98-byte
+heartbeat frame. At a 2-second heartbeat cadence, idle
+state checking consumes roughly 0.05 KB/s per link.
+• Mesh Convergence Time: When a phone was paired
+with one PC, the resulting link.pool.sync payload
+
+2
+
+T-TOFU Marginal
+O(1)
+6
+
+4
+
+Mesh Size (N )
+8
+
+10
+
+Fig. 3. Human Pairing Ceremony Complexity vs. Mesh Size N : Pairwise
+TOFU scales quadratically, whereas T-TOFU requires only O(N ) cumulative
+and O(1) marginal human ceremonies.
+
+(≈ 5 KB for four devices) reached all remaining nodes
+in an average of 48.2 ms, bringing the entire mesh into
+cryptographic alignment in under a tenth of a second.
+• Revocation Flood Speed: Triggering an unpair action on
+a mobile device flooded revocation frames and wiped the
+target certificate from all peer databases in under 65 ms.
+C. Security Analysis
+Resistance to MitM Interception: An attacker attempting to intercept the gateway pairing cannot forge the outof-band 8-character verification string displayed on the
+physical screens. In addition, because nodes only accept
+link.pool.sync packets over established, certificatepinned TLS connections, attackers cannot inject unauthorized certificates through spoofed broadcast frames.
+• Network Partition Recovery: If a subnet split causes
+nodes to pair independently on separate segments, reconnecting devices detect the divergence on the next
+heartbeat via differing PoolHash values, prompting an
+automatic reciprocal sync that unifies the trust tables.
+•
+
+VI. R ELATED W ORK
+Decentralized Key Trust: Decentralized trust models
+date back to Zimmermann’s PGP Web of Trust [13] and
+SPKI/SDSI [14]. However, PGP required users to manually
+configure trust depths and understand key validity, which
+proved overly burdensome for typical users [15]. Stajano
+and Anderson introduced the Resurrecting Duckling policy
+for ad-hoc wireless peripherals [16], where devices imprint
+permanently on a master node via physical touch. T-TOFU
+adapts this philosophy for symmetric, multi-master personal
+device meshes where no single machine serves as a permanent
+master. Syncthing offers an “introducer” flag where one device
+shares its known peer list [17]; T-TOFU makes all members
+symmetrical introducers while adding digest-based consistency
+checking and cascaded revocation.
+Cross-Device Integration Tools: Existing cross-platform
+integration suites include KDE Connect [5] and Apple AirDrop [18]. KDE Connect relies strictly on pairwise manual
+
+TABLE I
+A RCHITECTURAL & S ECURITY C OMPARISON OF P ERSONAL D EVICE I NTEGRATION P ROTOCOLS
+Protocol / Framework
+Apple AirDrop / Continuity
+Google Quick Share
+Bluetooth PAN / Classic
+KDE Connect
+Link (T-TOFU [Ours])
+
+Trust Model
+
+Coordinator
+
+Pairing Complexity
+
+Transitive Trust?
+
+WAN Dependency?
+
+Centralized Cloud IdP
+Centralized Cloud IdP
+Pairwise PIN (SSP)
+Pairwise TLS TOFU
+Transitive TOFU Mesh
+
+Apple iCloud Servers
+Google Identity
+None (Decentralized)
+None (Decentralized)
+None (Decentralized)
+
+O(1) (Login)
+O(1) (Login)
+O(N 2 ) Manual
+O(N 2 ) Manual
+O(1) Manual Gate
+
+Yes (via Cloud)
+Yes (via Cloud)
+No
+No
+Yes (Autonomous Gossip)
+
+Yes (Initial / Refresh)
+Yes (Identity Tokens)
+No
+No
+Zero (Pure LAN)
+
+pairing, forcing users through repetitive pairing dialogs for every device combination. Apple AirDrop relies on cloud-signed
+identity certificates containing hashed telephone numbers and
+email addresses, which researchers have shown leak personal
+identifying information to nearby listeners over Bluetooth Low
+Energy [3], [18]. T-TOFU eliminates both the pairwise pairing
+penalty and cloud metadata exposure.
+VII. C ONCLUSION AND F UTURE W ORK
+This paper introduced Transitive Trust-on-First-Use (TTOFU), a coordinator-free trust architecture that resolves the
+Usable-Security Trilemma in personal device networks. By
+unifying human-in-the-loop gateway pairing, canonical pool
+digest gossip, and flooded certificate revocation, T-TOFU
+eliminates the O(N 2 ) pairing bottleneck while preserving
+strict local-first privacy and TLS 1.3 cryptographic integrity.
+We verified T-TOFU across Windows and Android in the
+open-source Link ecosystem, demonstrating sub-100ms mesh
+convergence and low network overhead.
+Future work includes formalizing the state machine in
+automated protocol verifiers like ProVerif, as well as integrating threshold cryptography for shared multi-user home
+environments.
+R EFERENCES
+[1] F. Brudy, C. Holz, R. Rädle, C.-J. Wu, S. Houben, C. N. Klokmose,
+and N. Marquardt, “Cross-device taxonomy: Survey, opportunities and
+challenges of interactions spanning across multiple devices,” in Proc.
+ACM CHI Conf. Human Factors Comput. Syst., 2019, pp. 1–28.
+[2] M. Kleppmann, A. Wiggins, P. van Hardenberg, and M. McGranaghan,
+“Local-first software: You own your data, in spite of the cloud,” in Proc.
+ACM SIGPLAN Onward!, 2019, pp. 154–178.
+[3] G. Celosia and M. Cunche, “Discontinued privacy: Personal data leaks
+in Apple Bluetooth-Low-Energy Continuity protocols,” Proc. Privacy
+Enhancing Technol., vol. 2020, no. 1, pp. 26–46, 2020.
+[4] M. Stute, S. Narain, A. Mariotto, A. Heinrich, D. Kreitschmann, G.
+Noubir, and M. Hollick, “A billion open interfaces for Eve and Mallory:
+MitM, DoS, and tracking attacks on iOS and macOS through Apple
+Wireless Direct Link,” in Proc. 28th USENIX Security Symp., 2019, pp.
+37–54.
+[5] KDE e.V., “KDE Connect,” https://kdeconnect.kde.org, 2024.
+[6] D. Antonioli, “BLUFFS: Bluetooth forward and future secrecy attacks
+and defenses,” in Proc. ACM SIGSAC Conf. Comput. Commun. Security
+(CCS), 2023, pp. 636–650.
+[7] S. Neef and N. Wisiol, “Oh SSH-it, what’s my fingerprint? A large-scale
+analysis of SSH host key fingerprint verification records in the DNS,” in
+Proc. Cryptology and Network Security (CANS), LNCS, Springer, 2022,
+pp. 71–88.
+[8] D. Dolev and A. Yao, “On the security of public key protocols,” IEEE
+Trans. Inf. Theory, vol. 29, no. 2, pp. 198–208, Mar. 1983.
+[9] S. Rose, O. Borchert, S. Mitchell, and S. Connelly, “Zero trust architecture,” NIST Special Publication 800-207, 2020.
+
+[10] E. Rescorla, “The Transport Layer Security (TLS) protocol version 1.3,”
+IETF RFC 8446, Aug. 2018.
+[11] A. Pradeep, M. T. Paracha, P. Bhowmick, A. Davanian, A. Razaghpanah,
+T. Chung, et al., “A comparative analysis of certificate pinning in
+Android & iOS,” in Proc. ACM Internet Meas. Conf. (IMC), 2022, pp.
+605–618.
+[12] B. Zissimopoulos, “WinFsp: Windows File System Proxy,” https://
+winfsp.dev, 2024.
+[13] P. R. Zimmermann, The Official PGP User’s Guide. Cambridge, MA,
+USA: MIT Press, 1995.
+[14] C. Ellison, B. Frantz, B. Lampson, R. Rivest, B. Thomas, and T. Ylonen,
+“SPKI certificate theory,” IETF RFC 2693, Sep. 1999.
+[15] A. Whitten and J. D. Tygar, “Why Johnny can’t encrypt: A usability
+evaluation of PGP 5.0,” in Proc. 8th USENIX Security Symp., 1999.
+[16] F. Stajano and R. Anderson, “The resurrecting duckling: Security issues
+for ad-hoc wireless networks,” in Security Protocols, LNCS vol. 1796,
+Springer, 2000, pp. 172–182.
+[17] The Syncthing Foundation, “Introducer configuration,” Syncthing Documentation, https://docs.syncthing.net/users/introducer.html, 2024.
+[18] A. Heinrich, M. Hollick, T. Schneider, M. Stute, and C. Weinert, “PrivateDrop: Practical privacy-preserving authentication for Apple AirDrop,”
+in Proc. 30th USENIX Security Symp., 2021, pp. 3577–3594.
+
+

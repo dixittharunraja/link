@@ -9,7 +9,7 @@ public class LinkCapabilitiesSchema {
     // combined). Used to seed a brand-new pairing with everything OFF by default.
     public static final String[] ALL_PERMISSION_KEYS = {
         "fileaccess", "lock", "runcommand", "presenter", "flashlight", "touchpad",
-        "systemvolume", "mpris", "telephony", "notification", "notificationMirroring", "dnd", "clipboard", "remoteinput",
+        "systemvolume", "mpris", "telephony", "notification", "notificationMirroring", "dnd", "clipboard", "remoteinput", "remotecontrol"
     };
 
     // Packet type strings for all supported capabilities.
@@ -20,7 +20,8 @@ public class LinkCapabilitiesSchema {
         "link.connectivity", "link.touchpad.request", "link.mpris", "link.mpris.request",
         "link.telephony", "link.telephony.request", "link.notification", "link.notification.reply",
         "link.flashlight", "link.dnd", "link.rename", "link.rename.request",
-        "link.digitizer.session", "link.digitizer", "link.remoteinput.send"
+        "link.digitizer.session", "link.digitizer", "link.remoteinput.send",
+        "link.remotecontrol.signal", "link.remotecontrol.stream", "link.remotecontrol.input"
     };
 
     // Permissions announced to peers so a control shows up on THEIR device (mirrors desktop's
@@ -29,7 +30,7 @@ public class LinkCapabilitiesSchema {
     // Flashlight button stayed hidden on the peer's control panel even after granting the
     // permission — the same silent-hide bug the other entries here exist to avoid.
     public static final String[] GATED_CAPABILITY_KEYS = {
-        "presenter", "touchpad", "systemvolume", "mpris", "lock", "runcommand", "remoteinput", "fileaccess", "flashlight"
+        "presenter", "touchpad", "systemvolume", "mpris", "lock", "runcommand", "remoteinput", "fileaccess", "flashlight", "remotecontrol"
     };
 
     private LinkCapabilitiesSchema() {

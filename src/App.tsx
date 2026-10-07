@@ -12,6 +12,7 @@ import OnboardingWizard from './components/OnboardingWizard';
 import PresenterOverlay from './components/PresenterOverlay';
 import PresenterDotOverlay, { PresenterMoveHandler } from './components/PresenterDotOverlay';
 import RemoteInputOverlay from './components/RemoteInputOverlay';
+import RemoteControlViewer from './components/RemoteControlViewer';
 import JoystickOverlay, {
   DEFAULT_CUSTOM_LAYOUT, DEFAULT_DRIVING_LAYOUT,
   isBuiltinLayout, JoystickLayout, CustomPreset, ActiveModes, DEFAULT_ACTIVE_MODES,
@@ -112,6 +113,12 @@ const App: React.FC = () => {
   // Remote Input Overlays (Mobile Only)
   const [activeRemoteControlMode, setActiveRemoteControlMode] = useState<'presenter' | 'touchpad' | 'joystick' | null>(null);
   const [activeRemoteControlDeviceId, setActiveRemoteControlDeviceId] = useState<string | null>(null);
+  // What's actually being controlled — lets PresenterOverlay pick portrait vs landscape from the
+  // real target, the same way RemoteControlViewer already does from the mirrored frame's aspect,
+  // instead of always assuming a desktop target.
+  const [activeRemoteControlHostDeviceType, setActiveRemoteControlHostDeviceType] = useState<string | undefined>(undefined);
+  // Remote Control Viewer State
+  const [activeRemoteControlViewerDeviceId, setActiveRemoteControlViewerDeviceId] = useState<string | null>(null);
   // Which device's files the Files tab is showing — driven by the switcher in the page title
   // row, not a picker grid inside the tab itself (see FilesTab.tsx).
   const [filesSelectedDeviceId, setFilesSelectedDeviceId] = useState<string | null>(null);
@@ -207,7 +214,6 @@ const App: React.FC = () => {
     microphone: 'denied',
     allFiles: 'denied',
     dnd: 'denied',
-    deviceAdmin: 'denied',
     batteryOpt: 'denied',
     accessibility: 'denied',
     overlay: 'denied',
@@ -257,7 +263,6 @@ const App: React.FC = () => {
       const notifStatus = await linkApi.checkNotificationAccess();
       const allFilesStatus = await linkApi.checkAllFilesAccess();
       const dndStatus = await linkApi.checkDndPermission();
-      const adminStatus = await linkApi.checkDeviceAdmin();
       const batteryStatus = await linkApi.isBatteryOptimizationIgnored();
       const accessibilityStatus = await linkApi.checkAccessibility();
       const overlayStatus = await linkApi.checkOverlayPermission();
@@ -270,7 +275,6 @@ const App: React.FC = () => {
         microphone: perms.microphone,
         allFiles: allFilesStatus.enabled ? 'granted' : 'denied',
         dnd: dndStatus.granted ? 'granted' : 'denied',
-        deviceAdmin: adminStatus.active ? 'granted' : 'denied',
         batteryOpt: batteryStatus.isIgnoring ? 'granted' : 'denied',
         accessibility: accessibilityStatus.enabled ? 'granted' : 'denied',
         overlay: overlayStatus.enabled ? 'granted' : 'denied',
@@ -300,8 +304,6 @@ const App: React.FC = () => {
         await linkApi.requestAllFilesAccess();
       } else if (key === 'dnd') {
         await linkApi.requestDndPermission();
-      } else if (key === 'deviceAdmin') {
-        await linkApi.requestDeviceAdmin();
       } else if (key === 'batteryOpt') {
         await linkApi.requestIgnoreBatteryOptimizations();
       } else if (key === 'accessibility') {
@@ -940,6 +942,57 @@ const App: React.FC = () => {
       });
     });
 
+    let isPromptingRemoteControl = false;
+    linkApi.onRemoteControlSignal?.(async (deviceId: string, signal: any) => {
+      console.log('[RemoteControl] Received signal:', signal, 'from:', deviceId);
+      if (!signal) return;
+      if (signal.type === 'request') {
+        if (linkApi?.isMobile) {
+          if (isPromptingRemoteControl) {
+            console.log('[RemoteControl] Prompt already in progress, ignoring duplicate request');
+            return;
+          }
+          isPromptingRemoteControl = true;
+          // Mobile acts as host: show native MediaProjection consent dialog, then
+          // LinkRemoteControlServer starts pumping JPEG frames directly as
+          // link.remotecontrol.stream packets to the requesting peer.
+          try {
+            console.log('[RemoteControl] Prompting MediaProjection consent on mobile host for', deviceId);
+            // startActivityForResult (native side) can't reliably present the system consent
+            // dialog while this app's own Activity isn't in the foreground — Android's
+            // background-activity-launch restriction — and when that happens the call doesn't
+            // throw, it just never resolves (onMediaProjectionResultRemoteControl's callback
+            // never fires because the dialog never actually appeared). Without a timeout here,
+            // isPromptingRemoteControl stayed stuck true forever after exactly that scenario,
+            // silently swallowing every future request (from any device) until the app was
+            // force-restarted — this is why it sometimes "did nothing" even with the UI open: a
+            // PRIOR hung attempt, not the current one, was the actual cause.
+            const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), 30000));
+            const granted = await Promise.race([
+              linkApi.requestRemoteControlHost?.(deviceId) ?? Promise.resolve(false),
+              timeout,
+            ]);
+            console.log('[RemoteControl] MediaProjection consent result:', granted);
+            if (!granted) {
+              linkApi.sendRemoteControlSignal?.(deviceId, { type: 'denied' });
+            }
+            // No further action needed — LinkRemoteControlServer runs in the background
+            // and sends frames autonomously until linkApi.stopRemoteControlHost() is called.
+          } catch (err) {
+            console.error('[RemoteControl] requestRemoteControlHost error:', err);
+            linkApi.sendRemoteControlSignal?.(deviceId, { type: 'denied' });
+          } finally {
+            isPromptingRemoteControl = false;
+          }
+        }
+      } else if (signal.type === 'stop') {
+        if (linkApi?.isMobile) {
+          isPromptingRemoteControl = false;
+          linkApi.stopRemoteControlHost?.();
+        }
+      }
+    });
+
     linkApi.onSpeedTestProgress((deviceId: string, message: string) => {
       addLog(`[SpeedTest] Progress from ${deviceId.slice(0, 8)}: ${message}`);
     });
@@ -1391,7 +1444,7 @@ const App: React.FC = () => {
     addLog(`Triggered command "${key}" on ${deviceId.slice(0, 8)}`);
   };
 
-  const handleToolConnect = async (mode: 'presenter' | 'touchpad', target: string) => {
+  const handleToolConnect = async (mode: 'presenter' | 'touchpad', target: string, hostDeviceType?: string) => {
     const rawTarget = target.trim();
     if (!rawTarget) return;
 
@@ -1420,12 +1473,17 @@ const App: React.FC = () => {
       // Already trusted — open overlay directly using deviceId
       setActiveRemoteControlDeviceId(matchedPeer.deviceId);
       setActiveRemoteControlMode(mode);
+      setActiveRemoteControlHostDeviceType(matchedPeer.deviceType);
       return;
     }
 
-    // 2. Ephemeral Guest Session (admitted by InputGuestServer via Tools tab HostConnectModal)
+    // 2. Ephemeral Guest Session (admitted by InputGuestServer via Tools tab HostConnectModal).
+    // hostDeviceType comes from the admission handshake itself (see PresenterTab.tsx / RemoteInputTab.tsx), not from
+    // cleanTargetIp here — that's the QR/typed target, which can be a comma-joined list of the
+    // host's several local IPs and was never reliable for anything but connecting.
     setActiveRemoteControlDeviceId(cleanTargetIp);
     setActiveRemoteControlMode(mode);
+    setActiveRemoteControlHostDeviceType(hostDeviceType);
   };
 
   const handleLocalStopRinging = async () => {
@@ -1615,14 +1673,16 @@ const App: React.FC = () => {
             }}
           >
             <PendingGuestCard
-              title="Pairing Request"
+              title="Add to Trusted Pool"
+              iconType="trust"
+              acceptLabel="Accept"
               guest={{
                 connId: activePairRequest.deviceId,
                 pin: activePairRequest.verificationKey || '------',
                 remoteAddress: activePairRequest.deviceId.slice(0, 8),
                 deviceName: activePairRequest.deviceName,
               }}
-              subtitle="wants to pair with you"
+              subtitle="wants to join your trusted pool"
               onAccept={() => {
                 linkApi.acceptPairing(activePairRequest.deviceId);
                 setActivePairRequest(null);
@@ -1644,10 +1704,17 @@ const App: React.FC = () => {
         <TopBar
           deviceName={localIdentity.deviceName}
           ipAddress={localIdentity.ipAddress}
+          ipAddresses={localIdentity.ipAddresses}
+          isMobile={typeof (window as any).Capacitor !== 'undefined'}
         />
 
         <div id="main-content-split" style={{ display: 'flex', flexGrow: 1, width: '100%', overflow: 'hidden' }}>
-          <Sidebar activeTab={activeTab} setActiveTab={handleSetActiveTab} isMobile={typeof (window as any).Capacitor !== 'undefined'} />
+          <Sidebar
+            activeTab={activeTab}
+            setActiveTab={handleSetActiveTab}
+            isMobile={typeof (window as any).Capacitor !== 'undefined'}
+            localIdentity={localIdentity}
+          />
 
           <div className="main-container">
             {/* Prominent Page Title below TopBar */}
@@ -1699,6 +1766,7 @@ const App: React.FC = () => {
             onShowPresenter={(id) => {
               setActiveRemoteControlDeviceId(id);
               setActiveRemoteControlMode('presenter');
+              setActiveRemoteControlHostDeviceType(peers.get(id)?.deviceType);
             }}
             onShowTouchpad={(id) => {
               setActiveRemoteControlDeviceId(id);
@@ -1710,6 +1778,9 @@ const App: React.FC = () => {
               setActiveRemoteControlDeviceId(targetHost);
               setActiveRemoteControlMode('joystick');
               linkApi?.sendJoystickHello?.(targetHost, localIdentity?.deviceName || 'Player');
+            }}
+            onShowRemoteControl={(id) => {
+              setActiveRemoteControlViewerDeviceId(id);
             }}
             devicePermissions={devicePermissions}
             onSetPermission={handleSetPermission}
@@ -1751,7 +1822,7 @@ const App: React.FC = () => {
             isMobile={typeof (window as any).Capacitor !== 'undefined'}
             walkieTalkieActive={walkieTalkieActive}
             onOpenWalkieTalkie={() => setWalkieTalkieOpen(true)}
-            onShowPresenter={(id) => handleToolConnect('presenter', id)}
+            onShowPresenter={(id, hostDeviceType) => handleToolConnect('presenter', id, hostDeviceType)}
             onShowTouchpad={(id) => handleToolConnect('touchpad', id)}
           />
         )}
@@ -1827,10 +1898,12 @@ const App: React.FC = () => {
       {activeRemoteControlMode === 'presenter' && activeRemoteControlDeviceId && (
         <PresenterOverlay
           deviceId={activeRemoteControlDeviceId}
+          hostDeviceType={activeRemoteControlHostDeviceType}
           onClose={() => {
             linkApi?.leaveInputGuest?.();
             setActiveRemoteControlMode(null);
             setActiveRemoteControlDeviceId(null);
+            setActiveRemoteControlHostDeviceType(undefined);
           }}
         />
       )}
@@ -1879,6 +1952,18 @@ const App: React.FC = () => {
         <PresenterDotOverlay
           moveHandlerRef={presenterMoveHandlerRef}
           onClose={() => setPresenterDotSourceDeviceId(null)}
+        />
+      )}
+
+      {/* Remote Control Viewer */}
+      {activeRemoteControlViewerDeviceId && (
+        <RemoteControlViewer
+          deviceId={activeRemoteControlViewerDeviceId}
+          deviceName={peers.get(activeRemoteControlViewerDeviceId)?.name || 'Remote Device'}
+          hostDeviceType={peers.get(activeRemoteControlViewerDeviceId)?.deviceType}
+          hostConnected={peers.get(activeRemoteControlViewerDeviceId)?.connected}
+          onClose={() => setActiveRemoteControlViewerDeviceId(null)}
+          onEndSession={() => setActiveRemoteControlViewerDeviceId(null)}
         />
       )}
 

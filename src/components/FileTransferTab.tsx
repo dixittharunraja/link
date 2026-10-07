@@ -73,8 +73,11 @@ const FileTransferTab: React.FC<FileTransferTabProps> = ({ isMobile, localIdenti
 
   useEffect(() => {
     if (receiving) {
-      const ip = localIdentity?.ipAddress || '127.0.0.1';
-      const qrTarget = webMode ? `http://${ip}:${port}` : `${ip}:${port}`;
+      const allIps = (localIdentity?.ipAddresses && localIdentity.ipAddresses.length > 0)
+        ? localIdentity.ipAddresses
+        : [localIdentity?.ipAddress || '127.0.0.1'];
+      const primaryIp = allIps[0];
+      const qrTarget = webMode ? `http://${primaryIp}:${port}` : `${allIps.join(',')}:${port}`;
       createLinkQrDataUrl(qrTarget)
         .then((url) => setQrDataUrl(url))
         .catch((err) => console.error('Failed to generate portal QR:', err));
@@ -537,6 +540,9 @@ const FileTransferTab: React.FC<FileTransferTabProps> = ({ isMobile, localIdenti
 
       <PendingGuestsModal
         guests={pendingGuests}
+        title="File Portal Request"
+        iconType="portal"
+        subtitle="wants to connect for file transfer"
         onAccept={(connId) => acceptGuest(connId)}
         onReject={(connId) => {
           linkApi.rejectPortalGuest?.(connId);

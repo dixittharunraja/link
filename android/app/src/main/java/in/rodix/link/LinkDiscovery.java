@@ -1,6 +1,5 @@
 package in.rodix.link;
 
-import android.net.DhcpInfo;
 import android.net.wifi.WifiManager;
 import android.content.Context;
 import org.json.JSONObject;
@@ -10,6 +9,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -24,6 +24,7 @@ public class LinkDiscovery {
 
     public static class Watcher {
         private volatile LinkIdentity.Identity localIdentity;
+        private final String myCertFingerprint;
         private final Listener listener;
         private final ExpiryListener expiryListener;
         private final Context context;
@@ -39,15 +40,32 @@ public class LinkDiscovery {
         private static final long DISCOVERY_INTERVAL_MS = 2000;
         private static final long PEER_EXPIRY_MS = DISCOVERY_INTERVAL_MS * 3;
 
-        public Watcher(Context context, LinkIdentity.Identity localIdentity, Listener listener, ExpiryListener expiryListener) {
+        public Watcher(Context context, LinkIdentity.Identity localIdentity, String myCertFingerprint, Listener listener, ExpiryListener expiryListener) {
             this.context = context;
             this.localIdentity = localIdentity;
+            this.myCertFingerprint = myCertFingerprint != null ? myCertFingerprint : "";
             this.listener = listener;
             this.expiryListener = expiryListener;
         }
 
         public void updateLocalIdentity(LinkIdentity.Identity newIdentity) {
             this.localIdentity = newIdentity;
+        }
+
+        public static String computePrivacyToken(String deviceId, String fingerprint) {
+            try {
+                MessageDigest md = MessageDigest.getInstance("SHA-256");
+                byte[] digest = md.digest((deviceId + ":" + (fingerprint != null ? fingerprint : "")).getBytes(StandardCharsets.UTF_8));
+                StringBuilder hex = new StringBuilder();
+                for (byte b : digest) {
+                    String h = Integer.toHexString(0xff & b);
+                    if (h.length() == 1) hex.append('0');
+                    hex.append(h);
+                }
+                return hex.substring(0, Math.min(32, hex.length()));
+            } catch (Exception e) {
+                return "";
+            }
         }
 
         public synchronized void start(boolean visibilityEnabled) {
@@ -80,18 +98,47 @@ public class LinkDiscovery {
 
                             String jsonStr = new String(datagram.getData(), datagram.getOffset(), datagram.getLength(), StandardCharsets.UTF_8).trim();
                             JSONObject packet = new JSONObject(jsonStr);
-                            if ("link.identity".equals(packet.optString("type"))) {
+                            String packetType = packet.optString("type");
+
+                            if ("link.identity".equals(packetType)) {
                                 JSONObject body = packet.optJSONObject("body");
                                 if (body != null) {
                                     LinkIdentity.Identity peer = LinkIdentity.Identity.fromJson(body);
                                     LinkTrustStore trustStore = new LinkTrustStore(context);
                                     boolean isPaired = trustStore.isPaired(peer.deviceId);
                                     if (!peer.deviceId.equals(localIdentity.deviceId) && (isPaired || peer.visibility)) {
-                                        // Update last-seen timestamp — this is the heartbeat that
-                                        // keeps the peer alive in the expiry check.
                                         discoveredPeerLastSeen.put(peer.deviceId, System.currentTimeMillis());
                                         String senderIp = datagram.getAddress().getHostAddress();
                                         listener.onDeviceDiscovered(senderIp, peer);
+                                    }
+                                }
+                            } else if ("link.identity.anon".equals(packetType)) {
+                                JSONObject body = packet.optJSONObject("body");
+                                if (body != null) {
+                                    String token = body.optString("token", "");
+                                    if (!token.isEmpty()) {
+                                        LinkTrustStore trustStore = new LinkTrustStore(context);
+                                        for (LinkTrustStore.TrustedDevice dev : trustStore.list()) {
+                                            try {
+                                                String fp = LinkTls.fingerprint(dev.certificate());
+                                                String expected = computePrivacyToken(dev.deviceId, fp);
+                                                if (token.equals(expected) && !dev.deviceId.equals(localIdentity.deviceId)) {
+                                                    discoveredPeerLastSeen.put(dev.deviceId, System.currentTimeMillis());
+                                                    String senderIp = datagram.getAddress().getHostAddress();
+                                                    LinkIdentity.Identity matched = new LinkIdentity.Identity(
+                                                            dev.deviceId,
+                                                            dev.deviceName,
+                                                            "desktop",
+                                                            dev.protocolVersion,
+                                                            new String[0],
+                                                            new String[0]
+                                                    );
+                                                    matched.visibility = false;
+                                                    listener.onDeviceDiscovered(senderIp, matched);
+                                                    break;
+                                                }
+                                            } catch (Exception ignored) {}
+                                        }
                                     }
                                 }
                             }
@@ -107,35 +154,44 @@ public class LinkDiscovery {
             rxThread.setDaemon(true);
             rxThread.start();
 
-            // Broadcaster + expiry thread — sends broadcasts when visible, and periodically
-            // checks for peers that have gone silent (stopped broadcasting).
+            // Broadcaster + expiry thread — sends broadcasts in appropriate mode (Everyone vs Trusted Only)
+            // and periodically checks for peers that have gone silent.
             txThread = new Thread(() -> {
                 while (running) {
-                    if (this.visibilityEnabled) {
-                        try (DatagramSocket txSocket = new DatagramSocket()) {
-                            txSocket.setBroadcast(true);
+                    try (DatagramSocket txSocket = new DatagramSocket()) {
+                        txSocket.setBroadcast(true);
 
+                        JSONObject packet = new JSONObject();
+                        packet.put("id", System.currentTimeMillis());
+
+                        if (this.visibilityEnabled) {
+                            // Mode 1: Visible to Everyone — announcement with full name and ID
                             localIdentity.visibility = true;
-                            JSONObject packet = new JSONObject();
-                            packet.put("id", System.currentTimeMillis());
                             packet.put("type", "link.identity");
                             packet.put("body", localIdentity.toJson());
-
-                            String payload = packet.toString() + "\n";
-                            byte[] data = payload.getBytes(StandardCharsets.UTF_8);
-
-                            java.util.List<InetAddress> targets = getBroadcastAddresses();
-                            for (InetAddress addr : targets) {
-                                DatagramPacket datagram = new DatagramPacket(data, data.length, addr, 1716);
-                                txSocket.send(datagram);
-                            }
-                        } catch (Exception e) {
-                            android.util.Log.e("LinkDiscovery", "Failed to send UDP broadcast", e);
+                        } else {
+                            // Mode 2: Trusted Devices Only — anonymous token matching paired trust stores
+                            String token = computePrivacyToken(localIdentity.deviceId, myCertFingerprint);
+                            JSONObject body = new JSONObject();
+                            body.put("token", token);
+                            body.put("port", 1716);
+                            packet.put("type", "link.identity.anon");
+                            packet.put("body", body);
                         }
+
+                        String payload = packet.toString() + "\n";
+                        byte[] data = payload.getBytes(StandardCharsets.UTF_8);
+
+                        java.util.List<InetAddress> targets = getBroadcastAddresses();
+                        for (InetAddress addr : targets) {
+                            DatagramPacket datagram = new DatagramPacket(data, data.length, addr, 1716);
+                            txSocket.send(datagram);
+                        }
+                    } catch (Exception e) {
+                        android.util.Log.e("LinkDiscovery", "Failed to send UDP broadcast", e);
                     }
 
-                    // Expiry check — runs every interval regardless of our own visibility,
-                    // so peers that stop broadcasting are evicted promptly.
+                    // Expiry check
                     long now = System.currentTimeMillis();
                     for (Map.Entry<String, Long> entry : discoveredPeerLastSeen.entrySet()) {
                         if (now - entry.getValue() > PEER_EXPIRY_MS) {
@@ -147,20 +203,10 @@ public class LinkDiscovery {
                         }
                     }
 
-                    if (this.visibilityEnabled) {
-                        try {
-                            Thread.sleep(DISCOVERY_INTERVAL_MS);
-                        } catch (InterruptedException e) {
-                            if (!running) break;
-                        }
-                    } else {
-                        // When invisible, don't sleep — just loop back to check expiry again
-                        // in case visibility was toggled back ON
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException e) {
-                            if (!running) break;
-                        }
+                    try {
+                        Thread.sleep(DISCOVERY_INTERVAL_MS);
+                    } catch (InterruptedException e) {
+                        if (!running) break;
                     }
                 }
             }, "link-discovery-tx");
@@ -170,6 +216,12 @@ public class LinkDiscovery {
 
         public synchronized void setVisibility(boolean enabled) {
             this.visibilityEnabled = enabled;
+            if (txThread != null) {
+                txThread.interrupt();
+            }
+        }
+
+        public synchronized void broadcastNow() {
             if (txThread != null) {
                 txThread.interrupt();
             }

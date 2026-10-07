@@ -349,7 +349,10 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
   const leaveSession = () => {
     const sessionId = sessionIdRef.current;
     if (isCoordinatorRef.current) {
-      for (const m of membersRef.current) send(m.deviceId, 'session-ended', { sessionId });
+      broadcast('session-ended', { sessionId });
+      for (const m of membersRef.current) {
+        if (m.deviceId.startsWith(GUEST_PREFIX)) send(m.deviceId, 'session-ended', { sessionId });
+      }
       Promise.resolve(linkApi.stopWalkieTalkieGuestListener?.()).catch(() => {});
       setPendingGuests([]);
     } else if (coordinatorIdRef.current === GUEST_LINK_ID) {
@@ -603,6 +606,12 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
         handleMemberGone(deviceId, true);
       },
       'session-ended': () => {
+        setDiscovered((prev) => {
+          if (!prev.has(deviceId)) return prev;
+          const copy = new Map(prev);
+          copy.delete(deviceId);
+          return copy;
+        });
         if (body.sessionId !== sessionIdRef.current) return;
         teardownSession();
       },
@@ -703,6 +712,12 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
   useEffect(() => {
     if (!linkApi?.onDeviceDisconnected) return;
     return linkApi.onDeviceDisconnected((deviceId: string) => {
+      setDiscovered((prev) => {
+        if (!prev.has(deviceId)) return prev;
+        const copy = new Map(prev);
+        copy.delete(deviceId);
+        return copy;
+      });
       if (!sessionIdRef.current) return;
       if (isCoordinatorRef.current) {
         handleMemberGone(deviceId, true);
@@ -749,7 +764,7 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
               flexShrink: 0,
             }}
           >
-            <DeviceIcon deviceType="desktop" />
+            <DeviceIcon deviceType={isMobile ? 'phone' : 'desktop'} />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <span style={{ fontSize: '13.5px', fontWeight: 600, overflowWrap: 'anywhere' }}>
@@ -983,7 +998,9 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
 
       <PendingGuestsModal
         guests={pendingGuests}
-        subtitle="wants to join"
+        title="Walkie Talkie Request"
+        iconType="walkie"
+        subtitle="wants to join session"
         onAccept={(connId) => {
           const g = pendingGuests.find((pg) => pg.connId === connId);
           if (g) acceptGuestJoin(g.connId, g.remoteAddress, g.deviceName);

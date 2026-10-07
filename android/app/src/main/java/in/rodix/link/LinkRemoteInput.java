@@ -107,6 +107,28 @@ public class LinkRemoteInput {
     // D-pad/Menu/Play-Pause instead use AccessibilityService's real global actions (see
     // LinkAccessibilityService.java) — genuine synthetic key dispatch, TV-remote-appropriate.
     // Volume goes straight through AudioManager, which needs no special injection at all.
+    public static void injectSpecialKey(Context context, final int specialKeyCode) {
+        String keyStr;
+        switch (specialKeyCode) {
+            case 1: keyStr = "BACKSPACE"; break;
+            case 4: keyStr = "LEFT"; break;
+            case 5: keyStr = "UP"; break;
+            case 6: keyStr = "RIGHT"; break;
+            case 7: keyStr = "DOWN"; break;
+            case 8: keyStr = "PAGE_UP"; break;
+            case 9: keyStr = "PAGE_DOWN"; break;
+            case 12: keyStr = "ENTER"; break;
+            case 14: keyStr = "ESCAPE"; break;
+            case 25: keyStr = "FULLSCREEN"; break;
+            case 40: keyStr = "SELECT_ALL"; break;
+            case 41: keyStr = "COPY"; break;
+            case 42: keyStr = "PASTE"; break;
+            case 43: keyStr = "CUT"; break;
+            default: return;
+        }
+        injectSpecialKey(context, keyStr);
+    }
+
     public static void injectSpecialKey(Context context, final String specialKey) {
         if (specialKey == null) return;
 
@@ -115,6 +137,7 @@ public class LinkRemoteInput {
         switch (specialKey.toUpperCase()) {
             case "BACK":
             case "ESCAPE":
+            case "FULLSCREEN":
                 if (service != null) service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK);
                 return;
             case "HOME":
@@ -123,12 +146,21 @@ public class LinkRemoteInput {
             case "RECENTS":
                 if (service != null) service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS);
                 return;
+            case "LOCK":
+            case "POWER":
+            case "SLEEP":
+                if (service != null) service.lockScreen();
+                return;
             case "DPAD_UP":
             case "UP":
+            case "PAGE_UP":
+            case "PREV":
                 if (service != null) service.moveFocus(LinkAccessibilityService.DIRECTION_UP);
                 return;
             case "DPAD_DOWN":
             case "DOWN":
+            case "PAGE_DOWN":
+            case "NEXT":
             case "TAB":
                 if (service != null) service.moveFocus(LinkAccessibilityService.DIRECTION_DOWN);
                 return;

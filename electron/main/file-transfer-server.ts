@@ -328,7 +328,6 @@ function getWebClientHtml(): string {
 
     <!-- Step 1: Connect -->
     <div class="section active" id="sec-connect">
-      <input type="text" id="input-device" placeholder="Your device name (e.g. Browser)">
       <button id="btn-connect">Connect</button>
     </div>
 
@@ -371,7 +370,6 @@ function getWebClientHtml(): string {
     const secConnect = document.getElementById('sec-connect');
     const secPin = document.getElementById('sec-pin');
     const secUpload = document.getElementById('sec-upload');
-    const inputDevice = document.getElementById('input-device');
     const btnConnect = document.getElementById('btn-connect');
     const pinDisplay = document.getElementById('pin-display');
     const subtitle = document.getElementById('subtitle');
@@ -387,13 +385,11 @@ function getWebClientHtml(): string {
     else if (/ipad|iphone|ipod/i.test(navigator.userAgent)) defaultName = 'iOS Browser';
     else if (/mac/i.test(navigator.userAgent)) defaultName = 'Mac Browser';
     else if (/windows/i.test(navigator.userAgent)) defaultName = 'Windows Browser';
-    inputDevice.placeholder = 'Your device name (e.g. ' + defaultName + ')';
 
     let ws = null;
     let selectedFiles = [];
 
     btnConnect.addEventListener('click', () => {
-      const devName = inputDevice.value.trim() || defaultName;
       btnConnect.disabled = true;
       btnConnect.textContent = 'Connecting...';
 
@@ -404,7 +400,7 @@ function getWebClientHtml(): string {
       ws.onopen = () => {
         ws.send(JSON.stringify({
           type: 'join-guest',
-          deviceName: devName
+          deviceName: defaultName
         }));
       };
 

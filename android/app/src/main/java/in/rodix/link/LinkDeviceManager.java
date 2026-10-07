@@ -591,10 +591,12 @@ public class LinkDeviceManager {
      */
     public void runHeartbeatCycle(long timeoutMs) {
         String currentHash = trustStore.computePoolHash();
+        long now = System.currentTimeMillis();
         for (ManagedPeer peer : peers.values()) {
             if (peer.conn.isStale(timeoutMs)) {
                 peer.conn.close();
-            } else {
+            } else if (now - peer.conn.lastActivityAt >= 4000) {
+                // Only send keepalive when idle for >= 4s, saving battery and radio wakeups
                 peer.conn.sendHeartbeat(false, currentHash);
             }
         }

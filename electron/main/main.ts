@@ -8,8 +8,9 @@ import * as child_process from 'child_process';
 import { resolveScriptPath } from '../core/script-path';
 
 app.setName('Link');
-if (process.platform === 'win32') {
-  app.setAppUserModelId('in.rodix.link');
+if (process.platform === 'win32' && !app.isPackaged) {
+  // Use a unique ID in dev to bypass Windows icon caching for electron.exe and previous broken runs
+  app.setAppUserModelId('in.rodix.link.dev3');
 }
 app.disableHardwareAcceleration();
 
@@ -39,6 +40,7 @@ import { FileTransferServer } from './file-transfer-server';
 import { FileTransferClient } from './file-transfer-client';
 import { WalkieTalkieServer } from './walkie-talkie-server';
 import { WalkieTalkieClient } from './walkie-talkie-client';
+import { ScreenCaptureServer } from './screen-capture-server';
 import {
   ClipboardWatcher,
   createClipboardPacket,
@@ -131,6 +133,7 @@ const CAPABILITIES = {
     'link.touchpad.request', 'link.mpris.request', 'link.telephony', 'link.notification',
     'link.flashlight', 'link.dnd', 'link.rename', 'link.rename.request',
     'link.digitizer.session', 'link.digitizer',
+    'link.remotecontrol.signal', 'link.remotecontrol.stream', 'link.remotecontrol.input',
   ],
   outgoing: [
     'link.clipboard', 'link.clipboard.connect', 'link.battery',
@@ -138,6 +141,7 @@ const CAPABILITIES = {
     'link.systemvolume', 'link.lock.request', 'link.lock', 'link.mpris',
     'link.flashlight', 'link.dnd', 'link.rename', 'link.rename.request',
     'link.telephony.request',
+    'link.remotecontrol.signal', 'link.remotecontrol.stream', 'link.remotecontrol.input',
   ],
 };
 
@@ -168,6 +172,7 @@ let fileTransferServer: FileTransferServer | null = null; // Guest-isolated, lik
 let fileTransferClient: FileTransferClient | null = null;
 let walkieTalkieGuestServer: WalkieTalkieServer | null = null; // Unpaired guest signaling.
 let walkieTalkieGuestClient: WalkieTalkieClient | null = null;
+let screenCaptureServer: ScreenCaptureServer | null = null;
 let configDir: string;
 let clipboardWatcher: ClipboardWatcher;
 let lastKnownClipboardTimestamp = 0;
@@ -302,7 +307,7 @@ function cycleTargetDisplay() {
 
 // UDP relay for presenter/touchpad/digitizer input.
 function sendUdpMessageToPeer(deviceId: string, message: string) {
-  const ip = deviceManager.remoteAddressOf(deviceId);
+  const ip = deviceManager.remoteAddressOf(deviceId) || deviceId;
   if (!ip) return;
   sendUdpMessageToAddress(ip, message);
 }
@@ -367,41 +372,67 @@ function wireRemoteMicClientEvents(client: AudioSinkClient) {
   client.on('error', (err) => send('remote-mic-error', err.message));
 }
 
+function getOrCreatePresenterWindow() {
+  const display = getTargetDisplay();
+  const { width, height } = display.bounds;
+
+  if (presenterWindow && !presenterWindow.isDestroyed()) {
+    return presenterWindow;
+  }
+
+  presenterWindow = new BrowserWindow({
+    width,
+    height,
+    x: display.bounds.x,
+    y: display.bounds.y,
+    transparent: true,
+    frame: false,
+    alwaysOnTop: true,
+    focusable: false,
+    skipTaskbar: true,
+    show: false,
+    hasShadow: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, '../main/presenter-preload.js'),
+    },
+  });
+
+  presenterWindow.setAlwaysOnTop(true, 'screen-saver');
+  presenterWindow.setIgnoreMouseEvents(true, { forward: true });
+  presenterWindow.loadFile(path.join(__dirname, '../renderer/presenter-overlay.html'));
+  presenterWindow.on('closed', () => {
+    presenterWindow = null;
+  });
+
+  return presenterWindow;
+}
+
 function showPresenterDot(dx: number, dy: number) {
   const display = getTargetDisplay();
-  const { width, height } = display.workAreaSize;
+  const { width, height } = display.bounds;
 
   if (!presenterPosition) {
     presenterPosition = new PresenterPosition(width / height);
   }
 
-  if (!presenterWindow) {
-    presenterWindow = new BrowserWindow({
-      width,
-      height,
-      x: display.workArea.x,
-      y: display.workArea.y,
-      transparent: true,
-      frame: false,
-      alwaysOnTop: true,
-      focusable: false,
-      skipTaskbar: true,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        preload: path.join(__dirname, '../main/presenter-preload.js'),
-      },
-    });
-    presenterWindow.setAlwaysOnTop(true, 'screen-saver');
-    presenterWindow.setIgnoreMouseEvents(true);
-    presenterWindow.loadFile(path.join(__dirname, '../renderer/presenter-overlay.html'));
-    presenterWindow.on('closed', () => {
-      presenterWindow = null;
-    });
+  const win = getOrCreatePresenterWindow();
+  const { x, y } = presenterPosition.update(dx, dy);
+
+  if (!win.isVisible()) {
+    win.showInactive();
   }
 
-  const { x, y } = presenterPosition.update(dx, dy);
-  presenterWindow.webContents.send('presenter-position', x, y);
+  if (win.webContents.isLoading()) {
+    win.webContents.once('did-finish-load', () => {
+      if (!win.isDestroyed()) {
+        win.webContents.send('presenter-position', x, y);
+      }
+    });
+  } else {
+    win.webContents.send('presenter-position', x, y);
+  }
 
   if (presenterHideTimeout) clearTimeout(presenterHideTimeout);
   presenterHideTimeout = setTimeout(hidePresenterDot, PRESENTER_HIDE_DELAY_MS);
@@ -412,16 +443,19 @@ function hidePresenterDot(resetPos = false) {
     clearTimeout(presenterHideTimeout);
     presenterHideTimeout = null;
   }
-  if (presenterWindow) {
-    try {
-      presenterWindow.close();
-    } catch {
-      // already destroyed (e.g. app quitting) — nothing left to clean up
-    }
-    presenterWindow = null;
+  if (presenterWindow && !presenterWindow.isDestroyed()) {
+    presenterWindow.hide();
   }
   if (resetPos) {
     presenterPosition = null;
+    if (presenterWindow && !presenterWindow.isDestroyed()) {
+      try {
+        presenterWindow.close();
+      } catch {
+        // already destroyed
+      }
+      presenterWindow = null;
+    }
   }
 }
 
@@ -447,11 +481,14 @@ function updateScreensaverInhibition() {
 // hotspot mode was in use: the QR code encoded an address the scanning phone could never reach.
 const WINDOWS_HOTSPOT_SUBNET_PREFIX = '192.168.137.';
 
-/** Lower = tried first. See WINDOWS_HOTSPOT_SUBNET_PREFIX for why the hotspot subnet wins even
- *  over a named Wi-Fi/Ethernet adapter — address content beats adapter-name guessing here. */
+/** Lower = prioritized as primary display / default bind.
+ *  Tier 0: Physical Wi-Fi / Ethernet adapters
+ *  Tier 1: Hotspot / ICS subnets
+ *  Tier 2: Other LAN adapters
+ *  (Virtual / VPN adapters are separated and placed in fallback) */
 function localIpPriority(address: string, adapterNameLower: string): number {
-  if (address.startsWith(WINDOWS_HOTSPOT_SUBNET_PREFIX)) return 0;
-  if (adapterNameLower.includes('wi-fi') || adapterNameLower.includes('wlan') || adapterNameLower.includes('ethernet')) return 1;
+  if (adapterNameLower.includes('wi-fi') || adapterNameLower.includes('wlan') || adapterNameLower.includes('ethernet')) return 0;
+  if (address.startsWith(WINDOWS_HOTSPOT_SUBNET_PREFIX)) return 1;
   return 2;
 }
 
@@ -916,6 +953,16 @@ function initCore() {
       console.log(`[Link] Closing stale connection to undiscoverable peer ${expiredDeviceId.slice(0, 8)}`);
       deviceManager.closeConnection(expiredDeviceId);
     }
+  }, certFingerprint(tlsIdentity.cert), (token: string) => {
+    for (const dev of deviceManager.trustStore.list()) {
+      const expected = crypto
+        .createHash('sha256')
+        .update(dev.deviceId + ':' + certFingerprint(dev.certPem))
+        .digest('hex')
+        .substring(0, 32);
+      if (expected === token) return dev;
+    }
+    return undefined;
   });
   discoveryService.start(visibilityEnabled);
 
@@ -946,7 +993,6 @@ function initCore() {
 
   triggerReconnect = attemptTrustedReconnects;
   attemptTrustedReconnects();
-  setInterval(attemptTrustedReconnects, 10000);
 
   ipcMain.handle('get-discovered-devices', () => {
     return Array.from(discoveredUnpairedPeers.values());
@@ -974,11 +1020,26 @@ function initCore() {
       const isRemoteInputAllowed = (senderId && checkDevicePermission(senderId, 'remoteinput')) || inputGuestServer?.isAdmitted(rinfo.address, 'touchpad');
 
       if (line.startsWith('pmove ')) {
+        // TEMP DIAGNOSTIC — remove once the untrusted-presenter-dot bug is confirmed fixed.
+        console.log('[Link][pmove-debug]', {
+          fromIp: rinfo.address,
+          senderId,
+          permissionCheck: senderId ? checkDevicePermission(senderId, 'presenter') : 'no senderId (not a paired device)',
+          guestAdmitted: inputGuestServer?.isAdmitted(rinfo.address, 'presenter'),
+          admittedGuestList: inputGuestServer?.getAdmittedGuests(),
+          isPresenterAllowed,
+        });
         if (!isPresenterAllowed) return;
         const parts = line.split(' ');
         const dx = parseFloat(parts[1]);
         const dy = parseFloat(parts[2]);
         showPresenterDot(dx, dy);
+      } else if (line === 'pstop') {
+        if (!isPresenterAllowed) return;
+        hidePresenterDot(true);
+      } else if (line.startsWith('special ')) {
+        if (!isPresenterAllowed && !isRemoteInputAllowed) return;
+        touchpadHandler.writeCommand(line);
       } else if (line.startsWith('dig ')) {
         if (!isRemoteInputAllowed) return;
         const parts = line.split(' ');
@@ -1797,6 +1858,65 @@ function initCore() {
       // ephemeral session tool, not a standing capability to grant/deny separately.
       if (isBlocked(deviceId)) return;
       send('walkie-talkie-signal', deviceId, packet.type, packet.body);
+    } else if (packet.type === 'link.remotecontrol.signal') {
+      if (isBlocked(deviceId)) return;
+      const sig = packet.body as any;
+      if (sig?.type === 'request') {
+        if (!checkDevicePermission(deviceId, 'remotecontrol')) {
+          console.log(`[Link] Denied remote control capture request from ${deviceId} (Permission disabled)`);
+          deviceManager.sendTo(deviceId, createPacket('link.remotecontrol.signal', { type: 'denied' }));
+          return;
+        }
+        if (!screenCaptureServer) {
+          screenCaptureServer = new ScreenCaptureServer(deviceManager);
+        }
+        screenCaptureServer.start(deviceId);
+      } else if (sig?.type === 'stop') {
+        if (screenCaptureServer) {
+          screenCaptureServer.stop();
+        }
+      }
+      send('remote-control-signal', deviceId, packet.body);
+    } else if (packet.type === 'link.remotecontrol.stream') {
+      if (isBlocked(deviceId)) return;
+      send('remote-control-stream', deviceId, packet.body);
+    } else if (packet.type === 'link.remotecontrol.input') {
+      if (!checkDevicePermission(deviceId, 'remotecontrol')) {
+        console.log(`[Link] Blocked Remote Control input from ${deviceId} (Permission disabled)`);
+        return;
+      }
+      // Desktop target receiving remote input: map to TouchpadHandler Win32 injection
+      if (touchpadHandler) {
+        const body = packet.body as any;
+        const action = body?.action;
+        if (action === 'tap') {
+          const nx = body.x ?? 0.5;
+          const ny = body.y ?? 0.5;
+          const button = body.button || 'left';
+          touchpadHandler.writeCommand(`abs ${nx} ${ny}`);
+          touchpadHandler.writeCommand(`click ${button}`);
+        } else if (action === 'scroll' || action === 'swipe') {
+          const _startX = body.startX ?? 0.5;
+          const startY = body.startY ?? 0.5;
+          const _endX = body.endX ?? 0.5;
+          const endY = body.endY ?? 0.5;
+          const dy = endY - startY;
+          // Invert scroll dy for natural desktop scrolling
+          touchpadHandler.writeCommand(`scroll 0 ${-dy * 3}`);
+        } else if (action === 'text' && body.text) {
+          for (let i = 0; i < body.text.length; i++) {
+            const charCode = body.text.charCodeAt(i);
+            touchpadHandler.writeCommand(`unicode ${charCode}`);
+          }
+        } else if (action === 'key') {
+          const key = body.key;
+          if (key === 'BACKSPACE') touchpadHandler.writeCommand('special 1');
+          else if (key === 'ENTER') touchpadHandler.writeCommand('special 12');
+          else if (key === 'BACK') touchpadHandler.writeCommand('special 14');
+        } else {
+          touchpadHandler.handleRequest(packet);
+        }
+      }
     }
     // No 'link.remotemic.query' reply here — desktop never hosts Remote Mic (see remoteMicClient's
     // declaration comment), so there's nothing to answer a peer's "are you hosting?" query with.
@@ -1852,6 +1972,7 @@ const appIconPath = process.platform === 'win32'
   ? path.join(__dirname, '../../icon.ico')
   : path.join(__dirname, '../../icon.png');
 const appIconImg = nativeImage.createFromPath(appIconPath);
+console.log('[DEBUG] __dirname:', __dirname, 'appIconPath:', appIconPath, 'isEmpty:', appIconImg.isEmpty());
 
 // Generic call-icon for incoming/missed-call notifications — showing the Link app logo there
 // would misleadingly imply the notification is about the app itself rather than a phone call.
@@ -1859,27 +1980,25 @@ const appIconImg = nativeImage.createFromPath(appIconPath);
 const callIconImg = nativeImage.createFromPath(path.join(__dirname, '../../call-icon.png'));
 
 function createWindow() {
-  const iconImg = appIconImg;
-
   mainWindow = new BrowserWindow({
-    width: 480,
+    width: 860,
     height: 640,
-    // No floor previously existed, so the window could be dragged down to whatever the OS
-    // allows — well past the point text and controls stop being usable. Kept at/below the
-    // default launch size (480x640) so this never forces a resize on a normal start; it only
-    // stops the user from going smaller than that. The sidebar already collapses to a bottom
-    // nav bar under 768px via index.css's existing @media rule, so this floor doesn't need to
-    // clear that breakpoint — dialogs inside it (e.g. File Transfer's QR/Connect split) handle
-    // their own narrow-width stacking via CSS container queries (see .fx-split in index.css).
-    minWidth: 420,
-    minHeight: 480,
-    icon: iconImg,
+    minWidth: 640,
+    minHeight: 520,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: process.platform === 'darwin' ? false : {
+      color: '#030303',
+      symbolColor: '#ffffff',
+      height: 48,
+    },
+    autoHideMenuBar: true,
+    icon: appIconPath,
     webPreferences: {
       preload: path.join(__dirname, '../main/preload.js'),
     },
   });
   mainWindow.setMenu(null);
-  mainWindow.setIcon(iconImg);
+  mainWindow.setIcon(appIconPath);
 
   // Close-to-tray: intercept the window's close and hide it instead of quitting, unless the user
   // is doing a real quit (tray "Quit" / app.quit) or the preference is off. Keeps the background
@@ -1924,9 +2043,11 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     console.log('[Link] mainWindow ready-to-show fired');
+    mainWindow?.maximize();
     mainWindow?.show();
     mainWindow?.focus();
   });
+  mainWindow.maximize();
   mainWindow.show();
   mainWindow.focus();
 }
@@ -2027,9 +2148,7 @@ function rebuildTrayMenu() {
 // Menu context menu. Life OS never calls this and has all of them; its BrowserWindow `icon` path
 // does not even resolve inside its asar, confirming the taskbar icon comes from the exe's own
 // embedded icon (set by build.win.icon) rather than from anything at runtime.
-if (process.platform === 'win32' && !app.isPackaged) {
-  app.setAppUserModelId('in.rodix.link');
-}
+
 
 /** Teaches Windows what this app's AppUserModelID means, so toasts show "Link" + our icon in the
  *  header instead of the raw ID string ("electron.app.Link").
@@ -2524,6 +2643,15 @@ app.whenReady().then(() => {
     deviceManager.sendTo(deviceId, createPacket('link.remoteinput.send', body));
   });
 
+  // ===== Remote Control Signal & Input =====
+  ipcMain.handle('send-remote-control-signal', (_e, deviceId: string, signalBody: any) => {
+    deviceManager.sendTo(deviceId, createPacket('link.remotecontrol.signal', signalBody));
+  });
+
+  ipcMain.handle('send-remote-control-input', (_e, deviceId: string, inputBody: any) => {
+    deviceManager.sendTo(deviceId, createPacket('link.remotecontrol.input', inputBody));
+  });
+
   // ===== Rename =====
   ipcMain.handle('rename-device', (_e, newName: string) => {
     const filtered = saveDeviceName(configDir, newName);
@@ -2574,6 +2702,7 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('send-presenter-stop', (_e, deviceId: string) => {
     deviceManager.sendTo(deviceId, createPresenterStopPacket());
+    sendUdpMessageToPeer(deviceId, 'pstop');
   });
   ipcMain.handle('send-special-key', (_e, deviceId: string, key: number) => {
     sendUdpMessageToPeer(deviceId, `special ${key}`);
@@ -3902,9 +4031,12 @@ app.whenReady().then(() => {
       mainWindow?.webContents.send('local-identity-updated', {
         ...identity,
         ipAddress: currentLocalIp,
+        ipAddresses: getAllLocalIpAddresses(),
       });
+      discoveryService?.broadcastNow();
+      triggerReconnect?.();
     }
-  }, 5000);
+  }, 3000);
 });
 
 // A second launch attempt lands here in the *first* instance (the one holding the lock)
@@ -3942,6 +4074,7 @@ app.on('window-all-closed', () => {
   fileTransferClient?.disconnect();
   walkieTalkieGuestServer?.stop().catch(() => {});
   walkieTalkieGuestClient?.disconnect();
+  screenCaptureServer?.stop();
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -3965,6 +4098,7 @@ app.on('before-quit', () => {
   fileTransferClient?.disconnect();
   walkieTalkieGuestServer?.stop().catch(() => {});
   walkieTalkieGuestClient?.disconnect();
+  screenCaptureServer?.stop();
 });
 
 app.on('will-quit', () => {
@@ -4239,10 +4373,10 @@ process.on('unhandledRejection', (reason, promise) => {
   logCrashToDisk('unhandledRejection', reason);
 });
 
-// App-level heartbeat/liveness cycle (every 2s) — detects a genuinely dead peer within ~5s
+// App-level heartbeat/liveness cycle (every 5s) — detects a genuinely dead peer within ~15s
 // (HEARTBEAT_TIMEOUT_MS) instead of depending on OS TCP keepalive timing.
-const HEARTBEAT_INTERVAL_MS = 2000;
-const HEARTBEAT_TIMEOUT_MS = 5000;
+const HEARTBEAT_INTERVAL_MS = 5000;
+const HEARTBEAT_TIMEOUT_MS = 15000;
 setInterval(() => {
   deviceManager?.runHeartbeatCycle(HEARTBEAT_TIMEOUT_MS);
 }, HEARTBEAT_INTERVAL_MS);
