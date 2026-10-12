@@ -228,7 +228,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({ open, onClose, onDec
           try {
             await requestFn('camera');
           } catch (err) {
-            console.error('Failed to request Capacitor camera permission:', err);
+            console.error('Failed to request camera permission:', err);
           }
         }
       }

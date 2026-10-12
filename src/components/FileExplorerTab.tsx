@@ -1276,45 +1276,74 @@ const FileExplorerTab: React.FC<FileExplorerProps> = ({ deviceId }) => {
         flexWrap: 'wrap',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-          {currentPath && (
+          <button
+            onClick={handleBack}
+            disabled={!currentPath || loading}
+            title="Go Back / Parent Directory"
+            onMouseEnter={(e) => {
+              if (currentPath && !loading) e.currentTarget.style.background = 'var(--input-focus-bg)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'var(--input-bg)';
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '8px 12px',
+              borderRadius: '8px',
+              border: '1px solid var(--border-color)',
+              background: 'var(--input-bg)',
+              color: 'var(--text-color)',
+              cursor: !currentPath || loading ? 'not-allowed' : 'pointer',
+              opacity: !currentPath || loading ? 0.45 : 1,
+              fontWeight: 500,
+              transition: 'background 0.15s ease, opacity 0.15s ease',
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="19" y1="12" x2="5" y2="12" />
+              <polyline points="12 19 5 12 12 5" />
+            </svg>
+            Back
+          </button>
+
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <button
-              onClick={handleBack}
-              disabled={loading}
-              title="Go Back / Parent Directory"
-              onMouseEnter={(e) => {
-                if (!loading) e.currentTarget.style.background = 'var(--input-focus-bg)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'var(--input-bg)';
-              }}
+              onClick={handleCreateDirectory}
+              disabled={!currentPath || loading}
+              title="Create New Folder"
               style={{
+                padding: '8px 12px',
+                borderRadius: '8px',
+                border: 'none',
+                background: 'var(--accent-gradient, #3b82f6)',
+                color: 'var(--btn-primary-text)',
+                fontWeight: 600,
+                cursor: !currentPath || loading ? 'not-allowed' : 'pointer',
+                opacity: !currentPath || loading ? 0.45 : 1,
                 display: 'flex',
                 alignItems: 'center',
                 gap: '6px',
-                padding: '8px 12px',
-                borderRadius: '8px',
-                border: '1px solid var(--border-color)',
-                background: 'var(--input-bg)',
-                color: 'var(--text-color)',
-                cursor: 'pointer',
-                fontWeight: 500,
-                transition: 'background 0.15s ease',
+                transition: 'opacity 0.15s ease',
               }}
             >
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="19" y1="12" x2="5" y2="12" />
-                <polyline points="12 19 5 12 12 5" />
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
               </svg>
-              Back
+              New Folder
             </button>
-          )}
 
-          {currentPath && (
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <div style={{ position: 'relative' }}>
               <button
-                onClick={handleCreateDirectory}
-                disabled={loading}
-                title="Create New Folder"
+                onClick={() => {
+                  if (currentPath && !loading) {
+                    setShowUploadDropdown(!showUploadDropdown);
+                  }
+                }}
+                disabled={!currentPath || loading}
+                title="Upload Files or Folders"
                 style={{
                   padding: '8px 12px',
                   borderRadius: '8px',
@@ -1322,115 +1351,91 @@ const FileExplorerTab: React.FC<FileExplorerProps> = ({ deviceId }) => {
                   background: 'var(--accent-gradient, #3b82f6)',
                   color: 'var(--btn-primary-text)',
                   fontWeight: 600,
-                  cursor: 'pointer',
+                  cursor: !currentPath || loading ? 'not-allowed' : 'pointer',
+                  opacity: !currentPath || loading ? 0.45 : 1,
                   display: 'flex',
                   alignItems: 'center',
                   gap: '6px',
+                  transition: 'opacity 0.15s ease',
                 }}
               >
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                 </svg>
-                New Folder
+                Upload
+                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: '2px' }}>
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
               </button>
 
-              <div style={{ position: 'relative' }}>
-                <button
-                  onClick={() => setShowUploadDropdown(!showUploadDropdown)}
-                  disabled={loading}
-                  title="Upload Files or Folders"
-                  style={{
-                    padding: '8px 12px',
-                    borderRadius: '8px',
-                    border: 'none',
-                    background: 'var(--accent-gradient, #3b82f6)',
-                    color: 'var(--btn-primary-text)',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                  }}
-                >
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="17 8 12 3 7 8" />
-                    <line x1="12" y1="3" x2="12" y2="15" />
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  </svg>
-                  Upload
-                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: '2px' }}>
-                    <polyline points="6 9 12 15 18 9" />
-                  </svg>
-                </button>
-
-                {showUploadDropdown && (
-                  <>
-                    <div
-                      onClick={() => setShowUploadDropdown(false)}
-                      style={{
-                        position: 'fixed',
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        zIndex: 999,
-                      }}
-                    />
-                    <div
-                      style={{
-                        position: 'absolute',
-                        top: 'calc(100% + 6px)',
-                        right: 0,
-                        background: 'var(--modal-bg)',
-                        border: '1px solid var(--border-color)',
-                        borderRadius: '8px',
-                        boxShadow: '0 10px 25px rgba(0,0,0,0.3)',
-                        padding: '4px 0',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        minWidth: '130px',
-                        zIndex: 1000,
-                      }}
-                    >
-                      {[
-                        { type: 'file' as const, label: 'Files', icon: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></> },
-                        { type: 'directory' as const, label: 'Folders', icon: <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/> },
-                      ].map((item) => (
-                        <button
-                          key={item.type}
-                          onClick={() => {
-                            setShowUploadDropdown(false);
-                            handleUpload(item.type);
-                          }}
-                          style={{
-                            padding: '8px 12px',
-                            background: 'transparent',
-                            border: 'none',
-                            color: 'var(--text-color)',
-                            fontSize: '12.5px',
-                            textAlign: 'left',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '8px',
-                            width: '100%',
-                          }}
-                          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)')}
-                          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                        >
-                          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-muted)' }}>
-                            {item.icon}
-                          </svg>
-                          {item.label}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
-              </div>
+              {showUploadDropdown && currentPath && (
+                <>
+                  <div
+                    onClick={() => setShowUploadDropdown(false)}
+                    style={{
+                      position: 'fixed',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      zIndex: 999,
+                    }}
+                  />
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 'calc(100% + 6px)',
+                      right: 0,
+                      background: 'var(--modal-bg)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      boxShadow: '0 10px 25px rgba(0,0,0,0.3)',
+                      padding: '4px 0',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      minWidth: '130px',
+                      zIndex: 1000,
+                    }}
+                  >
+                    {[
+                      { type: 'file' as const, label: 'Files', icon: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></> },
+                      { type: 'directory' as const, label: 'Folders', icon: <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/> },
+                    ].map((item) => (
+                      <button
+                        key={item.type}
+                        onClick={() => {
+                          setShowUploadDropdown(false);
+                          handleUpload(item.type);
+                        }}
+                        style={{
+                          padding: '8px 12px',
+                          background: 'transparent',
+                          border: 'none',
+                          color: 'var(--text-color)',
+                          fontSize: '12.5px',
+                          textAlign: 'left',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          width: '100%',
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)')}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      >
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-muted)' }}>
+                          {item.icon}
+                        </svg>
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
-          )}
+          </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: '1 1 260px', minWidth: 0, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
@@ -1451,16 +1456,47 @@ const FileExplorerTab: React.FC<FileExplorerProps> = ({ deviceId }) => {
             }}
           />
 
-          {currentPath !== null && (
-            <div style={{ display: 'flex', gap: '4px', background: 'var(--input-bg)', padding: '2px', borderRadius: '8px', border: '1px solid var(--border-color)', height: '36px', boxSizing: 'border-box', alignItems: 'center', flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: '4px', background: 'var(--input-bg)', padding: '2px', borderRadius: '8px', border: '1px solid var(--border-color)', height: '36px', boxSizing: 'border-box', alignItems: 'center', flexShrink: 0 }}>
+            <button
+              onClick={toggleShowHidden}
+              title={showHidden ? 'Hide hidden files' : 'Show hidden files'}
+              style={{
+                padding: '6px 10px',
+                border: 'none',
+                background: showHidden ? 'rgba(255,255,255,0.08)' : 'transparent',
+                color: showHidden ? 'var(--accent-color, #3b82f6)' : 'var(--text-muted)',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: '100%',
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                {showHidden ? (
+                  <>
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </>
+                ) : (
+                  <>
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  </>
+                )}
+              </svg>
+            </button>
+            {(['list', 'grid'] as const).map((mode) => (
               <button
-                onClick={toggleShowHidden}
-                title={showHidden ? 'Hide hidden files' : 'Show hidden files'}
+                key={mode}
+                onClick={() => setViewMode(mode)}
+                title={mode === 'list' ? 'List View' : 'Icon View'}
                 style={{
                   padding: '6px 10px',
                   border: 'none',
-                  background: showHidden ? 'rgba(255,255,255,0.08)' : 'transparent',
-                  color: showHidden ? 'var(--accent-color, #3b82f6)' : 'var(--text-muted)',
+                  background: viewMode === mode ? 'rgba(255,255,255,0.08)' : 'transparent',
+                  color: viewMode === mode ? 'var(--accent-color, #3b82f6)' : 'var(--text-muted)',
                   borderRadius: '6px',
                   cursor: 'pointer',
                   display: 'flex',
@@ -1469,74 +1505,42 @@ const FileExplorerTab: React.FC<FileExplorerProps> = ({ deviceId }) => {
                   height: '100%',
                 }}
               >
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  {showHidden ? (
-                    <>
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                      <circle cx="12" cy="12" r="3" />
-                    </>
-                  ) : (
-                    <>
-                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-                      <line x1="1" y1="1" x2="23" y2="23" />
-                    </>
-                  )}
-                </svg>
+                {mode === 'list' ? (
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="8" y1="6" x2="21" y2="6" />
+                    <line x1="8" y1="12" x2="21" y2="12" />
+                    <line x1="8" y1="18" x2="21" y2="18" />
+                    <line x1="3" y1="6" x2="3.01" y2="6" />
+                    <line x1="3" y1="12" x2="3.01" y2="12" />
+                    <line x1="3" y1="18" x2="3.01" y2="18" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="7" height="7" />
+                    <rect x="14" y="3" width="7" height="7" />
+                    <rect x="14" y="14" width="7" height="7" />
+                    <rect x="3" y="14" width="7" height="7" />
+                  </svg>
+                )}
               </button>
-              {(['list', 'grid'] as const).map((mode) => (
-                <button
-                  key={mode}
-                  onClick={() => setViewMode(mode)}
-                  title={mode === 'list' ? 'List View' : 'Icon View'}
-                  style={{
-                    padding: '6px 10px',
-                    border: 'none',
-                    background: viewMode === mode ? 'rgba(255,255,255,0.08)' : 'transparent',
-                    color: viewMode === mode ? 'var(--accent-color, #3b82f6)' : 'var(--text-muted)',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    height: '100%',
-                  }}
-                >
-                  {mode === 'list' ? (
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="8" y1="6" x2="21" y2="6" />
-                      <line x1="8" y1="12" x2="21" y2="12" />
-                      <line x1="8" y1="18" x2="21" y2="18" />
-                      <line x1="3" y1="6" x2="3.01" y2="6" />
-                      <line x1="3" y1="12" x2="3.01" y2="12" />
-                      <line x1="3" y1="18" x2="3.01" y2="18" />
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="3" y="3" width="7" height="7" />
-                      <rect x="14" y="3" width="7" height="7" />
-                      <rect x="14" y="14" width="7" height="7" />
-                      <rect x="3" y="14" width="7" height="7" />
-                    </svg>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
+            ))}
+          </div>
         </div>
       </div>
 
       {/* Path Breadcrumbs */}
       <div style={{
-        padding: '8px 12px',
-        background: 'var(--sidebar-bg)',
+        padding: '10px 14px',
+        background: 'var(--card-bg)',
         border: '1px solid var(--border-color)',
-        borderRadius: '6px',
+        borderRadius: '12px',
         fontSize: '13px',
         color: 'var(--text-muted)',
         marginBottom: '16px',
         wordBreak: 'break-all',
+        boxShadow: 'var(--card-shadow)',
       }}>
-        <strong>Location:</strong> {currentPath || 'Storage Roots'}
+        <strong style={{ color: 'var(--text-color)' }}>Location:</strong> {currentPath || 'Storage Roots'}
       </div>
 
       {/* Main List Container */}
@@ -1546,12 +1550,14 @@ const FileExplorerTab: React.FC<FileExplorerProps> = ({ deviceId }) => {
         onDrop={handleDropUpload}
         style={{
           flex: 1,
+          minHeight: '420px',
           overflowY: 'auto',
-          background: 'var(--sidebar-bg)',
+          background: 'var(--card-bg)',
           border: '1px solid var(--border-color)',
-          borderRadius: '8px',
+          borderRadius: '16px',
           display: 'flex',
           flexDirection: 'column',
+          boxShadow: 'var(--card-shadow)',
         }}
       >
         {loading && (
@@ -1584,36 +1590,77 @@ const FileExplorerTab: React.FC<FileExplorerProps> = ({ deviceId }) => {
 
         {/* Roots View */}
         {!loading && !error && currentPath === null && roots.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '16px', padding: '20px' }}>
-            {roots.map((root) => (
-              <div
-                key={root.path}
-                className="fx-root"
-                onClick={() => loadDirectory(root.path)}
-                style={{
-                  padding: '16px',
-                  borderRadius: '10px',
-                  border: '1px solid var(--border-color)',
-                  background: 'var(--input-bg)',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: '10px',
-                }}
-              >
-                <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-muted)' }}>
-                  <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
-                  <line x1="6" y1="2" x2="6" y2="10"/>
-                  <line x1="14" y1="2" x2="14" y2="10"/>
-                  <path d="M8 22V14h8v8"/>
-                </svg>
-                <div style={{ fontWeight: 600, fontSize: '13px', textAlign: 'center', wordBreak: 'break-all' }}>
-                  {root.name}
-                </div>
+          viewMode === 'list' ? (
+            <div style={{ width: '100%', display: 'flex', flexDirection: 'column' }}>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                padding: '0 16px',
+                height: `${LIST_HEADER_H}px`,
+                boxSizing: 'border-box',
+                borderBottom: '1px solid var(--border-color)',
+                fontSize: '12px',
+                fontWeight: 600,
+                color: 'var(--text-muted)',
+                background: 'rgba(255, 255, 255, 0.02)',
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>Storage Root</div>
+                <div style={{ width: '80px', flexShrink: 0, textAlign: 'right' }}>Action</div>
               </div>
-            ))}
-          </div>
+              {roots.map((root) => (
+                <div
+                  key={root.path}
+                  className="fx-row"
+                  style={S_ROW}
+                  onClick={() => loadDirectory(root.path)}
+                >
+                  <div style={S_NAME_DIR}>
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                      <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
+                      <line x1="6" y1="2" x2="6" y2="10"/>
+                      <line x1="14" y1="2" x2="14" y2="10"/>
+                      <path d="M8 22V14h8v8"/>
+                    </svg>
+                    <span style={S_NAME_TEXT}>{root.name}</span>
+                  </div>
+                  <div style={{ ...S_ROW_ACTIONS, color: 'var(--text-muted)', fontSize: '12px' }}>
+                    Open
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '16px', padding: '20px' }}>
+              {roots.map((root) => (
+                <div
+                  key={root.path}
+                  className="fx-root"
+                  onClick={() => loadDirectory(root.path)}
+                  style={{
+                    padding: '16px',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-color)',
+                    background: 'var(--input-bg)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: '10px',
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-muted)' }}>
+                    <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
+                    <line x1="6" y1="2" x2="6" y2="10"/>
+                    <line x1="14" y1="2" x2="14" y2="10"/>
+                    <path d="M8 22V14h8v8"/>
+                  </svg>
+                  <div style={{ fontWeight: 600, fontSize: '13px', textAlign: 'center', wordBreak: 'break-all' }}>
+                    {root.name}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
         )}
 
         {!loading && !error && currentPath !== null && (

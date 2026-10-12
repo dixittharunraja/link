@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LinkApi } from '../vite-env';
 import { PeerDevice, VolumeSink, MprisState, CommandEntry } from '../types/peer';
+import { IS_ANDROID } from '../utils/platform';
 
 const linkApi = (window as any).link as LinkApi;
 
@@ -70,7 +71,6 @@ const PLUGIN_REGISTRY: PluginDescriptor[] = [
   },
   {
     id: 'lock',
-    permissionKey: 'lock',
     packetType: 'link.lock',
     title: (d) => (d.isLocked ? 'Unlock' : 'Lock'),
     isActive: (d) => !!d.isLocked,
@@ -204,7 +204,7 @@ const DeviceControlPanel: React.FC<DeviceControlPanelProps> = ({
   const [lettersList, setLettersList] = useState<string[]>([]);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
-  const isLocalMobile = typeof (window as any).Capacitor !== 'undefined';
+  const isLocalMobile = IS_ANDROID;
 
   useEffect(() => {
     if (linkApi && !isLocalMobile) {

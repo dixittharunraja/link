@@ -20,7 +20,7 @@ const PresenterTab: React.FC<PresenterTabProps> = ({
   onLaunchPresenter,
 }) => {
   // Host state
-  const [admittedGuest, setAdmittedGuest] = useState<{ ip: string; name: string; mode: string } | null>(null);
+  const [admittedGuest, setAdmittedGuest] = useState<{ ip?: string; deviceId?: string; name: string; mode: string } | null>(null);
   const [pendingGuests, setPendingGuests] = useState<{ connId: string; ip: string; name: string; pin: string }[]>([]);
   const [hostError, setHostError] = useState<string | null>(null);
   const qrDataUrl = useHostQrCode(true, localIdentity, 1749);
@@ -38,8 +38,9 @@ const PresenterTab: React.FC<PresenterTabProps> = ({
     if (!linkApi) return;
     try {
       const res = await linkApi.getInputGuestStatus?.();
-      const guests: { ip: string; name: string; mode: string }[] = res?.admittedGuests || [];
-      const myGuest = guests.find((g) => g.mode === 'presenter') || null;
+      const guests: { ip?: string; deviceId?: string; name: string; mode: string }[] = res?.admittedGuests || [];
+      const paired: { ip?: string; deviceId?: string; name: string; mode: string }[] = res?.pairedSessions || [];
+      const myGuest = guests.find((g) => g.mode === 'presenter') || paired.find((p) => p.mode === 'presenter') || null;
       setAdmittedGuest(myGuest);
       setPendingGuests((prev) => prev.filter((pg) => !guests.some((g) => g.ip === pg.ip)));
     } catch {}
@@ -99,7 +100,10 @@ const PresenterTab: React.FC<PresenterTabProps> = ({
       setConnectError(err || 'Failed to connect');
     });
 
+    const interval = setInterval(refreshGuestStatus, 2000);
+
     return () => {
+      clearInterval(interval);
       unsubRoster?.();
       unsubPin?.();
       unsubPinReq?.();
@@ -147,25 +151,49 @@ const PresenterTab: React.FC<PresenterTabProps> = ({
 
       <div style={{ height: '1px', background: 'var(--border-color)', width: '100%', margin: '2px 0' }} />
 
-      {/* Bottom Section - Either Connected Device or Connect Input */}
-      {admittedGuest ? (
+      {!isMobile ? (
         <div style={{ width: '100%' }}>
-          <AudioListenerRow
-            label={admittedGuest.name}
-            statusText="Controlling Presentation"
-            statusColor="#10b981"
-            icon={(
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-            )}
-            iconBg="rgba(16, 185, 129, 0.1)"
-            iconColor="#10b981"
-            onKick={() => linkApi.kickInputGuest?.(admittedGuest.ip)}
-          />
+          {admittedGuest ? (
+            <AudioListenerRow
+              label={admittedGuest.name}
+              statusText="Controlling Presentation"
+              statusColor="#10b981"
+              icon={(
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+              )}
+              iconBg="rgba(16, 185, 129, 0.1)"
+              iconColor="#10b981"
+              onKick={async () => {
+                if (admittedGuest.ip) {
+                  await linkApi.kickInputGuest?.(admittedGuest.ip);
+                } else if (admittedGuest.deviceId) {
+                  await linkApi.sendPresenterStop?.(admittedGuest.deviceId);
+                  await linkApi.sendSpecialKey?.(admittedGuest.deviceId, 14); // Escape
+                }
+                refreshGuestStatus();
+              }}
+              onBlock={async () => {
+                if (admittedGuest.ip) {
+                  await linkApi.blockDevice?.(admittedGuest.ip, admittedGuest.name || 'Remote Guest', 'ip');
+                  await linkApi.kickInputGuest?.(admittedGuest.ip);
+                } else if (admittedGuest.deviceId) {
+                  await linkApi.blockDevice?.(admittedGuest.deviceId, admittedGuest.name || 'Remote Device', 'device');
+                  await linkApi.sendPresenterStop?.(admittedGuest.deviceId);
+                  await linkApi.sendSpecialKey?.(admittedGuest.deviceId, 14); // Escape
+                }
+                refreshGuestStatus();
+              }}
+            />
+          ) : (
+            <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', textAlign: 'center', padding: '12px 0' }}>
+              Waiting for phone to connect...
+            </div>
+          )}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: '1.4' }}>
-            Enter the host computer's IP address or scan its QR code to start presenter remote.
+            Enter your computer's IP address or scan its QR code to start presenter remote.
           </div>
 
           <IpScanField
@@ -173,7 +201,7 @@ const PresenterTab: React.FC<PresenterTabProps> = ({
             onChange={setJoinIpInput}
             onScanClick={() => setShowScannerModal(true)}
             onEnter={() => handleConnect()}
-            placeholder="Host IP address (e.g. 192.168.1.100)"
+            placeholder="Computer IP address (e.g. 192.168.1.100)"
           />
 
           {connectError && (

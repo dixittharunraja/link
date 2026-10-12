@@ -3,6 +3,7 @@ import { LinkApi } from '../vite-env';
 import { useLandscapeOrientation } from '../hooks/useLandscapeOrientation';
 import { pushBackHandler } from '../utils/backNav';
 import { PenIcon, MouseIcon, KeyboardIcon, UndoIcon, RedoIcon, LeftClickIcon, MiddleClickIcon, RightClickIcon, IconButton, OverlayExitButton } from './RemoteIcons';
+import { IS_ANDROID } from '../utils/platform';
 
 export interface UseDigitizerOptions {
   deviceId: string;
@@ -100,7 +101,7 @@ const MOUSE_SENSITIVITY = 2.2;
 const RemoteInputOverlay: React.FC<RemoteInputOverlayProps> = ({ deviceId, onClose }) => {
   const linkApi = (window as any).link as LinkApi;
   const { className, transformDelta, orientation } = useLandscapeOrientation();
-  const isMobile = typeof (window as any).Capacitor !== 'undefined';
+  const isMobile = IS_ANDROID;
 
   const touchpadLast = useRef<{ x: number; y: number } | null>(null);
   const touchpadLastScroll = useRef<{ x: number; y: number } | null>(null);
@@ -138,10 +139,17 @@ const RemoteInputOverlay: React.FC<RemoteInputOverlayProps> = ({ deviceId, onClo
     const unsub = linkApi.onInputGuestClosed?.(() => {
       onClose();
     });
+    // Listen for stop/kick from host for paired session
+    const unsubStop = (linkApi as any).onRemoteInputStop?.((srcId: string) => {
+      if (srcId === deviceId) {
+        onClose();
+      }
+    });
     return () => {
       unsub?.();
+      unsubStop?.();
     };
-  }, [linkApi, onClose]);
+  }, [deviceId, linkApi, onClose]);
 
   useEffect(() => {
     if (!linkApi) return;

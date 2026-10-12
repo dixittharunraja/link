@@ -50,7 +50,7 @@ REPO LAYOUT (what you need to know)
 - `vendor/rclone/` — currently only vendors `rclone.exe` (Windows), pinned by SHA-256
   (`fs-mount-service.ts`, `RCLONE_PINNED_SHA256`). You'll need to vendor a Linux `rclone` binary
   here too if you take on the file-system mount feature.
-- `android/` — Android/Capacitor app. Not in scope for you; nothing here needs Linux changes.
+- `src-tauri/android/` — Android native layer (Tauri mobile). Not in scope for you; nothing here needs Linux changes.
 
 EVERYTHING CURRENTLY WINDOWS-ONLY (needs a Linux path)
 --------------------------------------------------------

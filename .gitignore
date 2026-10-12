@@ -61,11 +61,6 @@ next-env.d.ts
 # signing keys — never committed
 /keys/
 
-# Android build output (Gradle)
-/android/app/build
-/android/.gradle
-/android/build
-/android/capacitor-cordova-android-plugins/build
 
 # branding assets
 /assets/

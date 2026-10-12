@@ -74,6 +74,7 @@ export interface LinkApi {
   setCloseToTray: (enabled: boolean) => Promise<any>;
   getOpenAtLogin: () => Promise<boolean>;
   setOpenAtLogin: (enabled: boolean) => Promise<any>;
+  repairFirewall?: () => Promise<void>;
 
   // Mobile Permissions & Actions
   checkPermissions: () => Promise<any>;
@@ -135,16 +136,16 @@ export interface LinkApi {
   // Input Guest Session (Presenter & Remote Control)
   startInputGuestHost?: () => Promise<any>;
   stopInputGuestHost?: () => Promise<any>;
-  joinInputGuest?: (host: string, name?: string, mode?: 'presenter' | 'touchpad') => Promise<any>;
+  joinInputGuest?: (host: string, name?: string, mode?: 'presenter' | 'touchpad' | 'remotecontrol') => Promise<any>;
   leaveInputGuest?: () => Promise<any>;
   getInputGuestStatus?: () => Promise<any>;
   acceptInputGuest?: (connId: string) => Promise<any>;
   rejectInputGuest?: (connId: string) => Promise<any>;
   blockInputGuest?: (connId: string) => Promise<any>;
   kickInputGuest?: (ip: string) => Promise<any>;
-  onInputGuestPinPending?: (cb: (connId: string, pin: string, remoteAddress: string, name: string, mode: 'presenter' | 'touchpad') => void) => () => void;
+  onInputGuestPinPending?: (cb: (connId: string, pin: string, remoteAddress: string, name: string, mode: 'presenter' | 'touchpad' | 'remotecontrol') => void) => () => void;
   onInputGuestPinRequired?: (cb: (pin: string) => void) => () => void;
-  onInputGuestAdmitted?: (cb: (mode: 'presenter' | 'touchpad', resolvedHost?: string, hostDeviceType?: string) => void) => () => void;
+  onInputGuestAdmitted?: (cb: (mode: 'presenter' | 'touchpad' | 'remotecontrol', resolvedHost?: string, hostDeviceType?: string) => void) => () => void;
   onInputGuestClosed?: (cb: (reason: string) => void) => () => void;
   onInputGuestError?: (cb: (error: string) => void) => () => void;
   onInputGuestRosterChanged?: (cb: () => void) => () => void;
@@ -173,7 +174,7 @@ export interface LinkApi {
   onAudioSinkPairedSessionStarted: (cb: (deviceId: string, token: string, host: string) => void) => () => void;
   onAudioSinkPairedSessionEnded: (cb: (deviceId: string) => void) => () => void;
   onAudioSinkAdmitted: (cb: (hostName: string) => void) => () => void;
-  onAudioSinkStats?: (cb: (stats: { latencyMs: number; bufferMs: number; underruns: number; dropped: number; clockSynced: boolean }) => void) => void;
+  onAudioSinkStats?: (cb: (stats: { latencyMs: number; bufferMs: number; underruns: number; dropped: number; clockSynced: boolean }) => void) => () => void;
   onAudioSinkFormat: (cb: (format: { sampleRate: number; channels: number; bitsPerSample: number; isFloat: boolean }) => void) => () => void;
   onAudioSinkAudioChunk: (cb: (pcm: Uint8Array) => void) => () => void;
   onAudioSinkHostMuted: (cb: (muted: boolean) => void) => () => void;
@@ -342,7 +343,6 @@ export interface LinkApi {
 declare global {
   interface Window {
     link?: LinkApi;
-    Capacitor?: any;
     webkitAudioContext?: typeof AudioContext;
   }
 }

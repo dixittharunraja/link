@@ -70,15 +70,16 @@ const DevicePermissionsModal: React.FC<DevicePermissionsModalProps> = ({
           />
 
 
-          {/* Presenter is executed by BOTH platforms now: desktop (slides/spotlight) and mobile
-              (in-app pointer-dot overlay, mobile-to-mobile) — unlike Touchpad below, which stays
-              desktop-only until its mobile-target support is built. */}
-          <ToggleRow
-            title="Allow Presenter"
-            description="Allow slide and spotlight presentations."
-            checked={getPermission('presenter')}
-            onChange={(v) => setPermission('presenter', v)}
-          />
+          {/* Presenter is only executed on desktop/TV (slides/spotlight). A mobile device is
+              never presented on from a PC. */}
+          {isLocalDesktop && (
+            <ToggleRow
+              title="Allow Presenter"
+              description="Allow slide and spotlight presentations."
+              checked={getPermission('presenter')}
+              onChange={(v) => setPermission('presenter', v)}
+            />
+          )}
 
           <ToggleRow
             title="Allow File Access"
@@ -106,15 +107,6 @@ const DevicePermissionsModal: React.FC<DevicePermissionsModalProps> = ({
             />
           )}
 
-
-          {/* Lock — Ring has no toggle at all: it's inherently available to any connected,
-              trusted device, same as rename. */}
-          <ToggleRow
-            title="Allow Lock"
-            description="Allow remote lock control."
-            checked={getPermission('lock')}
-            onChange={(v) => setPermission('lock', v)}
-          />
 
           <ToggleRow
             title="Allow System Volume"

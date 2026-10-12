@@ -1,53 +1,105 @@
 import React from 'react';
 import Logo from './shared/Logo';
 import LocalDeviceCard from './shared/LocalDeviceCard';
+import { IS_ANDROID } from '../utils/platform';
 
 interface TopBarProps {
   deviceName?: string;
   ipAddress?: string;
   ipAddresses?: string[];
   isMobile?: boolean;
+  isSidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
 }
 
 const TopBar: React.FC<TopBarProps> = ({
   deviceName = '',
   ipAddress,
   ipAddresses,
-  isMobile = typeof window !== 'undefined' && typeof (window as any).Capacitor !== 'undefined',
+  isMobile = IS_ANDROID,
+  isSidebarCollapsed = false,
+  onToggleSidebar,
 }) => {
-  const isDesktop = !isMobile;
-
   return (
     <header
       className="top-bar"
       style={{
-        paddingRight: isDesktop ? '148px' : '16px',
-        WebkitAppRegion: isDesktop ? 'drag' : 'no-drag',
-      } as React.CSSProperties}
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        width: '100%',
+        flexShrink: 0,
+        boxSizing: 'border-box',
+      }}
     >
-      {/* Brand & Logo on Left */}
+      {/* Left: Sidebar Toggle + Brand Logo */}
       <div
-        className="brand"
+        className="brand-group"
         style={{
-          margin: 0,
-          padding: 0,
           display: 'flex',
           alignItems: 'center',
-          gap: '10px',
-          WebkitAppRegion: 'no-drag',
-        } as React.CSSProperties}
+          flexShrink: 0,
+          minWidth: 0,
+        }}
       >
-        <Logo size={24} showText={true} />
+        {onToggleSidebar && !isMobile && (
+          <div className="sidebar-toggle-wrapper">
+            <button
+              type="button"
+              onClick={onToggleSidebar}
+              title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              aria-label="Toggle sidebar"
+              className="sidebar-toggle-btn"
+            >
+              <svg
+                width="19"
+                height="19"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                {isSidebarCollapsed ? (
+                  <>
+                    <rect width="18" height="18" x="3" y="3" rx="2" />
+                    <path d="M9 3v18" />
+                    <path d="m14 9 3 3-3 3" />
+                  </>
+                ) : (
+                  <>
+                    <rect width="18" height="18" x="3" y="3" rx="2" />
+                    <path d="M9 3v18" />
+                    <path d="m16 15-3-3 3-3" />
+                  </>
+                )}
+              </svg>
+            </button>
+          </div>
+        )}
+
+        <div
+          className="brand"
+          style={{
+            margin: 0,
+            padding: 0,
+            paddingLeft: '4px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+          }}
+        >
+          <Logo size={17} showText={true} />
+        </div>
       </div>
 
-      {/* Center draggable filler area */}
-      <div style={{ flex: 1, height: '100%' }} />
+      {/* Center Spacer */}
+      <div style={{ flex: 1, minWidth: '8px' }} />
 
-      {/* Local device card in top right (visible in narrow screens & mobile via responsive CSS) */}
-      <div
-        className="topbar-device-card"
-        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-      >
+      {/* Local device identity on Right */}
+      <div className="topbar-device-card" style={{ display: 'flex', alignItems: 'center', flexShrink: 0, marginLeft: 'auto' }}>
         <LocalDeviceCard
           deviceName={deviceName}
           ipAddress={ipAddress}

@@ -52,6 +52,17 @@ const SettingsTab: React.FC<SettingsTabProps> = ({
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
+  const [firewallStatus, setFirewallStatus] = useState<'idle' | 'working' | 'done' | string>('idle');
+
+  const handleRepairFirewall = async () => {
+    setFirewallStatus('working');
+    try {
+      await window.link?.repairFirewall?.();
+      setFirewallStatus('done');
+    } catch (e) {
+      setFirewallStatus(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const handleCheckUpdate = async () => {
     setCheckingUpdate(true);
@@ -110,53 +121,23 @@ const SettingsTab: React.FC<SettingsTabProps> = ({
         <div className="card-title">Appearance</div>
         <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
           <button
+            type="button"
+            className={`theme-toggle-btn ${theme === 'dark' ? 'active' : ''}`}
             onClick={() => onThemeToggle('dark')}
-            style={{
-              flex: 1,
-              padding: '10px',
-              fontWeight: 600,
-              fontSize: '13px',
-              borderRadius: '8px',
-              border: '1px solid ' + (theme === 'dark' ? 'var(--accent-color)' : 'var(--border-color)'),
-              background: theme === 'dark' ? 'var(--accent-glow)' : 'rgba(255,255,255,0.02)',
-              color: theme === 'dark' ? 'var(--text-color)' : 'var(--text-muted)',
-              cursor: 'pointer',
-              transition: 'all 0.2s'
-            }}
           >
             Dark Mode
           </button>
           <button
+            type="button"
+            className={`theme-toggle-btn ${theme === 'light' ? 'active' : ''}`}
             onClick={() => onThemeToggle('light')}
-            style={{
-              flex: 1,
-              padding: '10px',
-              fontWeight: 600,
-              fontSize: '13px',
-              borderRadius: '8px',
-              border: '1px solid ' + (theme === 'light' ? 'var(--accent-color)' : 'var(--border-color)'),
-              background: theme === 'light' ? 'var(--accent-glow)' : 'rgba(255,255,255,0.02)',
-              color: theme === 'light' ? 'var(--text-color)' : 'var(--text-muted)',
-              cursor: 'pointer',
-              transition: 'all 0.2s'
-            }}
           >
             Light Mode
           </button>
           <button
+            type="button"
+            className={`theme-toggle-btn ${theme === 'system' ? 'active' : ''}`}
             onClick={() => onThemeToggle('system')}
-            style={{
-              flex: 1,
-              padding: '10px',
-              fontWeight: 600,
-              fontSize: '13px',
-              borderRadius: '8px',
-              border: '1px solid ' + (theme === 'system' ? 'var(--accent-color)' : 'var(--border-color)'),
-              background: theme === 'system' ? 'var(--accent-glow)' : 'rgba(255,255,255,0.02)',
-              color: theme === 'system' ? 'var(--text-color)' : 'var(--text-muted)',
-              cursor: 'pointer',
-              transition: 'all 0.2s'
-            }}
           >
             System
           </button>
@@ -186,6 +167,39 @@ const SettingsTab: React.FC<SettingsTabProps> = ({
               checked={!!closeToTray}
               onChange={(c) => onCloseToTrayToggle?.(c)}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Network access (desktop-only — Windows Firewall silently blocks apps whose prompt was dismissed) */}
+      {!isMobile && (
+        <div className="card">
+          <div className="card-title">Network</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0' }}>
+            <div>
+              <div style={{ fontSize: '13.5px', fontWeight: 600 }}>Fix Firewall Access</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                {firewallStatus === 'done'
+                  ? 'Firewall rule updated. Try connecting again.'
+                  : firewallStatus !== 'idle' && firewallStatus !== 'working'
+                    ? firewallStatus
+                    : 'Use this if devices appear nearby but never connect or pair. Needs administrator approval.'}
+              </div>
+            </div>
+            <button
+              onClick={handleRepairFirewall}
+              disabled={firewallStatus === 'working'}
+              style={{
+                padding: '6px 14px',
+                fontSize: '12.5px',
+                background: 'rgba(255, 255, 255, 0.05)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                cursor: 'pointer'
+              }}
+            >
+              {firewallStatus === 'working' ? 'Working...' : 'Repair'}
+            </button>
           </div>
         </div>
       )}

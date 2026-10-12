@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "resources": {
+      "../vendor/link-fs-driver": "vendor/link-fs-driver",
+      "../vendor/winfsp": "vendor/winfsp",
+      "../vendor/joystick-helper": "vendor/joystick-helper"
+    }
+  }
+}

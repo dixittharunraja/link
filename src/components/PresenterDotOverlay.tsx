@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState, MutableRefObject } from 'react';
 
 // Local copy rather than an import from electron/core/plugins/presenter, which is where the
 // main-process PresenterPosition keeps its own. Two reasons: /src is the platform-neutral app
-// shared by Electron and Capacitor, so reaching into the Electron tree would reintroduce exactly
+// shared by the desktop and Android builds, so reaching into the Electron tree would reintroduce exactly
 // the coupling the single-root layout removes — and that module imports packet.ts, which uses
 // Node's Buffer, so it only stayed out of the browser bundle by way of tree-shaking. Three lines
 // of arithmetic is a better trade than a build that breaks the first time packet.ts gains a

@@ -85,22 +85,22 @@ const AudioSinkTab: React.FC<AudioSinkTabProps> = ({ peers, localIdentity, isMob
   useEffect(() => {
     if (!linkApi) return;
 
-    linkApi.onAudioSinkListenerJoined((id: string, label: string) => {
+    const unsubJoined = linkApi.onAudioSinkListenerJoined?.((id: string, label: string) => {
       setListeners((prev) => [...prev.filter((l) => l.id !== id), { id, label }]);
       setPendingGuests((prev) => prev.filter((g) => g.connId !== id));
     });
-    linkApi.onAudioSinkListenerLeft((id: string) => {
+    const unsubLeft = linkApi.onAudioSinkListenerLeft?.((id: string) => {
       setListeners((prev) => prev.filter((l) => l.id !== id));
       setPendingGuests((prev) => prev.filter((g) => g.connId !== id));
     });
-    linkApi.onAudioSinkGuestPinPending?.((connId: string, guestPin: string, remoteAddress: string, deviceName?: string) => {
+    const unsubGuestPin = linkApi.onAudioSinkGuestPinPending?.((connId: string, guestPin: string, remoteAddress: string, deviceName?: string) => {
       setPendingGuests((prev) => [...prev.filter((g) => g.connId !== connId), { connId, pin: guestPin, remoteAddress, deviceName }]);
     });
-    linkApi.onAudioSinkPinComputed?.((computedPin: string) => {
+    const unsubPinComputed = linkApi.onAudioSinkPinComputed?.((computedPin: string) => {
       setPin(computedPin);
       setListenerPhase('waiting-pin');
     });
-    linkApi.onAudioSinkError((message: string) => {
+    const unsubError = linkApi.onAudioSinkError?.((message: string) => {
       // This single event covers BOTH the host-side server (only running while hosting) and the
       // listener-side client (only running while joining/listening) — the two are mutually
       // exclusive in the UI (the Join panel is hidden while hosting), so `hosting` alone is enough
@@ -112,16 +112,16 @@ const AudioSinkTab: React.FC<AudioSinkTabProps> = ({ peers, localIdentity, isMob
       }
     });
 
-    const unsubStarted = linkApi.onAudioSinkPairedSessionStarted((deviceId: string, token: string, host: string) => {
+    const unsubStarted = linkApi.onAudioSinkPairedSessionStarted?.((deviceId: string, token: string, host: string) => {
       upsertPairedSession(setPairedSessions, peers, deviceId, token, host);
     });
-    const unsubEnded = linkApi.onAudioSinkPairedSessionEnded((deviceId: string) => {
+    const unsubEnded = linkApi.onAudioSinkPairedSessionEnded?.((deviceId: string) => {
       removePairedSession(setPairedSessions, deviceId);
     });
 
-    linkApi.onAudioSinkStats?.((s) => setStats(s));
+    const unsubStats = linkApi.onAudioSinkStats?.((s) => setStats(s));
 
-    const unsubAdmitted = linkApi.onAudioSinkAdmitted((hostLabel: string) => {
+    const unsubAdmitted = linkApi.onAudioSinkAdmitted?.((hostLabel: string) => {
       if (hostLabel) setActiveHostLabel(hostLabel);
       setListenerPhase('listening');
       // Mobile plays natively (AudioTrack, driven entirely from Java) — no chunks ever reach JS
@@ -131,18 +131,18 @@ const AudioSinkTab: React.FC<AudioSinkTabProps> = ({ peers, localIdentity, isMob
         playerRef.current.setVolume(volume);
       }
     });
-    const unsubFormat = linkApi.onAudioSinkFormat((format: AudioFormat) => {
+    const unsubFormat = linkApi.onAudioSinkFormat?.((format: AudioFormat) => {
       formatRef.current = format;
     });
-    const unsubAudio = linkApi.onAudioSinkAudioChunk((pcm: Uint8Array) => {
+    const unsubAudio = linkApi.onAudioSinkAudioChunk?.((pcm: Uint8Array) => {
       if (playerRef.current && formatRef.current) {
         playerRef.current.enqueue(pcm, formatRef.current);
       }
     });
-    const unsubHostEnded = linkApi.onAudioSinkEnded((reason?: string) => {
+    const unsubHostEnded = linkApi.onAudioSinkEnded?.((reason?: string) => {
       handleListenerSessionEnd(reason, setListenerPhase, setActiveHostLabel, setPin, setListenerError, playerRef);
     });
-    const unsubClosed = linkApi.onAudioSinkClosed((reason: string) => {
+    const unsubClosed = linkApi.onAudioSinkClosed?.((reason: string) => {
       // Straight back to the connect page rather than a separate error screen to dismiss first —
       // but unlike a mid-session kick (onAudioSinkEnded, which needs no explanation), this also
       // covers a host REJECTING the join/PIN request before ever connecting, which the connect
@@ -187,7 +187,22 @@ const AudioSinkTab: React.FC<AudioSinkTabProps> = ({ peers, localIdentity, isMob
       removePairedSession(setPairedSessions, deviceId);
     });
 
-    return () => { unsubDisconnect?.(); unsubStarted?.(); unsubEnded?.(); unsubStats?.(); unsubFormat?.(); unsubAudio?.(); unsubHostEnded?.(); unsubClosed?.(); unsubAdmitted?.(); };
+    return () => {
+      unsubJoined?.();
+      unsubLeft?.();
+      unsubGuestPin?.();
+      unsubPinComputed?.();
+      unsubError?.();
+      unsubDisconnect?.();
+      unsubStarted?.();
+      unsubEnded?.();
+      unsubStats?.();
+      unsubFormat?.();
+      unsubAudio?.();
+      unsubHostEnded?.();
+      unsubClosed?.();
+      unsubAdmitted?.();
+    };
   }, []);
 
   useEffect(() => {

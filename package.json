@@ -5,92 +5,36 @@
   "author": "Rodix",
   "license": "GPL-3.0-only",
   "private": true,
-  "main": "dist/main/main.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json && vite build --base=./ && node -e \"require('fs').mkdirSync('dist/scripts',{recursive:true});for (const f of ['audio-endpoint-volume','screensaver-inhibit','mpris-control','audio-capture']) require('fs').copyFileSync('electron/scripts/'+f+'.ps1','dist/scripts/'+f+'.ps1')\"",
-    "build:windows": "npm run build && electron-builder --win",
-    "build:linux": "npm run build && electron-builder --linux deb",
-    "build:android": "vite build --base=./ && npx cap sync android && powershell -Command \"if (-not $env:JAVA_HOME -and (Test-Path 'C:\\Program Files\\Android\\Android Studio\\jbr')) { $env:JAVA_HOME='C:\\Program Files\\Android\\Android Studio\\jbr'; $env:Path+=';C:\\Program Files\\Android\\Android Studio\\jbr\\bin' }; cd android; .\\gradlew.bat clean assembleRelease; cd ..\"",
+    "build": "npm run build:vite",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "dev:desktop": "tauri dev",
+    "dev:vite": "vite --host 0.0.0.0 --strictPort --port 5173",
+    "build:vite": "vite build --base=./",
+    "build:windows": "tauri build --target x86_64-pc-windows-msvc",
+    "build:linux": "tauri build --target x86_64-unknown-linux-gnu",
+    "build:android": "tauri android build --apk --target aarch64",
     "release": "node scripts/upload-release.mjs",
-    "install:android": "powershell -Command \"& ${env:LOCALAPPDATA}\\Android\\Sdk\\platform-tools\\adb.exe -d install -r android/app/build/outputs/apk/release/app-release.apk\"",
-    "dev": "tsc -p tsconfig.json && node --no-deprecation -e \"require('fs').mkdirSync('dist/scripts',{recursive:true});for (const f of ['audio-endpoint-volume','screensaver-inhibit','mpris-control','audio-capture']) require('fs').copyFileSync('electron/scripts/'+f+'.ps1','dist/scripts/'+f+'.ps1')\" && concurrently \"vite --strictPort --port 5173\" \"electron --no-deprecation dist/main/main.js --dev\"",
-    "dev:desktop": "npm run dev",
+    "install:android": "powershell -Command \"& ${env:LOCALAPPDATA}\\Android\\Sdk\\platform-tools\\adb.exe -d install -r src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk\"",
     "prepare": "husky",
+    "lint": "eslint src",
     "knip": "knip",
-    "dupes": "jscpd src electron"
+    "dupes": "jscpd src",
+    "dev:android": "powershell -Command \"& ${env:LOCALAPPDATA}\\Android\\Sdk\\platform-tools\\adb.exe reverse tcp:5173 tcp:5173; tauri android dev --target aarch64 --host 127.0.0.1\""
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx}": "eslint --fix"
   },
-  "build": {
-    "appId": "in.rodix.link",
-    "productName": "Link",
-    "directories": {
-      "output": "dist_electron"
-    },
-    "files": [
-      "dist/**/*",
-      "icon.png",
-      "icon.ico",
-      "call-icon.png",
-      "package.json"
-    ],
-    "asarUnpack": [
-      "dist/scripts/**"
-    ],
-    "extraResources": [
-      {
-        "from": "vendor",
-        "to": "vendor",
-        "filter": [
-          "link-fs-driver/**/*",
-          "winfsp/*.msi",
-          "joystick-helper/joystick-helper.exe"
-        ]
-      }
-    ],
-    "win": {
-      "target": [
-        "nsis"
-      ],
-      "icon": "icon.ico"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "Link",
-      "include": "build/installer.nsh"
-    },
-    "linux": {
-      "target": [
-        "deb"
-      ],
-      "icon": "icon.png",
-      "category": "Utility"
-    },
-    "deb": {
-      "priority": "optional",
-      "depends": [
-        "libnotify4",
-        "libxtst6",
-        "libnss3"
-      ]
-    }
-  },
   "devDependencies": {
-    "@capacitor/cli": "^7.0.0",
     "@eslint/js": "^10.0.1",
+    "@tauri-apps/api": "^2.12.2",
+    "@tauri-apps/cli": "^2.12.1",
     "@types/node": "^20.14.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.0",
-    "concurrently": "^9.1.2",
-    "electron": "^43.0.0",
-    "electron-builder": "^26.8.1",
     "eslint": "^10.9.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-unused-imports": "^4.4.1",
@@ -104,14 +48,10 @@
     "vite": "^5.2.12"
   },
   "dependencies": {
-    "@capacitor/android": "^7.0.0",
-    "@capacitor/core": "^7.0.0",
-    "@evan/opus": "^1.0.3",
     "jsqr": "^1.4.0",
+    "lucide-react": "^1.55.0",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "selfsigned": "^2.4.1",
-    "ws": "^8.21.0"
+    "react-dom": "^18.3.1"
   }
 }

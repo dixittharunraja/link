@@ -42,7 +42,7 @@ Link is built from the ground up as a native-feeling, high-performance local net
 
 | Feature                      | Legacy Solutions           | Link                                                                                                  |
 | ---------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------- |
-| **Platform**                 | Heavy native/Qt runtimes   | Modern Electron desktop client + Capacitor/Android mobile client                                      |
+| **Platform**                 | Heavy native/Qt runtimes   | Modern Electron desktop client + Tauri/Android mobile client                                      |
 | **Topology**                 | Primarily 1-to-1 pairing   | N-to-N decentralized mesh; a Trusted Pool where pairing any one device auto-meshes it with all others |
 | **Input transport**          | Jittery TCP streams        | Custom UDP relay — zero jitter, frame-accurate                                                        |
 | **File transfer throughput** | Small chunk buffers        | Raw binary channels with 128 KB buffers for maximum LAN bandwidth                                     |
@@ -58,7 +58,7 @@ Link is built from the ground up as a native-feeling, high-performance local net
 | Layer           | Technology                            |
 | --------------- | ------------------------------------- |
 | Desktop app     | Electron · TypeScript · Node.js       |
-| Mobile app      | Capacitor · Android Java              |
+| Mobile app      | Tauri Android · Java                 |
 | Transport       | TLS 1.3 (self-signed, pinned) · UDP   |
 | File system     | WinFSP native driver (C#) · WebDAV streaming |
 | Input injection | Win32 mouse/keyboard APIs · C# helper |

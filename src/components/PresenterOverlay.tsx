@@ -3,6 +3,7 @@ import { LinkApi } from '../vite-env';
 import { useLandscapeOrientation } from '../hooks/useLandscapeOrientation';
 import { pushBackHandler } from '../utils/backNav';
 import { OverlayExitButton } from './RemoteIcons';
+import { IS_ANDROID } from '../utils/platform';
 
 interface PresenterOverlayProps {
   deviceId: string;
@@ -24,7 +25,7 @@ const PresenterOverlay: React.FC<PresenterOverlayProps> = ({ deviceId, hostDevic
   const lastTouch = useRef<{ x: number; y: number } | null>(null);
   const holdTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const linkApi = (window as any).link as LinkApi;
-  const isLocalMobile = typeof (window as any).Capacitor !== 'undefined';
+  const isLocalMobile = IS_ANDROID;
   const forceLandscape = isLocalMobile && hostDeviceType !== 'phone';
   const { className, transformDelta } = useLandscapeOrientation();
 
@@ -43,10 +44,18 @@ const PresenterOverlay: React.FC<PresenterOverlayProps> = ({ deviceId, hostDevic
       if (holdTimer.current) clearInterval(holdTimer.current);
       onClose();
     });
+    // Listen for stop from host for paired session
+    const unsubStop = (linkApi as any).onPresenterStop?.((srcId: string) => {
+      if (srcId === deviceId) {
+        if (holdTimer.current) clearInterval(holdTimer.current);
+        onClose();
+      }
+    });
     return () => {
       unsub?.();
+      unsubStop?.();
     };
-  }, [linkApi, onClose]);
+  }, [deviceId, linkApi, onClose]);
 
   const handleTouchStart = (e: React.TouchEvent) => {
     e.preventDefault();

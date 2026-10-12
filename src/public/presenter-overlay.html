@@ -21,10 +21,11 @@
   <div id="dot"></div>
   <script>
     const dot = document.getElementById('dot');
-    window.presenterApi.onPosition((xFraction, yFraction) => {
+    // Called from the desktop shell with the dot's position as fractions of the screen.
+    window.__setDot = (xFraction, yFraction) => {
       dot.style.left = (xFraction * window.innerWidth) + 'px';
       dot.style.top = (yFraction * window.innerHeight) + 'px';
-    });
+    };
   </script>
 </body>
 </html>

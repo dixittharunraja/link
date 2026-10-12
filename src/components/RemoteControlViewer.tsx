@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { LinkApi } from '../vite-env';
 import { useLandscapeOrientation } from '../hooks/useLandscapeOrientation';
+import { IS_ANDROID } from '../utils/platform';
 
 interface RemoteControlViewerProps {
   deviceId: string;
@@ -19,10 +20,8 @@ interface RemoteControlViewerProps {
 
 const linkApi = (window as any).link as LinkApi;
 
-const HIDE_CHROME_MS = 3000;
-
 const KeyboardIcon: React.FC = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="2" y="5" width="20" height="14" rx="2" />
     <path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h12" />
   </svg>
@@ -43,7 +42,7 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hasReceivedFrame = useRef(false);
 
-  const isLocalMobile = typeof (window as any).Capacitor !== 'undefined';
+  const isLocalMobile = IS_ANDROID;
 
   // Orientation follows the MIRRORED screen's own shape, not a guess from device type — a phone
   // held sideways or an unusual desktop resolution should still be judged by what's actually
@@ -51,7 +50,7 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
   // brief connecting window, then a real frame's aspect always wins.
   const [frameIsLandscape, setFrameIsLandscape] = useState<boolean | null>(null);
   const forceLandscape = isLocalMobile && (frameIsLandscape ?? (hostDeviceType === 'desktop' || hostDeviceType === 'tv'));
-  const { className: landscapeClassName, orientation: landscapeOrientation } = useLandscapeOrientation();
+  const { className: landscapeClassName, orientation: landscapeOrientation, transformDelta } = useLandscapeOrientation();
 
   // Measured once via JS rather than trusted from CSS 100vh/100vw — the two don't always agree
   // exactly on mobile browsers/WebViews (a known vh/vw quirk), which showed up as a few pixels of
@@ -80,35 +79,61 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
     };
   }, [isLocalMobile]);
 
-  // Minimal chrome (name / end session / close, plus the soft nav bar for a mobile-like host)
-  // auto-hides after inactivity and reappears on the next touch — an AnyDesk-style fullscreen
-  // view, not a UI that permanently eats screen space.
-  const [chromeVisible, setChromeVisible] = useState(true);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const resetHideTimer = useCallback(() => {
-    setChromeVisible(true);
-    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-    hideTimerRef.current = setTimeout(() => setChromeVisible(false), HIDE_CHROME_MS);
-  }, []);
-  // Auto-hide only once actually connected — while connecting/reconnecting/disconnected there is
-  // no visible canvas to tap (it's hidden, see showFrame below), so if the chrome faded out
-  // during that window there was no way left to reach End Session/Close at all: a permanent
-  // fullscreen dead end. Any state other than 'connected' forces the chrome back on and cancels
-  // the pending hide.
-  useEffect(() => {
-    if (connectionState !== 'connected') {
-      setChromeVisible(true);
-      if (hideTimerRef.current) {
-        clearTimeout(hideTimerRef.current);
-        hideTimerRef.current = null;
-      }
-      return;
-    }
-    resetHideTimer();
-    return () => {
-      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+  // Draggable Floating Bubble State (AnyDesk / Moonlight style)
+  // Replaces the obstructive full-width top banner with a compact, draggable floating pill
+  // that can be moved anywhere out of the way and only expands its controls when tapped.
+  const [bubblePos, setBubblePos] = useState<{ x: number; y: number } | null>(null);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef<{ clientX: number; clientY: number; startX: number; startY: number } | null>(null);
+
+  const containerW = forceLandscape ? viewportSize.h : viewportSize.w;
+  const containerH = forceLandscape ? viewportSize.w : viewportSize.h;
+
+  const currentBubbleX = bubblePos !== null ? Math.min(Math.max(12, bubblePos.x), containerW - 54) : containerW - 56;
+  const currentBubbleY = bubblePos !== null ? Math.min(Math.max(12, bubblePos.y), containerH - 54) : 16;
+
+  const handleBubblePointerDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    isDraggingRef.current = false;
+    dragStartRef.current = {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      startX: currentBubbleX,
+      startY: currentBubbleY,
     };
-  }, [connectionState, resetHideTimer]);
+  };
+
+  const handleBubblePointerMove = (e: React.PointerEvent) => {
+    if (!dragStartRef.current) return;
+    const rawDx = e.clientX - dragStartRef.current.clientX;
+    const rawDy = e.clientY - dragStartRef.current.clientY;
+    if (!isDraggingRef.current && (rawDx * rawDx + rawDy * rawDy > 36)) {
+      isDraggingRef.current = true;
+    }
+    if (isDraggingRef.current) {
+      const delta = forceLandscape ? transformDelta(rawDx, rawDy) : { dx: rawDx, dy: rawDy };
+      const nextX = Math.min(Math.max(12, dragStartRef.current.startX + delta.dx), containerW - 54);
+      const nextY = Math.min(Math.max(12, dragStartRef.current.startY + delta.dy), containerH - 54);
+      setBubblePos({ x: nextX, y: nextY });
+    }
+  };
+
+  const handleBubblePointerUp = (e: React.PointerEvent) => {
+    if (dragStartRef.current) {
+      try {
+        (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {
+        // Ignored if capture already released
+      }
+      if (!isDraggingRef.current) {
+        setIsMenuOpen((prev) => !prev);
+      }
+      dragStartRef.current = null;
+      isDraggingRef.current = false;
+    }
+  };
 
   const sendInput = useCallback((inputBody: any) => {
     if (linkApi?.sendRemoteControlInput) {
@@ -122,63 +147,130 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
     }
   }, [deviceId]);
 
-  // Direct TLS frame stream listener (Android native relay)
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+
+  // WebRTC & TLS stream receiver: attempts direct 60 FPS WebRTC peer connection,
+  // falling back seamlessly to direct TLS frame stream if WebRTC is unavailable.
   useEffect(() => {
-    const img = new Image();
-    const unsubscribeStream = linkApi?.onRemoteControlStream?.((srcId, frame) => {
-      if (srcId !== deviceId || !frame) return;
-      hasReceivedFrame.current = true;
-      setConnectionState('connected');
+    let pc: RTCPeerConnection | null = null;
+    try {
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      });
+      pcRef.current = pc;
 
-      if (frame.data && canvasRef.current) {
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          sendSignal({
+            type: 'webrtc_candidate',
+            candidate: {
+              candidate: event.candidate.candidate,
+              sdpMid: event.candidate.sdpMid,
+              sdpMLineIndex: event.candidate.sdpMLineIndex,
+            },
+          });
+        }
+      };
 
-        img.onload = () => {
-          if (canvas.width !== img.width || canvas.height !== img.height) {
-            canvas.width = img.width;
-            canvas.height = img.height;
-            const landscape = img.width >= img.height;
-            setFrameIsLandscape((prev) => (prev === landscape ? prev : landscape));
-          }
-          ctx.drawImage(img, 0, 0);
-        };
-        img.src = 'data:image/jpeg;base64,' + frame.data;
+      pc.ontrack = (event) => {
+        if (event.streams && event.streams[0] && videoRef.current) {
+          videoRef.current.srcObject = event.streams[0];
+          hasReceivedFrame.current = true;
+          setConnectionState('connected');
+        }
+      };
+    } catch (e) {
+      console.warn('[RemoteControlViewer] WebRTC initialization failed:', e);
+    }
+
+    // Signaling listener (SDP offers, answers, candidates from peer)
+    const unsubscribeSignal = linkApi?.onRemoteControlSignal?.((srcId, signal) => {
+      if (srcId !== deviceId || !signal) return;
+
+      if (signal.type === 'denied') {
+        setConnectionState('disconnected');
+        setErrorMessage('Screen capture permission was denied on the host.');
+        return;
+      }
+
+      if (signal.type === 'stop' || signal.type === 'kicked') {
+        setConnectionState('disconnected');
+        setErrorMessage(signal.type === 'kicked' ? 'Removed by host' : 'Host ended the session.');
+        if (onEndSession) {
+          onEndSession();
+        } else {
+          onClose();
+        }
+        return;
+      }
+
+      if (signal.type === 'webrtc_offer' && pc) {
+        pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: signal.sdp }))
+          .then(() => pc?.createAnswer())
+          .then((answer) => {
+            if (answer && pc) {
+              return pc.setLocalDescription(answer).then(() => {
+                sendSignal({ type: 'webrtc_answer', sdp: answer.sdp });
+              });
+            }
+            return undefined;
+          })
+          .catch((err) => console.error('[RemoteControlViewer] SDP Offer handling error:', err));
+      } else if (signal.type === 'webrtc_candidate' && pc && signal.candidate) {
+        pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch((err) =>
+          console.warn('[RemoteControlViewer] Add ICE Candidate error:', err)
+        );
       }
     });
 
+    // Direct TLS frame fallback listener (for peers streaming JPEG packets)
+    const unsubscribeStream = linkApi?.onRemoteControlStream?.((srcId, frame) => {
+      if (srcId !== deviceId || !frame || !frame.data) return;
+      hasReceivedFrame.current = true;
+      setConnectionState('connected');
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const img = new Image();
+      img.onload = () => {
+        if (canvas.width !== img.width || canvas.height !== img.height) {
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const landscape = img.width >= img.height;
+          setFrameIsLandscape((prev) => (prev === landscape ? prev : landscape));
+        }
+        ctx.drawImage(img, 0, 0);
+      };
+      img.src = frame.data.startsWith('data:') ? frame.data : 'data:image/jpeg;base64,' + frame.data;
+    });
+
     return () => {
+      unsubscribeSignal?.();
       unsubscribeStream?.();
+      if (pc) {
+        pc.close();
+        pcRef.current = null;
+      }
     };
-  }, [deviceId]);
+  }, [deviceId, sendSignal]);
 
   // Send 'request' signal to peer on mount — triggers MediaProjection / Screen Capture consent
-  // and starts the native frame streamer. Closing the viewer minimizes it while leaving the stream
-  // active in background so it can be resumed instantly.
   const hasRequested = useRef(false);
   useEffect(() => {
     if (!hasRequested.current) {
       hasRequested.current = true;
       sendSignal({ type: 'request' });
     }
-
-    // Handle denied (user rejected screen capture on host)
-    const unsubscribeDenied = linkApi?.onRemoteControlSignal?.((srcId, signal) => {
-      if (srcId !== deviceId || signal?.type !== 'denied') return;
-      setConnectionState('disconnected');
-      setErrorMessage('Screen capture permission was denied on the host.');
-    });
-
-    return () => {
-      unsubscribeDenied?.();
-    };
   }, [deviceId, sendSignal]);
 
   // Resume on reconnection instead of requiring the user to close and reopen the viewer.
   // hostConnected comes straight from App.tsx's own peers map (the single onDeviceConnected/
   // onDeviceDisconnected subscription already lives there — this component intentionally does
-  // NOT add its own, since this app's Capacitor bridge only keeps one listener per event name
+  // NOT add its own, since this app's native bridge only keeps one listener per event name
   // and a second subscribe() call would silently replace App.tsx's).
   const wasHostConnected = useRef(hostConnected);
   useEffect(() => {
@@ -221,8 +313,14 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
   //    frame's real on-screen sub-rect, and returns null for a tap outside it (ignored, not
   //    clamped to the edge — clamping would silently misplace clicks).
   const mapToFrame = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
+    const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!canvas || !canvas.width || !canvas.height) return null;
+    const activeEl = (video && video.videoWidth > 0) ? video : canvas;
+    if (!activeEl) return null;
+
+    const naturalW = (activeEl as HTMLVideoElement).videoWidth || (activeEl as HTMLCanvasElement).width;
+    const naturalH = (activeEl as HTMLVideoElement).videoHeight || (activeEl as HTMLCanvasElement).height;
+    if (!naturalW || !naturalH) return null;
 
     let localX: number;
     let localY: number;
@@ -240,14 +338,14 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
         localY = boxH - clientX;
       }
     } else {
-      const rect = canvas.getBoundingClientRect();
+      const rect = activeEl.getBoundingClientRect();
       localX = clientX - rect.left;
       localY = clientY - rect.top;
       boxW = rect.width;
       boxH = rect.height;
     }
 
-    const imgAspect = canvas.width / canvas.height;
+    const imgAspect = naturalW / naturalH;
     const boxAspect = boxW / boxH;
     let renderW: number;
     let renderH: number;
@@ -275,7 +373,10 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
   const pointerStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLElement>) => {
-    resetHideTimer();
+    if (isMenuOpen) {
+      setIsMenuOpen(false);
+      return;
+    }
     const point = mapToFrame(e.clientX, e.clientY);
     if (!point) return;
     pointerStartRef.current = { x: point.x, y: point.y, time: Date.now() };
@@ -372,14 +473,13 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
       onKeyDown={handleKeyDown}
       className={forceLandscape ? landscapeClassName : undefined}
       style={{
-        // .landscape-overlay already sets position:fixed/top/left/z-index and rotates this
-        // pre-rotation landscape-shaped box into place over the real portrait viewport — same
-        // convention as RemoteInputOverlay/JoystickOverlay. Sized from the JS-measured
-        // viewportSize (not 100vh/100vw) so this exactly matches mapToFrame's own math — see
-        // viewportSize's comment for why the two units can otherwise disagree by a few pixels.
         ...(forceLandscape
           ? { width: `${viewportSize.h}px`, height: `${viewportSize.w}px` }
-          : { position: 'fixed', inset: 0, zIndex: 9999 }),
+          : { position: 'fixed', inset: 0 }),
+        position: 'fixed',
+        inset: 0,
+        padding: 0,
+        zIndex: 9999,
         background: '#000',
         outline: 'none',
         overflow: 'hidden',
@@ -405,8 +505,22 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
           The frame's own aspect ratio is preserved via object-fit (and mirrored by hand in
           mapToFrame for hit-testing), so any letterbox bars land inside this same element rather
           than around a smaller floating window. */}
-      <canvas
-        ref={canvasRef}
+      {/* WebRTC hardware accelerated video element */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        onLoadedMetadata={() => {
+          if (videoRef.current) {
+            const w = videoRef.current.videoWidth;
+            const h = videoRef.current.videoHeight;
+            if (w && h) {
+              const landscape = w >= h;
+              setFrameIsLandscape((prev) => (prev === landscape ? prev : landscape));
+            }
+          }
+        }}
         onPointerDown={handlePointerDown}
         onPointerUp={handlePointerUp}
         onWheel={handleWheel}
@@ -421,6 +535,27 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
           background: '#000',
           cursor: 'crosshair',
           display: showFrame ? 'block' : 'none',
+        }}
+      />
+
+      {/* Fullscreen fallback canvas for direct JPEG stream */}
+      <canvas
+        ref={canvasRef}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+        onWheel={handleWheel}
+        onContextMenu={(e) => e.preventDefault()}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          touchAction: 'none',
+          objectFit: 'contain',
+          background: 'transparent',
+          pointerEvents: videoRef.current?.srcObject ? 'none' : 'auto',
+          cursor: 'crosshair',
+          display: showFrame && !videoRef.current?.srcObject ? 'block' : 'none',
         }}
       />
 
@@ -460,227 +595,291 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
         </div>
       )}
 
-      {/* Floating keyboard toggle — always reachable regardless of host type, since typing is
-          often needed on either a phone or a PC target. Sits with the rest of the auto-hiding
-          chrome. */}
-      {isLocalMobile && (
-        <button
-          onClick={handleKeyboardToggle}
-          title="Keyboard"
-          aria-label="Toggle Keyboard"
+      {/* Dismiss backdrop when floating menu is open */}
+      {isMenuOpen && (
+        <div
+          onClick={() => setIsMenuOpen(false)}
           style={{
             position: 'absolute',
-            right: '16px',
-            bottom: isHostMobileLike ? '76px' : '16px',
-            width: '48px',
-            height: '48px',
-            borderRadius: '50%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: isKeyboardActive ? 'var(--accent-color, #009bd5)' : 'rgba(0, 0, 0, 0.55)',
-            border: '1px solid rgba(255,255,255,0.25)',
-            color: '#fff',
-            cursor: 'pointer',
-            opacity: chromeVisible ? 1 : 0,
-            pointerEvents: chromeVisible ? 'auto' : 'none',
-            transition: 'opacity 0.25s ease',
+            inset: 0,
+            zIndex: 9990,
           }}
-        >
-          <KeyboardIcon />
-        </button>
+        />
       )}
 
-      {/* Minimal Header Bar — name, End Session, Close. Auto-hides with the rest of the chrome. */}
+      {/* Draggable Floating Action Bubble (AnyDesk / Moonlight style) */}
       <div
+        onPointerDown={handleBubblePointerDown}
+        onPointerMove={handleBubblePointerMove}
+        onPointerUp={handleBubblePointerUp}
+        title={isMenuOpen ? "Close Menu" : "Session Controls"}
+        aria-label="Session Controls"
         style={{
           position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
+          left: `${currentBubbleX}px`,
+          top: `${currentBubbleY}px`,
+          width: '42px',
+          height: '42px',
+          borderRadius: '50%',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '12px 20px',
-          background: 'linear-gradient(to bottom, rgba(0,0,0,0.65), transparent)',
-          opacity: chromeVisible ? 1 : 0,
-          pointerEvents: chromeVisible ? 'auto' : 'none',
-          transition: 'opacity 0.25s ease',
+          justifyContent: 'center',
+          background: isMenuOpen
+            ? 'var(--accent-gradient, linear-gradient(135deg, #009bd5 0%, #3b82f6 100%))'
+            : 'rgba(12, 12, 14, 0.85)',
+          border: isMenuOpen ? '1px solid rgba(255, 255, 255, 0.4)' : '1px solid var(--border-color, rgba(255, 255, 255, 0.15))',
+          boxShadow: isMenuOpen
+            ? '0 6px 24px rgba(0, 155, 213, 0.45), 0 2px 10px rgba(0,0,0,0.5)'
+            : '0 4px 18px rgba(0, 0, 0, 0.6)',
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+          color: '#fff',
+          cursor: isDraggingRef.current ? 'grabbing' : 'grab',
+          touchAction: 'none',
+          userSelect: 'none',
+          zIndex: 9995,
+          transition: isDraggingRef.current ? 'none' : 'background 0.2s ease, transform 0.15s ease',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div
-            style={{
-              width: '8px',
-              height: '8px',
-              borderRadius: '50%',
-              background: connectionState === 'connected' ? '#10b981' : '#f59e0b',
-              boxShadow: connectionState === 'connected' ? '0 0 8px #10b981' : 'none',
-            }}
-          />
-          <span style={{ fontWeight: 600, fontSize: '14px', color: '#fff' }}>
-            {deviceName}
-          </span>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <button
-            onClick={handleEndSession}
-            title="End Remote Session"
-            aria-label="End Remote Session"
-            style={{
-              padding: '6px 12px',
-              fontSize: '11.5px',
-              background: 'rgba(239, 68, 68, 0.25)',
-              border: '1px solid rgba(239, 68, 68, 0.5)',
-              borderRadius: '6px',
-              color: '#fff',
-              cursor: 'pointer',
-              fontWeight: 500,
-            }}
-          >
-            End Session
-          </button>
-          <button
-            onClick={onClose}
-            title="Close"
-            aria-label="Close"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: '28px',
-              height: '28px',
-              padding: 0,
-              borderRadius: '50%',
-              background: 'rgba(255, 255, 255, 0.12)',
-              border: '1px solid rgba(255,255,255,0.2)',
-              color: '#fff',
-              cursor: 'pointer',
-            }}
-          >
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
+        {isMenuOpen ? (
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        ) : (
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2" />
+              <line x1="8" y1="21" x2="16" y2="21" />
+              <line x1="12" y1="17" x2="12" y2="21" />
             </svg>
-          </button>
-        </div>
+            <div
+              style={{
+                position: 'absolute',
+                top: '-2px',
+                right: '-2px',
+                width: '7px',
+                height: '7px',
+                borderRadius: '50%',
+                background: connectionState === 'connected' ? '#10b981' : '#f59e0b',
+                boxShadow: connectionState === 'connected' ? '0 0 6px #10b981' : 'none',
+              }}
+            />
+          </div>
+        )}
       </div>
 
-      {/* Floating Soft Navigation Controls Bar — Back/Home/Recents are Android concepts,
-          meaningless for a PC host, so this only ever shows when the host itself is phone/TV.
-          Auto-hides together with the header (no separate manual toggle needed). */}
-      {isHostMobileLike && (
+      {/* Expanded Floating Menu */}
+      {isMenuOpen && (
         <div
           style={{
             position: 'absolute',
-            left: 0,
-            right: 0,
-            bottom: 0,
+            left: `${currentBubbleX > containerW - 250 ? Math.max(12, currentBubbleX - 200) : currentBubbleX}px`,
+            top: `${currentBubbleY > containerH - 220 ? Math.max(12, currentBubbleY - 200) : currentBubbleY + 50}px`,
+            width: '240px',
+            borderRadius: '14px',
+            background: 'var(--modal-bg, #0c0c0e)',
+            border: '1px solid var(--border-color, rgba(255, 255, 255, 0.12))',
+            boxShadow: 'var(--modal-shadow, 0 12px 36px rgba(0, 0, 0, 0.4)), 0 0 20px rgba(0, 155, 213, 0.08)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            padding: '12px',
+            zIndex: 9996,
+            color: 'var(--text-color, #fff)',
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '16px',
-            padding: '10px 16px',
-            background: 'linear-gradient(to top, rgba(0,0,0,0.65), transparent)',
-            opacity: chromeVisible ? 1 : 0,
-            pointerEvents: chromeVisible ? 'auto' : 'none',
-            transition: 'opacity 0.25s ease',
+            flexDirection: 'column',
+            gap: '10px',
           }}
         >
-          <button
-            onClick={() => sendInput({ action: 'key', key: 'BACK' })}
-            title="Back"
-            aria-label="Back"
-            style={{
-              padding: '10px 24px',
-              borderRadius: '10px',
-              background: 'rgba(255, 255, 255, 0.12)',
-              border: '1px solid rgba(255,255,255,0.2)',
-              color: '#fff',
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'background 0.15s ease',
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)')}
-          >
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-              <path d="M17.5 4.5a1 1 0 0 1 1.5.866v13.268a1 1 0 0 1-1.5.866L6.01 12.866a1 1 0 0 1 0-1.732L17.5 4.5z" />
-            </svg>
-          </button>
-          <button
-            onClick={() => sendInput({ action: 'key', key: 'HOME' })}
-            title="Home"
-            aria-label="Home"
-            style={{
-              padding: '10px 24px',
-              borderRadius: '10px',
-              background: 'rgba(255, 255, 255, 0.12)',
-              border: '1px solid rgba(255,255,255,0.2)',
-              color: '#fff',
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'background 0.15s ease',
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)')}
-          >
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1V9.5z" />
-            </svg>
-          </button>
-          <button
-            onClick={() => sendInput({ action: 'key', key: 'RECENTS' })}
-            title="Recents"
-            aria-label="Recents"
-            style={{
-              padding: '10px 24px',
-              borderRadius: '10px',
-              background: 'rgba(255, 255, 255, 0.12)',
-              border: '1px solid rgba(255,255,255,0.2)',
-              color: '#fff',
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'background 0.15s ease',
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)')}
-          >
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-              <rect x="5" y="5" width="14" height="14" rx="2.5" />
-            </svg>
-          </button>
-          <button
-            onClick={() => sendInput({ action: 'key', key: 'LOCK' })}
-            title="Lock Device"
-            aria-label="Lock Device"
-            style={{
-              padding: '10px 24px',
-              borderRadius: '10px',
-              background: 'rgba(255, 255, 255, 0.12)',
-              border: '1px solid rgba(255,255,255,0.2)',
-              color: '#fff',
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'background 0.15s ease',
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.12)')}
-          >
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
-          </button>
+          {/* Header row: Device name + status */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '6px', borderBottom: '1px solid var(--border-color, rgba(255, 255, 255, 0.08))' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div
+                style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  background: connectionState === 'connected' ? 'var(--active-dot, #10b981)' : '#f59e0b',
+                  boxShadow: connectionState === 'connected' ? '0 0 8px #10b981' : 'none',
+                }}
+              />
+              <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-color, #f8fafc)' }}>
+                {deviceName}
+              </span>
+            </div>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted, rgba(255,255,255,0.45))' }}>
+              {connectionState}
+            </span>
+          </div>
+
+          {/* Action buttons */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {isLocalMobile && (
+              <button
+                onClick={() => {
+                  handleKeyboardToggle();
+                  setIsMenuOpen(false);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  background: isKeyboardActive ? 'rgba(14, 165, 233, 0.18)' : 'var(--input-bg, rgba(255, 255, 255, 0.06))',
+                  border: isKeyboardActive ? '1px solid var(--accent-color, #0EA5E9)' : '1px solid var(--border-color, rgba(255, 255, 255, 0.1))',
+                  color: isKeyboardActive ? 'var(--accent-color, #0EA5E9)' : 'var(--text-color, #f1f5f9)',
+                  fontSize: '12.5px',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                }}
+              >
+                <KeyboardIcon />
+                <span>{isKeyboardActive ? 'Hide Keyboard' : 'Show Keyboard'}</span>
+              </button>
+            )}
+
+            {isHostMobileLike && (
+              <div style={{ display: 'flex', gap: '6px', marginTop: '2px', marginBottom: '2px' }}>
+                <button
+                  onClick={() => sendInput({ action: 'key', key: 'BACK' })}
+                  title="Back"
+                  style={{
+                    flex: 1,
+                    padding: '8px 0',
+                    borderRadius: '6px',
+                    background: 'var(--input-bg, rgba(255,255,255,0.08))',
+                    border: '1px solid var(--border-color, rgba(255,255,255,0.12))',
+                    color: 'var(--text-color, #fff)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                    <path d="M17.5 4.5a1 1 0 0 1 1.5.866v13.268a1 1 0 0 1-1.5.866L6.01 12.866a1 1 0 0 1 0-1.732L17.5 4.5z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => sendInput({ action: 'key', key: 'HOME' })}
+                  title="Home"
+                  style={{
+                    flex: 1,
+                    padding: '8px 0',
+                    borderRadius: '6px',
+                    background: 'var(--input-bg, rgba(255,255,255,0.08))',
+                    border: '1px solid var(--border-color, rgba(255,255,255,0.12))',
+                    color: 'var(--text-color, #fff)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1V9.5z" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => sendInput({ action: 'key', key: 'RECENTS' })}
+                  title="Recents"
+                  style={{
+                    flex: 1,
+                    padding: '8px 0',
+                    borderRadius: '6px',
+                    background: 'var(--input-bg, rgba(255,255,255,0.08))',
+                    border: '1px solid var(--border-color, rgba(255,255,255,0.12))',
+                    color: 'var(--text-color, #fff)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                    <rect x="5" y="5" width="14" height="14" rx="2.5" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => sendInput({ action: 'key', key: 'LOCK' })}
+                  title="Lock"
+                  style={{
+                    flex: 1,
+                    padding: '8px 0',
+                    borderRadius: '6px',
+                    background: 'var(--input-bg, rgba(255,255,255,0.08))',
+                    border: '1px solid var(--border-color, rgba(255,255,255,0.12))',
+                    color: 'var(--text-color, #fff)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            <button
+              onClick={() => {
+                setIsMenuOpen(false);
+                onClose();
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                width: '100%',
+                padding: '9px 12px',
+                borderRadius: '8px',
+                background: 'var(--input-bg, rgba(255, 255, 255, 0.06))',
+                border: '1px solid var(--border-color, rgba(255, 255, 255, 0.1))',
+                color: 'var(--text-color, #e2e8f0)',
+                fontSize: '12.5px',
+                fontWeight: 500,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+              <span>Minimize Viewer</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setIsMenuOpen(false);
+                handleEndSession();
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                width: '100%',
+                padding: '9px 12px',
+                borderRadius: '8px',
+                background: 'rgba(239, 68, 68, 0.12)',
+                border: '1px solid rgba(239, 68, 68, 0.35)',
+                color: '#ef4444',
+                fontSize: '12.5px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="15" y1="9" x2="9" y2="15" />
+                <line x1="9" y1="9" x2="15" y2="15" />
+              </svg>
+              <span>End Remote Session</span>
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -1,3 +1,0 @@
-D:\Projects\link\vendor\link-fs-driver\link-fs-driver.pdb
-D:\Projects\link\vendor\link-fs-driver\winfsp-msil.xml
-D:\Projects\link\vendor\link-fs-driver\link-fs-driver.exe

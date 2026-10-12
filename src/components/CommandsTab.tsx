@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { IS_ANDROID } from '../utils/platform';
 
 interface CommandEntry {
   name: string;
@@ -75,7 +76,7 @@ const CommandsTab: React.FC<CommandsTabProps> = ({
     setCmdCommand('');
   };
 
-  const isDesktop = typeof (window as any).Capacitor === 'undefined';
+  const isDesktop = !IS_ANDROID;
 
   return (
     <div id="tab-commands" className="tab-content active">

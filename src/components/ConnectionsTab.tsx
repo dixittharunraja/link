@@ -390,18 +390,15 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
         </div>
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '16px', marginBottom: '16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-start', margin: '0 0 10px 0' }}>
         <button
           onClick={() => setIsAddDeviceVisible(!isAddDeviceVisible)}
           style={{
-            padding: '8px 16px',
-            fontSize: '13px',
+            padding: '7px 14px',
+            fontSize: '12.5px',
             fontWeight: 600,
             background: isAddDeviceVisible ? 'transparent' : 'var(--accent-gradient)',
             border: isAddDeviceVisible ? '1px solid var(--border-color)' : 'none',
-            // Was hardcoded black — a leftover from the old neon-cyan palette, where black was
-            // the only readable choice. --btn-primary-text is white now (see index.css), matching
-            // every other accent-filled button in the app.
             color: isAddDeviceVisible ? 'var(--text-color)' : 'var(--btn-primary-text)',
             borderRadius: '6px',
             cursor: 'pointer',
@@ -416,15 +413,15 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
               setConfirmAction({ type: 'exit-pool' as any, deviceId: '', name: '' });
             }}
             style={{
-              padding: '8px 16px',
-              fontSize: '13px',
+              padding: '7px 14px',
+              fontSize: '12.5px',
               fontWeight: 600,
               background: 'transparent',
               border: '1px solid #ef4444',
               color: '#ef4444',
               borderRadius: '6px',
               cursor: 'pointer',
-              marginLeft: '12px',
+              marginLeft: '10px',
               transition: 'all 0.15s ease'
             }}
           >
@@ -442,12 +439,12 @@ const ConnectionsTab: React.FC<ConnectionsTabProps> = ({
             border: '1px solid var(--border-color)',
             boxShadow: '0 8px 32px var(--modal-shadow, rgba(0, 0, 0, 0.2))',
             borderRadius: '14px',
-            padding: '24px',
+            padding: '18px 20px',
             display: 'flex',
             flexDirection: 'column',
-            gap: '20px',
-            marginTop: '16px',
-            marginBottom: '20px',
+            gap: '16px',
+            marginTop: '4px',
+            marginBottom: '12px',
             animation: 'fadeIn 0.2s ease-out',
           }}
         >

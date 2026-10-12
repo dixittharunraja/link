@@ -304,9 +304,9 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
         </div>
       )}
 
-      {/* Top Section - QR Code */}
+      {/* Desktop View: Host QR & Connected Controllers */}
       {!isMobile && (
-        <>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', width: '100%' }}>
           <SessionHostQr
             qrDataUrl={qrDataUrl}
             ipAddress={localIdentity?.ipAddress}
@@ -315,38 +315,45 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
           />
 
           <div style={{ height: '1px', background: 'var(--border-color)', width: '100%', margin: '2px 0' }} />
-        </>
-      )}
 
-      {/* Bottom Section - Either Connected Controllers or Connect Input */}
-      {!isMobile && controllers.length > 0 ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', width: '100%' }}>
-          <div style={{ fontWeight: 600, color: 'var(--text-color)', fontSize: '13px' }}>
-            Connected Controllers ({controllers.length}/4)
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {controllers.map((c) => (
-              <AudioListenerRow
-                key={c.ip}
-                label={`Pad ${c.padIndex + 1} — ${c.name}`}
-                statusText="Connected"
-                icon={
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: 'scale(0.95)' }}>
-                    <line x1="6" y1="12" x2="10" y2="12" /><line x1="8" y1="10" x2="8" y2="14" />
-                    <circle cx="15" cy="13" r="1" /><circle cx="18" cy="11" r="1" />
-                    <path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.544-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.152A4 4 0 0 0 17.32 5z" />
-                  </svg>
-                }
-                onKick={() => linkApi?.kickJoystickController?.(c.ip)}
-                onBlock={() => linkApi?.blockJoystickController?.(c.ip, c.name)}
-              />
-            ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', width: '100%' }}>
+            <div style={{ fontWeight: 600, color: 'var(--text-color)', fontSize: '13px' }}>
+              Connected Controllers ({controllers.length}/4)
+            </div>
+
+            {controllers.length === 0 ? (
+              <div style={{ fontSize: '12.5px', color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0' }}>
+                Waiting for controllers to connect...
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {controllers.map((c) => (
+                  <AudioListenerRow
+                    key={c.ip}
+                    label={`Pad ${c.padIndex + 1} — ${c.name}`}
+                    statusText="Connected"
+                    icon={
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: 'scale(0.95)' }}>
+                        <line x1="6" y1="12" x2="10" y2="12" /><line x1="8" y1="10" x2="8" y2="14" />
+                        <circle cx="15" cy="13" r="1" /><circle cx="18" cy="11" r="1" />
+                        <path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.544-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.152A4 4 0 0 0 17.32 5z" />
+                      </svg>
+                    }
+                    onKick={() => linkApi?.kickJoystickController?.(c.ip)}
+                    onBlock={() => linkApi?.blockJoystickController?.(c.ip, c.name)}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
-      ) : (
+      )}
+
+      {/* Mobile View: Connect Gamepad to Desktop */}
+      {isMobile && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: '1.4' }}>
-            {isMobile ? "Enter a desktop's IP address or scan its QR code to use this device as a gamepad." : "Enter the host IP address or scan its QR code to use this device as a gamepad."}
+            Enter your computer's IP address or scan its QR code to use this device as a gamepad.
           </div>
 
           <IpScanField
@@ -354,7 +361,7 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
             onChange={setJoinIpInput}
             onScanClick={() => setShowScannerModal(true)}
             onEnter={() => connect(joinIpInput)}
-            placeholder="Host IP address (e.g. 192.168.1.100)"
+            placeholder="Computer IP address (e.g. 192.168.1.100)"
           />
 
           {connectError && (

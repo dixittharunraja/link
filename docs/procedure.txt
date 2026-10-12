@@ -8,7 +8,7 @@ format).
 THE CORE DEAL
 ------------------------------------------------------
 This is a clean-room implementation of the wire protocol and plugin behavior, built from scratch in
-TypeScript/Electron (desktop) and Java/Capacitor (Android). Same wire packet types (prefixed link.*),
+TypeScript/Electron (desktop) and Java/Tauri mobile (Android). Same wire packet types (prefixed link.*),
 same field names/shapes, same directional behavior, same feature semantics. Use whatever's idiomatic
 on this stack (Node child_process, PowerShell, etc).
 

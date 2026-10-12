@@ -337,30 +337,35 @@ const FileTransferTab: React.FC<FileTransferTabProps> = ({ isMobile, localIdenti
       {isIdle && (
         <div className="fx-split-container">
         <div className="fx-split">
-          <div className="fx-split-col" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', padding: '16px', minHeight: '260px', boxSizing: 'border-box' }}>
-            <div style={{ fontWeight: 600, marginBottom: '12px', color: 'var(--text-color)', fontSize: '14px' }}>
-              {webMode ? 'Web Portal' : 'Your QR Code'}
+          <div className="fx-split-col" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '12px 16px', boxSizing: 'border-box' }}>
+            <div style={{ fontWeight: 600, marginBottom: '8px', color: 'var(--text-color)', fontSize: '14px' }}>
+              {webMode ? 'Web Portal' : 'Receive Files'}
+            </div>
+            <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: '1.4', textAlign: 'center', marginBottom: '12px' }}>
+              {webMode
+                ? 'Open this URL in any browser to send & receive files without the app.'
+                : 'Scan this QR code with another device to transfer files.'}
             </div>
             {receiveError ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center', margin: 'auto 0' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center' }}>
                 <div style={{ color: '#e05c5c', fontSize: '12.5px', textAlign: 'center' }}>
                   Failed to start receiving: {receiveError}
                 </div>
                 <button onClick={() => startReceiving()} style={{ padding: '6px 12px', borderRadius: '4px' }}>Retry</button>
               </div>
             ) : !receiving ? (
-              <div style={{ color: 'var(--text-muted)', fontSize: '12.5px', margin: 'auto 0' }}>Starting receiver...</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: '12.5px' }}>Starting receiver...</div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', boxSizing: 'border-box', margin: 'auto 0', width: '100%' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', boxSizing: 'border-box', width: '100%' }}>
                 {qrDataUrl ? (
                   <div style={{ background: '#fff', padding: '8px', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-                    <img src={qrDataUrl} alt="Portal QR Code" style={{ display: 'block', width: '120px', height: '120px' }} />
+                    <img src={qrDataUrl} alt="Portal QR Code" style={{ display: 'block', width: '130px', height: '130px', imageRendering: 'pixelated' }} />
                   </div>
                 ) : (
-                  <div style={{ width: '120px', height: '120px', background: 'rgba(0,0,0,0.05)', borderRadius: '8px' }} />
+                  <div style={{ width: '130px', height: '130px', background: 'rgba(0,0,0,0.05)', borderRadius: '8px' }} />
                 )}
                 {webMode ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', width: '100%', boxSizing: 'border-box' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', width: '100%', boxSizing: 'border-box', marginTop: '4px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--input-bg, rgba(0,0,0,0.05))', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-color, rgba(255,255,255,0.08))', maxWidth: '100%', boxSizing: 'border-box' }}>
                       <span style={{ fontSize: '13px', fontWeight: 600, fontFamily: 'monospace', color: 'var(--text-color)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         http://{localIdentity?.ipAddress || '127.0.0.1'}:{port}
@@ -381,64 +386,14 @@ const FileTransferTab: React.FC<FileTransferTabProps> = ({ isMobile, localIdenti
                         {copied ? 'Copied' : 'Copy'}
                       </button>
                     </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', lineHeight: '1.4' }}>
-                      Open this URL in any browser to send & receive files without the app
-                    </div>
                   </div>
                 ) : (
-                  <>
-                    <div style={{ fontSize: '14px', fontWeight: 700, fontFamily: 'monospace', color: 'var(--text-color)' }}>
-                      {localIdentity?.ipAddress || '127.0.0.1'}
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center' }}>
-                      Show this QR code or IP to let the other device connect and exchange files
-                    </div>
-                  </>
+                  <div style={{ fontSize: '13.5px', fontWeight: 700, fontFamily: 'monospace', color: 'var(--text-color)', marginTop: '4px' }}>
+                    {localIdentity?.ipAddress || '127.0.0.1'}
+                  </div>
                 )}
               </div>
             )}
-            
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              width: '100%',
-              marginTop: '16px',
-              padding: '8px 12px',
-              borderRadius: '8px',
-              background: 'var(--input-bg, rgba(0,0,0,0.02))',
-              border: '1px solid var(--border-color, rgba(255,255,255,0.05))',
-              boxSizing: 'border-box'
-            }}>
-              <span style={{ fontSize: '12px', color: 'var(--text-color)', fontWeight: 500 }}>Web Share Mode</span>
-              <div
-                onClick={toggleWebMode}
-                style={{
-                  width: '36px',
-                  height: '20px',
-                  borderRadius: '10px',
-                  background: webMode ? 'var(--accent-color, #007acc)' : 'rgba(255,255,255,0.15)',
-                  position: 'relative',
-                  cursor: 'pointer',
-                  transition: 'background 0.2s',
-                  display: 'flex',
-                  alignItems: 'center',
-                  padding: '2px',
-                  boxSizing: 'border-box'
-                }}
-              >
-                <div style={{
-                  width: '14px',
-                  height: '14px',
-                  borderRadius: '50%',
-                  background: '#fff',
-                  position: 'absolute',
-                  left: webMode ? '20px' : '2px',
-                  transition: 'left 0.2s',
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-                }} />
-              </div>
-            </div>
           </div>
 
           <div className="fx-split-divider" />
@@ -446,11 +401,27 @@ const FileTransferTab: React.FC<FileTransferTabProps> = ({ isMobile, localIdenti
           {webMode ? (
             <div
               className="fx-split-col"
-              style={{ display: 'flex', flexDirection: 'column', padding: '16px', gap: '12px', minHeight: '260px', boxSizing: 'border-box' }}
+              style={{ display: 'flex', flexDirection: 'column', padding: '12px 16px', gap: '12px', boxSizing: 'border-box' }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={handleDrop}
             >
-              <div style={{ fontWeight: 600, color: 'var(--text-color)', fontSize: '14px' }}>Share Files with Browser</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontWeight: 600, color: 'var(--text-color)', fontSize: '14px' }}>Share Files with Browser</div>
+                <button
+                  onClick={toggleWebMode}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    fontSize: '11.5px',
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                    padding: '2px 4px',
+                  }}
+                >
+                  Exit Web Share
+                </button>
+              </div>
               <div style={{ color: 'var(--text-muted)', fontSize: '12px', lineHeight: '1.4' }}>
                 Add files below to make them instantly downloadable on the browser page.
               </div>
@@ -510,7 +481,7 @@ const FileTransferTab: React.FC<FileTransferTabProps> = ({ isMobile, localIdenti
           ) : (
             <div
               className="fx-split-col"
-              style={{ display: 'flex', flexDirection: 'column', padding: '16px', gap: '12px', minHeight: '260px', boxSizing: 'border-box' }}
+              style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '12px 16px', gap: '10px', boxSizing: 'border-box' }}
               onDragOver={(e) => e.preventDefault()}
               onDrop={handleDrop}
             >
@@ -523,15 +494,60 @@ const FileTransferTab: React.FC<FileTransferTabProps> = ({ isMobile, localIdenti
                 <div style={{ color: '#e05c5c', fontSize: '12.5px', overflowWrap: 'anywhere' }}>{sendError}</div>
               )}
 
-              <IpScanField
-                value={joinIpInput}
-                onChange={setJoinIpInput}
-                onScanClick={() => setShowScannerModal(true)}
-                style={{ marginTop: 'auto' }}
-              />
-              <PrimaryButton onClick={connectPortal} disabled={!joinIpInput} style={{ marginTop: 'auto' }}>
-                Connect
-              </PrimaryButton>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', marginTop: '6px' }}>
+                <IpScanField
+                  value={joinIpInput}
+                  onChange={setJoinIpInput}
+                  onScanClick={() => setShowScannerModal(true)}
+                  onEnter={connectPortal}
+                  placeholder="Peer IP address"
+                />
+                <PrimaryButton onClick={connectPortal} disabled={!joinIpInput}>
+                  Connect
+                </PrimaryButton>
+              </div>
+
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                width: '100%',
+                marginTop: '6px',
+                padding: '8px 12px',
+                borderRadius: '8px',
+                background: 'var(--input-bg, rgba(0,0,0,0.02))',
+                border: '1px solid var(--border-color, rgba(255,255,255,0.05))',
+                boxSizing: 'border-box'
+              }}>
+                <span style={{ fontSize: '12px', color: 'var(--text-color)', fontWeight: 500 }}>Web Share Mode</span>
+                <div
+                  onClick={toggleWebMode}
+                  style={{
+                    width: '36px',
+                    height: '20px',
+                    borderRadius: '10px',
+                    background: webMode ? 'var(--accent-color, #007acc)' : 'rgba(255,255,255,0.15)',
+                    position: 'relative',
+                    cursor: 'pointer',
+                    transition: 'background 0.2s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '2px',
+                    boxSizing: 'border-box'
+                  }}
+                >
+                  <div style={{
+                    width: '14px',
+                    height: '14px',
+                    borderRadius: '50%',
+                    background: '#fff',
+                    position: 'absolute',
+                    left: webMode ? '20px' : '2px',
+                    transition: 'left 0.2s',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }} />
+                </div>
+              </div>
             </div>
           )}
         </div>

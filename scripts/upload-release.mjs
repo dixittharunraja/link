@@ -8,21 +8,30 @@ const RELEASE_TAG = 'latest';
 
 const ARTIFACT_MAPPINGS = [
   {
-    pattern: 'dist_electron',
+    pattern: 'src-tauri/target/release/bundle/nsis',
+    fallbackPattern: 'src-tauri/target/release',
     ext: '.exe',
     targetName: 'link-desktop-setup.exe',
     label: 'Windows Desktop (.exe)'
   },
   {
-    path: 'android/app/build/outputs/apk/release/app-release.apk',
+    path: 'src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk',
     targetName: 'link.apk',
     label: 'Android Package (.apk)'
   },
   {
-    pattern: 'dist_electron',
+    pattern: 'src-tauri/target/release/bundle/deb',
+    fallbackPattern: 'src-tauri/target/release',
     ext: '.deb',
     targetName: 'link.deb',
     label: 'Linux Package (.deb)'
+  },
+  {
+    pattern: 'src-tauri/target/release/bundle/appimage',
+    fallbackPattern: 'src-tauri/target/release',
+    ext: '.AppImage',
+    targetName: 'link.AppImage',
+    label: 'Linux AppImage (.AppImage)'
   }
 ];
 
@@ -30,12 +39,15 @@ function findFile(mapping) {
   if (mapping.path && fs.existsSync(mapping.path)) {
     return mapping.path;
   }
-  if (mapping.pattern && fs.existsSync(mapping.pattern)) {
-    const files = fs.readdirSync(mapping.pattern);
-    const match = files.find(f => f.endsWith(mapping.ext) && !f.includes('blockmap'));
-    if (match) return path.join(mapping.pattern, match);
-  }
-  return null;
+  const checkDir = (dir) => {
+    if (dir && fs.existsSync(dir)) {
+      const files = fs.readdirSync(dir);
+      const match = files.find(f => f.toLowerCase().endsWith(mapping.ext.toLowerCase()) && !f.includes('blockmap'));
+      if (match) return path.join(dir, match);
+    }
+    return null;
+  };
+  return checkDir(mapping.pattern) || checkDir(mapping.fallbackPattern);
 }
 
 function streamUpload(uploadUrl, filePath, targetName, token, retries = 3) {

@@ -5,11 +5,14 @@ import FileTransferTab from './FileTransferTab';
 import JoystickTab from './JoystickTab';
 import PresenterTab from './PresenterTab';
 import RemoteInputTab from './RemoteInputTab';
+import RemoteControlGuestTab from './RemoteControlGuestTab';
 import { pushBackHandler } from '../utils/backNav';
 import { LinkApi } from '../vite-env';
 import { PeerDevice } from '../types/peer';
 
-type ToolId = 'audio-sink' | 'remote-mic' | 'file-transfer' | 'walkie-talkie' | 'joystick' | 'presenter' | 'remote-input';
+import { Headphones, Send, Gamepad2, Presentation, MousePointer2, Mic, Radio, MonitorSmartphone } from 'lucide-react';
+
+type ToolId = 'audio-sink' | 'remote-mic' | 'file-transfer' | 'walkie-talkie' | 'joystick' | 'presenter' | 'remote-input' | 'remote-control';
 
 interface ToolsTabProps {
   peers: Map<string, PeerDevice>;
@@ -19,68 +22,57 @@ interface ToolsTabProps {
   onOpenWalkieTalkie: () => void;
   onShowPresenter?: (deviceId: string, hostDeviceType?: string) => void;
   onShowTouchpad?: (deviceId: string) => void;
+  onShowRemoteControl?: () => void;
 }
 
-const TOOLS: { id: ToolId; title: string; description: string; icon: React.ReactNode }[] = [
+const TOOLS: { id: ToolId; title: string; description: string; icon: React.ElementType }[] = [
   {
     id: 'audio-sink',
     title: 'Audio Sink',
     description: 'Stream audio from any device to any device — listen together, each on your own earphones.',
-    icon: (
-      <svg viewBox="0 0 24 24"><path d="M3 18v-6a9 9 0 0 1 18 0v6" /><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" /></svg>
-    ),
+    icon: Headphones,
   },
   {
     id: 'file-transfer',
     title: 'File Transfer',
     description: 'Quickly share files with any nearby device via QR code, direct IP, or web browser without permanent pairing.',
-    icon: (
-      <svg viewBox="0 0 24 24"><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4 20-7z" /></svg>
-    ),
+    icon: Send,
   },
   {
     id: 'joystick',
     title: 'Joystick',
     description: 'Use your phone as an Xbox/PlayStation-style game controller for your PC — up to 4 friends at once.',
-    icon: (
-      <svg viewBox="0 0 24 24">
-        <line x1="6" y1="12" x2="10" y2="12" /><line x1="8" y1="10" x2="8" y2="14" />
-        <circle cx="15" cy="13" r="1" /><circle cx="18" cy="11" r="1" />
-        <path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.544-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.152A4 4 0 0 0 17.32 5z" />
-      </svg>
-    ),
+    icon: Gamepad2,
   },
   {
     id: 'presenter',
     title: 'Presenter',
     description: 'Use your phone screen as a presentation slide remote and laser pointer overlay.',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>
-    ),
+    icon: Presentation,
   },
   {
     id: 'remote-input',
     title: 'Remote Input',
     description: 'Control mouse movements, clicks, scrolling, and stylus/digitizer input on any PC or TV from your phone.',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="4" /><line x1="12" y1="6" x2="12" y2="10" /></svg>
-    ),
+    icon: MousePointer2,
+  },
+  {
+    id: 'remote-control',
+    title: 'Remote Control',
+    description: 'View and control a PC screen from your phone, with just its IP address — nothing to pair.',
+    icon: MonitorSmartphone,
   },
   {
     id: 'remote-mic',
     title: 'Remote Mic',
     description: 'Use your mobile device as a high-quality wireless microphone for your computer.',
-    icon: (
-      <svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" /></svg>
-    ),
+    icon: Mic,
   },
   {
     id: 'walkie-talkie',
     title: 'Walkie Talkie',
     description: 'Real-time two-way voice communication with multiple devices on the local network.',
-    icon: (
-      <svg viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" /></svg>
-    ),
+    icon: Radio,
   },
 ];
 
@@ -105,6 +97,7 @@ const ToolsTab: React.FC<ToolsTabProps> = ({
   onOpenWalkieTalkie,
   onShowPresenter,
   onShowTouchpad,
+  onShowRemoteControl,
 }) => {
   const [selected, setSelected] = useState<ToolId | null>(null);
   const [activeTools, setActiveTools] = useState<Record<Exclude<ToolId, 'walkie-talkie'>, boolean>>({
@@ -114,6 +107,7 @@ const ToolsTab: React.FC<ToolsTabProps> = ({
     'joystick': false,
     'presenter': false,
     'remote-input': false,
+    'remote-control': false,
   });
 
   const checkActiveTools = () => {
@@ -137,11 +131,13 @@ const ToolsTab: React.FC<ToolsTabProps> = ({
 
     // Input Guest server (Presenter & Remote Input / Touchpad)
     Promise.resolve(linkApi.getInputGuestStatus?.()).then((status: any) => {
-      const guests: { ip: string; name: string; mode: string }[] = status?.admittedGuests || [];
+      // Unpaired guests and paired devices driving this PC both count as a live session.
+      const sessions: { mode: string }[] = [...(status?.admittedGuests || []), ...(status?.pairedSessions || [])];
       setActiveTools((prev) => ({
         ...prev,
-        'presenter': guests.some((g) => g.mode === 'presenter'),
-        'remote-input': guests.some((g) => g.mode === 'touchpad'),
+        'presenter': sessions.some((g) => g.mode === 'presenter'),
+        'remote-input': sessions.some((g) => g.mode === 'touchpad'),
+        'remote-control': sessions.some((g) => g.mode === 'remotecontrol'),
       }));
     }).catch(() => {});
   };
@@ -168,18 +164,24 @@ const ToolsTab: React.FC<ToolsTabProps> = ({
     <div id="tab-tools" className="tab-content active">
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '18px' }}>
         {TOOLS.map((tool) => {
+          const Icon = tool.icon;
           const isActive = tool.id === 'walkie-talkie' ? walkieTalkieActive : activeTools[tool.id];
           return (
             <div
               key={tool.id}
               className="card"
               onClick={() => (tool.id === 'walkie-talkie' ? onOpenWalkieTalkie() : setSelected(tool.id))}
-              style={{ cursor: 'pointer', margin: 0, display: 'flex', flexDirection: 'column', gap: '10px', position: 'relative' }}
+              style={{ cursor: 'pointer', margin: 0, display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative' }}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div className="tool-icon">
-                  {tool.icon}
-                </div>
+                <Icon
+                  size={26}
+                  strokeWidth={2.2}
+                  style={{
+                    color: 'var(--accent-color)',
+                    flexShrink: 0,
+                  }}
+                />
                 {isActive && (
                   <div
                     title="Active in background"
@@ -305,7 +307,18 @@ const ToolsTab: React.FC<ToolsTabProps> = ({
               />
             )}
 
-            {selected !== 'audio-sink' && selected !== 'remote-mic' && selected !== 'file-transfer' && selected !== 'joystick' && selected !== 'presenter' && selected !== 'remote-input' && (
+            {selected === 'remote-control' && (
+              <RemoteControlGuestTab
+                localIdentity={localIdentity}
+                isMobile={isMobile}
+                onLaunchViewer={() => {
+                  setSelected(null);
+                  onShowRemoteControl?.();
+                }}
+              />
+            )}
+
+            {selected !== 'audio-sink' && selected !== 'remote-mic' && selected !== 'remote-control' && selected !== 'file-transfer' && selected !== 'joystick' && selected !== 'presenter' && selected !== 'remote-input' && (
               <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center', textAlign: 'center' }}>
                 <div
                   style={{

@@ -23,7 +23,7 @@ export const AudioListenerRow: React.FC<AudioListenerRowProps> = ({
 }) => {
   return (
     <div
-      className="peer-row"
+      className="member-row"
       style={{
         display: 'flex',
         alignItems: 'center',

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import DesktopTitleBar from './components/DesktopTitleBar';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
 import ConnectionsTab from './components/ConnectionsTab';
@@ -24,7 +25,10 @@ import JoystickOverlay, {
 import { FilesTab, hasFileAccess } from './components/FileExplorerTab';
 import { CustomSelect } from './components/CustomSelect';
 import ModalDialog, { ModalDialogProps } from './components/ModalDialog';
+import PageHeader from './components/shared/PageHeader';
+import { Smartphone, FolderTree, Wrench, Bell, Terminal, Settings2 } from 'lucide-react';
 import { pushBackHandler, handleHardwareBack } from './utils/backNav';
+import { GUEST_REMOTE_CONTROL_ID, IS_ANDROID } from './utils/platform';
 import { LinkApi } from './vite-env';
 import { PeerDevice, VolumeSink, CommandEntry } from './types/peer';
 
@@ -58,13 +62,34 @@ const titleMap: Record<string, string> = {
   'settings': 'Settings'
 };
 
+const iconMap: Record<string, any> = {
+  'devices': Smartphone,
+  'files': FolderTree,
+  'tools': Wrench,
+  'notifications': Bell,
+  'commands': Terminal,
+  'settings': Settings2,
+};
+
+const VALID_TABS = ['devices', 'files', 'tools', 'notifications', 'commands', 'settings'];
+
+const getInitialTab = (): string => {
+  try {
+    const hash = window.location.hash.replace(/^#\/?/, '');
+    if (VALID_TABS.includes(hash)) return hash;
+    const stored = sessionStorage.getItem('link_active_tab');
+    if (stored && VALID_TABS.includes(stored)) return stored;
+  } catch {}
+  return 'devices';
+};
+
 const App: React.FC = () => {
-  // Tab and Theme State — always opens on Devices; restoring the last-used tab across launches
-  // meant leaving the app on, say, Tools would silently reopen straight into Tools next time.
-  const [activeTab, setActiveTab] = useState<string>('devices');
+  // Tab State — restores current tab on reload from URL hash or sessionStorage
+  const [activeTab, setActiveTab] = useState<string>(getInitialTab);
   const [theme, setTheme] = useState<string>(() => {
     return localStorage.getItem('link-theme') || 'dark';
   });
+
 
   // Walkie Talkie's session (RTCPeerConnections, the mixing AudioContext, sessionId/members) lives
   // entirely in WalkieTalkieTab's own React state/refs, with no main-process-side session object
@@ -119,6 +144,18 @@ const App: React.FC = () => {
   const [activeRemoteControlHostDeviceType, setActiveRemoteControlHostDeviceType] = useState<string | undefined>(undefined);
   // Remote Control Viewer State
   const [activeRemoteControlViewerDeviceId, setActiveRemoteControlViewerDeviceId] = useState<string | null>(null);
+
+  // A host that kicks or loses the unpaired viewer ends the session; there is no peer state to show it.
+  useEffect(() => {
+    if (activeRemoteControlViewerDeviceId !== GUEST_REMOTE_CONTROL_ID) return;
+    const close = () => setActiveRemoteControlViewerDeviceId(null);
+    const unsubClosed = linkApi?.onInputGuestClosed?.(close);
+    const unsubError = linkApi?.onInputGuestError?.(close);
+    return () => {
+      unsubClosed?.();
+      unsubError?.();
+    };
+  }, [activeRemoteControlViewerDeviceId]);
   // Which device's files the Files tab is showing — driven by the switcher in the page title
   // row, not a picker grid inside the tab itself (see FilesTab.tsx).
   const [filesSelectedDeviceId, setFilesSelectedDeviceId] = useState<string | null>(null);
@@ -317,12 +354,49 @@ const App: React.FC = () => {
     }
   };
 
-  const handleSetActiveTab = (tab: string) => {
+  const handleSetActiveTab = (tab: string, pushHistory = true) => {
+    if (!VALID_TABS.includes(tab)) return;
     setActiveTab(tab);
+    try {
+      sessionStorage.setItem('link_active_tab', tab);
+      if (pushHistory && window.location.hash.replace(/^#\/?/, '') !== tab) {
+        window.history.pushState({ tab }, '', `#${tab}`);
+      }
+    } catch {}
     if (tab === 'settings') {
       updatePermissionsUI();
     }
   };
+
+  // Sync browser back/forward and reload state with activeTab
+  useEffect(() => {
+    const handlePopState = () => {
+      const hash = window.location.hash.replace(/^#\/?/, '');
+      if (VALID_TABS.includes(hash)) {
+        setActiveTab(hash);
+        try {
+          sessionStorage.setItem('link_active_tab', hash);
+        } catch {}
+        if (hash === 'settings') {
+          updatePermissionsUI();
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    window.addEventListener('hashchange', handlePopState);
+
+    // Ensure initial hash reflects activeTab
+    const currentHash = window.location.hash.replace(/^#\/?/, '');
+    if (currentHash !== activeTab) {
+      window.history.replaceState({ tab: activeTab }, '', `#${activeTab}`);
+    }
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('hashchange', handlePopState);
+    };
+  }, []);
 
   // Hardware back button (Android): LinkMainActivity forwards a real onBackPressed() into a
   // 'linkHardwareBack' DOM event instead of exiting/backgrounding the app itself, so any level of
@@ -330,7 +404,7 @@ const App: React.FC = () => {
   // if we're already there, handleHardwareBack() returns false and we ask native to minimize
   // instead of leaving the button doing nothing.
   useEffect(() => {
-    if (typeof (window as any).Capacitor === 'undefined') return;
+    if (!IS_ANDROID) return;
     return pushBackHandler(() => {
       if (activeTab !== 'devices') {
         handleSetActiveTab('devices');
@@ -387,7 +461,7 @@ const App: React.FC = () => {
   }, [activeRemoteControlMode, activeRemoteControlDeviceId, linkApi]);
 
   useEffect(() => {
-    if (typeof (window as any).Capacitor === 'undefined') return;
+    if (!IS_ANDROID) return;
     const onHardwareBack = () => {
       if (!handleHardwareBack()) linkApi?.minimizeApp?.();
     };
@@ -1019,7 +1093,7 @@ const App: React.FC = () => {
 
   // Pull to refresh gesture logic (Mobile only)
   useEffect(() => {
-    if (typeof (window as any).Capacitor === 'undefined') return;
+    if (!IS_ANDROID) return;
 
     let startX = 0;
     let startY = 0;
@@ -1499,8 +1573,12 @@ const App: React.FC = () => {
         <div
           className="pull-refresh-indicator"
           style={{
-            transform: `translateX(-50%) translateY(${pullDistance}px)`,
-            opacity: pullDistance / 75,
+            position: 'fixed',
+            top: 'max(14px, env(safe-area-inset-top, 14px))',
+            left: '50%',
+            transform: `translateX(-50%) translateY(${Math.min(pullDistance, 90)}px)`,
+            opacity: Math.min(1, pullDistance / 45),
+            zIndex: 99999,
           }}
         >
           <svg
@@ -1701,157 +1779,163 @@ const App: React.FC = () => {
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden' }}>
-        <TopBar
-          deviceName={localIdentity.deviceName}
-          ipAddress={localIdentity.ipAddress}
-          ipAddresses={localIdentity.ipAddresses}
-          isMobile={typeof (window as any).Capacitor !== 'undefined'}
-        />
+        {IS_ANDROID ? (
+          <TopBar
+            deviceName={localIdentity.deviceName}
+            ipAddress={localIdentity.ipAddress}
+            ipAddresses={localIdentity.ipAddresses}
+            isMobile={true}
+          />
+        ) : (
+          <DesktopTitleBar
+            isMobile={false}
+            deviceName={localIdentity.deviceName}
+            ipAddress={localIdentity.ipAddress}
+            ipAddresses={localIdentity.ipAddresses}
+          />
+        )}
 
         <div id="main-content-split" style={{ display: 'flex', flexGrow: 1, width: '100%', overflow: 'hidden' }}>
           <Sidebar
             activeTab={activeTab}
             setActiveTab={handleSetActiveTab}
-            isMobile={typeof (window as any).Capacitor !== 'undefined'}
-            localIdentity={localIdentity}
+            isMobile={IS_ANDROID}
           />
 
           <div className="main-container">
-            {/* Prominent Page Title below TopBar */}
-            <div className="page-title-container" style={{ padding: '24px 40px 10px 40px', userSelect: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px' }}>
-              <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '26px', fontWeight: 800, letterSpacing: '-0.8px', color: 'var(--text-color)', margin: 0 }}>
-                {titleMap[activeTab]}
-              </h1>
+            {/* Tab content scrolls with LifeOS standard page container and max-width layout */}
+            <div className="tab-scroll">
+              <div className="page-container">
+                <PageHeader
+                  title={titleMap[activeTab]}
+                  icon={iconMap[activeTab]}
+                >
+                  {/* Which device's files are shown — lives in PageHeader right actions */}
+                  {activeTab === 'files' && (() => {
+                    const eligible = Array.from(peers.values()).filter(hasFileAccess);
+                    if (eligible.length === 0) return null;
+                    return (
+                      <CustomSelect
+                        value={filesSelectedDeviceId || ''}
+                        onChange={(val) => setFilesSelectedDeviceId(val)}
+                        options={eligible.map((p) => ({
+                          value: p.deviceId,
+                          label: p.name,
+                          deviceType: p.deviceType,
+                        }))}
+                        style={{ minWidth: '180px' }}
+                      />
+                    );
+                  })()}
+                </PageHeader>
 
-              {/* Which device's files are shown — lives here rather than as a picker inside the
-                  tab so the page itself IS the file browser, not a grid that gets replaced by one. */}
-              {activeTab === 'files' && (() => {
-                const eligible = Array.from(peers.values()).filter(hasFileAccess);
-                if (eligible.length === 0) return null;
-                return (
-                  <CustomSelect
-                    value={filesSelectedDeviceId || ''}
-                    onChange={(val) => setFilesSelectedDeviceId(val)}
-                    options={eligible.map((p) => ({
-                      value: p.deviceId,
-                      label: p.name,
-                      deviceType: p.deviceType,
-                    }))}
-                    style={{ minWidth: '180px' }}
+                {activeTab === 'devices' && (
+                  <ConnectionsTab
+                    peers={peers}
+                    localDeviceType={localIdentity.deviceType}
+                    volumeSinks={volumeSinks}
+                    onPair={handlePair}
+                    onToggleRing={handleToggleRing}
+                    onLock={handleLock}
+                    onToggleFlashlight={handleToggleFlashlight}
+                    onToggleDnd={handleToggleDnd}
+                    onSpeedTest={handleSpeedTest}
+                    peerCommandLists={peerCommandLists}
+                    onRunCommandTrigger={handleRunCommandTrigger}
+                    onUnpair={handleUnpair}
+                    onSetVolume={handleSetVolume}
+                    onToggleMute={handleToggleMute}
+                    onShowPresenter={(id) => {
+                      setActiveRemoteControlDeviceId(id);
+                      setActiveRemoteControlMode('presenter');
+                      setActiveRemoteControlHostDeviceType(peers.get(id)?.deviceType);
+                    }}
+                    onShowTouchpad={(id) => {
+                      setActiveRemoteControlDeviceId(id);
+                      setActiveRemoteControlMode('touchpad');
+                    }}
+                    onShowJoystick={(id) => {
+                      const peer = peers.get(id);
+                      const targetHost = peer?.ipAddress || id;
+                      setActiveRemoteControlDeviceId(targetHost);
+                      setActiveRemoteControlMode('joystick');
+                      linkApi?.sendJoystickHello?.(targetHost, localIdentity?.deviceName || 'Player');
+                    }}
+                    onShowRemoteControl={(id) => {
+                      setActiveRemoteControlViewerDeviceId(id);
+                    }}
+                    devicePermissions={devicePermissions}
+                    onSetPermission={handleSetPermission}
+                    onRenameTrustedDevice={handleRenameTrustedDevice}
+                    activeSpeedTestDeviceId={activeSpeedTestDeviceId}
+                    discoveredPeers={discoveredPeers}
+                    visibilityEnabled={visibilityEnabled}
+                    onVisibilityToggle={handleVisibilityToggle}
+                    onConnect={handleConnect}
+                    showAddDevice={showAddDevice}
+                    onSetShowAddDevice={setShowAddDevice}
                   />
-                );
-              })()}
+                )}
+
+                {activeTab === 'files' && (
+                  <FilesTab peers={peers} selectedDeviceId={filesSelectedDeviceId} />
+                )}
+
+                {activeTab === 'notifications' && (
+                  <NotificationsTab
+                    notifications={notifications}
+                    peers={peers}
+                    onReply={handleReplyNotification}
+                  />
+                )}
+
+                {activeTab === 'commands' && (
+                  <CommandsTab
+                    commands={commands}
+                    onAddCommand={handleAddCommand}
+                    onRemoveCommand={handleRemoveCommand}
+                  />
+                )}
+
+                {activeTab === 'tools' && (
+                  <ToolsTab
+                    peers={peers}
+                    localIdentity={localIdentity}
+                    isMobile={IS_ANDROID}
+                    walkieTalkieActive={walkieTalkieActive}
+                    onOpenWalkieTalkie={() => setWalkieTalkieOpen(true)}
+                    onShowPresenter={(id, hostDeviceType) => handleToolConnect('presenter', id, hostDeviceType)}
+                    onShowTouchpad={(id) => handleToolConnect('touchpad', id)}
+                    onShowRemoteControl={() => setActiveRemoteControlViewerDeviceId(GUEST_REMOTE_CONTROL_ID)}
+                  />
+                )}
+
+                {activeTab === 'settings' && (
+                  <SettingsTab
+                    deviceName={localIdentity.deviceName}
+                    deviceId={localIdentity.deviceId}
+                    ipAddress={localIdentity.ipAddress}
+                    onRename={handleRename}
+                    theme={theme}
+                    onThemeToggle={handleThemeToggle}
+                    logs={logs}
+                    isMobile={IS_ANDROID}
+                    mobilePermissions={mobilePermissions}
+                    onRequestMobilePermission={handleRequestMobilePermission}
+                    screensaverInhibitEnabled={screensaverInhibitEnabled}
+                    onScreensaverInhibitToggle={handleScreensaverInhibitToggle}
+                    openAtLogin={openAtLogin}
+                    onOpenAtLoginToggle={handleOpenAtLoginToggle}
+                    closeToTray={closeToTray}
+                    onCloseToTrayToggle={handleCloseToTrayToggle}
+                    visibilityEnabled={visibilityEnabled}
+                    onVisibilityToggle={handleVisibilityToggle}
+                  />
+                )}
+              </div>
             </div>
-
-        {/* Tab content scrolls here. .main-container is overflow:hidden and no tab root declared
-            a scroller of its own, so anything taller than the window was simply clipped and
-            unreachable rather than scrollable. */}
-        <div className="tab-scroll">
-        {activeTab === 'devices' && (
-          <ConnectionsTab
-            peers={peers}
-            localDeviceType={localIdentity.deviceType}
-            volumeSinks={volumeSinks}
-            onPair={handlePair}
-            onToggleRing={handleToggleRing}
-            onLock={handleLock}
-            onToggleFlashlight={handleToggleFlashlight}
-            onToggleDnd={handleToggleDnd}
-            onSpeedTest={handleSpeedTest}
-            peerCommandLists={peerCommandLists}
-            onRunCommandTrigger={handleRunCommandTrigger}
-            onUnpair={handleUnpair}
-            onSetVolume={handleSetVolume}
-            onToggleMute={handleToggleMute}
-            onShowPresenter={(id) => {
-              setActiveRemoteControlDeviceId(id);
-              setActiveRemoteControlMode('presenter');
-              setActiveRemoteControlHostDeviceType(peers.get(id)?.deviceType);
-            }}
-            onShowTouchpad={(id) => {
-              setActiveRemoteControlDeviceId(id);
-              setActiveRemoteControlMode('touchpad');
-            }}
-            onShowJoystick={(id) => {
-              const peer = peers.get(id);
-              const targetHost = peer?.ipAddress || id;
-              setActiveRemoteControlDeviceId(targetHost);
-              setActiveRemoteControlMode('joystick');
-              linkApi?.sendJoystickHello?.(targetHost, localIdentity?.deviceName || 'Player');
-            }}
-            onShowRemoteControl={(id) => {
-              setActiveRemoteControlViewerDeviceId(id);
-            }}
-            devicePermissions={devicePermissions}
-            onSetPermission={handleSetPermission}
-            onRenameTrustedDevice={handleRenameTrustedDevice}
-            activeSpeedTestDeviceId={activeSpeedTestDeviceId}
-            discoveredPeers={discoveredPeers}
-            visibilityEnabled={visibilityEnabled}
-            onVisibilityToggle={handleVisibilityToggle}
-            onConnect={handleConnect}
-            showAddDevice={showAddDevice}
-            onSetShowAddDevice={setShowAddDevice}
-          />
-        )}
-
-        {activeTab === 'files' && (
-          <FilesTab peers={peers} selectedDeviceId={filesSelectedDeviceId} />
-        )}
-
-        {activeTab === 'notifications' && (
-          <NotificationsTab
-            notifications={notifications}
-            peers={peers}
-            onReply={handleReplyNotification}
-          />
-        )}
-
-        {activeTab === 'commands' && (
-          <CommandsTab
-            commands={commands}
-            onAddCommand={handleAddCommand}
-            onRemoveCommand={handleRemoveCommand}
-          />
-        )}
-
-        {activeTab === 'tools' && (
-          <ToolsTab
-            peers={peers}
-            localIdentity={localIdentity}
-            isMobile={typeof (window as any).Capacitor !== 'undefined'}
-            walkieTalkieActive={walkieTalkieActive}
-            onOpenWalkieTalkie={() => setWalkieTalkieOpen(true)}
-            onShowPresenter={(id, hostDeviceType) => handleToolConnect('presenter', id, hostDeviceType)}
-            onShowTouchpad={(id) => handleToolConnect('touchpad', id)}
-          />
-        )}
-
-        {activeTab === 'settings' && (
-          <SettingsTab
-            deviceName={localIdentity.deviceName}
-            deviceId={localIdentity.deviceId}
-            ipAddress={localIdentity.ipAddress}
-            onRename={handleRename}
-            theme={theme}
-            onThemeToggle={handleThemeToggle}
-            logs={logs}
-            isMobile={typeof (window as any).Capacitor !== 'undefined'}
-            mobilePermissions={mobilePermissions}
-            onRequestMobilePermission={handleRequestMobilePermission}
-            screensaverInhibitEnabled={screensaverInhibitEnabled}
-            onScreensaverInhibitToggle={handleScreensaverInhibitToggle}
-            openAtLogin={openAtLogin}
-            onOpenAtLoginToggle={handleOpenAtLoginToggle}
-            closeToTray={closeToTray}
-            onCloseToTrayToggle={handleCloseToTrayToggle}
-            visibilityEnabled={visibilityEnabled}
-            onVisibilityToggle={handleVisibilityToggle}
-          />
-        )}
+          </div>
         </div>
-      </div>
-    </div>
 
       {/* Walkie Talkie — permanently mounted (not tied to activeTab) so navigating to a different
           tab and back doesn't end an active session; see walkieTalkieOpen's declaration comment
@@ -1888,7 +1972,7 @@ const App: React.FC = () => {
           <WalkieTalkieTab
             peers={peers}
             localIdentity={localIdentity}
-            isMobile={typeof (window as any).Capacitor !== 'undefined'}
+            isMobile={IS_ANDROID}
             onSessionActiveChange={setWalkieTalkieActive}
           />
         </div>
@@ -1960,7 +2044,7 @@ const App: React.FC = () => {
         <RemoteControlViewer
           deviceId={activeRemoteControlViewerDeviceId}
           deviceName={peers.get(activeRemoteControlViewerDeviceId)?.name || 'Remote Device'}
-          hostDeviceType={peers.get(activeRemoteControlViewerDeviceId)?.deviceType}
+          hostDeviceType={activeRemoteControlViewerDeviceId === GUEST_REMOTE_CONTROL_ID ? 'desktop' : peers.get(activeRemoteControlViewerDeviceId)?.deviceType}
           hostConnected={peers.get(activeRemoteControlViewerDeviceId)?.connected}
           onClose={() => setActiveRemoteControlViewerDeviceId(null)}
           onEndSession={() => setActiveRemoteControlViewerDeviceId(null)}

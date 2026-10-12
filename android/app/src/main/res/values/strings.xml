@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='utf-8'?>
-<resources>
-    <string name="app_name">Link</string>
-    <string name="title_activity_main">Link</string>
-    <string name="package_name">in.rodix.link</string>
-    <string name="custom_url_scheme">in.rodix.link</string>
-    <string name="device_admin_description">Enables remote locking of your device from paired PCs or mobile devices.</string>
-</resources>

@@ -86,8 +86,8 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
   const [guestJoinPhase, setGuestJoinPhase] = useState<'idle' | 'connecting' | 'waiting-pin' | 'error'>('idle');
   const [pin, setPin] = useState<string | null>(null);
 
-  // QR Display State
-  const qrDataUrl = useHostQrCode(inSession && isCoordinator, localIdentity, 1724);
+  // QR Display State: port is LINK_PORT + 8 = 1747 (WALKIE_TALKIE_PORT)
+  const qrDataUrl = useHostQrCode(inSession && isCoordinator, localIdentity, 1747);
 
   const sessionIdRef = useRef<string | null>(null);
   const isCoordinatorRef = useRef(false);
@@ -124,10 +124,68 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
 
   const [showScannerModal, setShowScannerModal] = useState(false);
 
-  const handleDecodedHost = (host: string) => {
+  const pendingTrustedJoinRef = useRef<string | null>(null);
+
+  // When joining by address (scanned QR or typed IP), check if the address matches an already-paired
+  // and trusted peer. If it does, join their active session directly via the trusted link.walkietalkie
+  // signal channel without prompting for a PIN, just like Audio Sink handles paired devices.
+  const joinByAddress = (rawAddress: string) => {
+    let clean = rawAddress.trim();
+    if (clean.startsWith('link:')) {
+      const parts = clean.split(':');
+      if (parts.length >= 2) clean = parts[1];
+    }
+    // Clean each candidate to strip any port number (e.g. 192.168.1.100:1747 -> 192.168.1.100)
+    const rawCandidates = clean.split(',').map((s) => s.trim()).filter(Boolean);
+    if (rawCandidates.length === 0) return;
+
+    const candidates = rawCandidates.map((c) => {
+      // Strip IPv6 brackets or port suffix
+      const withoutPort = c.split(':')[0].replace(/^\[|\]$/g, '');
+      return withoutPort.trim();
+    }).filter(Boolean);
+
+    // Find any trusted paired peer matching any candidate IP
+    let matchedPeer: any = null;
+    for (const peer of Array.from(peers.values())) {
+      if (!peer.trusted) continue;
+      const peerIps = [peer.ipAddress, ...((peer as any).ipAddresses || [])].filter(Boolean);
+      if (candidates.some((c) => peerIps.includes(c))) {
+        matchedPeer = peer;
+        break;
+      }
+    }
+
+    if (matchedPeer) {
+      setJoinIpInput(candidates[0]);
+      const disc = discovered.get(matchedPeer.deviceId);
+      if (disc?.sessionId) {
+        joinSession(matchedPeer.deviceId, disc.sessionId);
+        return;
+      } else {
+        // Query session info from the peer and wait for session-info to arrive
+        pendingTrustedJoinRef.current = matchedPeer.deviceId;
+        setGuestJoinPhase('connecting');
+        send(matchedPeer.deviceId, 'session-query', {});
+        // Fallback timer if peer has no active session
+        setTimeout(() => {
+          if (pendingTrustedJoinRef.current === matchedPeer.deviceId) {
+            pendingTrustedJoinRef.current = null;
+            setGuestJoinPhase('idle');
+            setError('No active session found on ' + matchedPeer.name);
+          }
+        }, 5000);
+        return;
+      }
+    }
+
+    setJoinIpInput(candidates[0]);
+    joinAsGuest(clean);
+  };
+
+  const handleDecodedHost = (rawText: string) => {
     setShowScannerModal(false);
-    setJoinIpInput(host);
-    joinAsGuest(host);
+    joinByAddress(rawText);
   };
 
   // Three transports for the exact same link.walkietalkie.* messages, dispatched purely by target
@@ -286,7 +344,12 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
 
   const joinAsGuest = async (overrideHost?: string) => {
     setError(null);
-    const host = (overrideHost || joinIpInput).trim();
+    let host = (overrideHost || joinIpInput).trim();
+    if (host.startsWith('link:')) {
+      const parts = host.split(':');
+      if (parts.length >= 2) host = parts[1];
+    }
+    host = host.split(',')[0].trim();
     if (!host) return;
     if (!(await ensureLocalStream(setError))) return;
     setGuestJoinPhase('connecting');
@@ -542,6 +605,11 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
           copy.set(deviceId, { sessionId: body.sessionId, name: body.name || peerName(deviceId) });
           return copy;
         });
+        if (pendingTrustedJoinRef.current === deviceId && body.sessionId) {
+          pendingTrustedJoinRef.current = null;
+          setGuestJoinPhase('idle');
+          joinSession(deviceId, body.sessionId);
+        }
       },
       'join-request': () => {
         if (!isCoordinatorRef.current || body.sessionId !== sessionIdRef.current) {
@@ -739,16 +807,18 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
         {/* Local user */}
         <div
-          className="peer-row"
+          className="member-row"
           style={{
             display: 'flex',
+            flexDirection: 'row',
             alignItems: 'center',
             justifyContent: 'flex-start',
-            gap: '10px',
+            gap: '12px',
             padding: '10px 14px',
             background: 'rgba(255, 255, 255, 0.03)',
             border: '1px solid var(--border-color)',
             borderRadius: '8px',
+            boxSizing: 'border-box',
           }}
         >
           <div
@@ -766,7 +836,7 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
           >
             <DeviceIcon deviceType={isMobile ? 'phone' : 'desktop'} />
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
             <span style={{ fontSize: '13.5px', fontWeight: 600, overflowWrap: 'anywhere' }}>
               {localIdentity.deviceName}
               <span
@@ -795,19 +865,21 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
         {members.map((m) => (
           <div
             key={m.deviceId}
-            className="peer-row"
+            className="member-row"
             style={{
               display: 'flex',
+              flexDirection: 'row',
               alignItems: 'center',
               justifyContent: 'space-between',
-              gap: '10px',
+              gap: '12px',
               padding: '10px 14px',
               background: 'rgba(255, 255, 255, 0.02)',
               border: '1px solid var(--border-color)',
               borderRadius: '8px',
+              boxSizing: 'border-box',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '12px', minWidth: 0, flex: 1 }}>
               <div
                 style={{
                   width: '32px',
@@ -823,7 +895,7 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
               >
                 <DeviceIcon deviceType={m.deviceId.startsWith(GUEST_PREFIX) ? 'phone' : peers.get(m.deviceId)?.deviceType} />
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
                 <span style={{ fontSize: '13.5px', fontWeight: 600, overflowWrap: 'anywhere' }}>
                   {m.name}
                 </span>
@@ -870,11 +942,11 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
           {!joined && discovered.size > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {Array.from(discovered.entries()).map(([coordinatorId, info]) => (
-                <div key={coordinatorId} className="peer-row" style={{ padding: '10px 12px', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '13.5px', fontWeight: 600, overflowWrap: 'anywhere', minWidth: 0 }}>
+                <div key={coordinatorId} className="member-row" style={{ padding: '10px 14px', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
+                  <span style={{ fontSize: '13.5px', fontWeight: 600, overflowWrap: 'anywhere', minWidth: 0, flex: 1 }}>
                     {info.name} has an active session
                   </span>
-                  <button onClick={() => joinSession(coordinatorId, info.sessionId)} style={{ padding: '5px 14px', fontSize: '11.5px' }}>
+                  <button onClick={() => joinSession(coordinatorId, info.sessionId)} style={{ padding: '5px 14px', fontSize: '11.5px', flexShrink: 0 }}>
                     Join
                   </button>
                 </div>
@@ -891,10 +963,10 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
                 value={joinIpInput}
                 onChange={setJoinIpInput}
                 onScanClick={() => setShowScannerModal(true)}
-                onEnter={() => joinAsGuest()}
+                onEnter={() => joinByAddress(joinIpInput)}
                 placeholder="Host's IP address"
               />
-              <PrimaryButton onClick={() => joinAsGuest()} disabled={!joinIpInput}>
+              <PrimaryButton onClick={() => joinByAddress(joinIpInput)} disabled={!joinIpInput}>
                 Connect
               </PrimaryButton>
             </div>
