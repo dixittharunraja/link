@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "resources": {
+      "../vendor/link-fs-driver": "vendor/link-fs-driver",
+      "../vendor/winfsp": "vendor/winfsp",
+      "../vendor/vigembus": "vendor/vigembus"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper" }
+    }
+  }
+}

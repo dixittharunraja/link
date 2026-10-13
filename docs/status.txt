@@ -1,0 +1,111 @@
+# Topology Status Tracker
+
+This file documents the end-to-end verification status and topology capabilities of every feature in the Link project.
+
+## Trust Model — Trusted Pool (verified on hardware)
+
+Your devices form a **Trusted Pool** of your own devices, all mutually trusted. Trust flows through
+a single shared **owner key** (a per-person Ed25519 root of trust), not peer-to-peer. Pairing any
+one pool member (one PIN — the human gate) enrolls a newcomer: that member hands over the owner key
+and issues an owner-signed **membership certificate** binding the newcomer's TLS identity to the
+pool. Every other member then auto-trusts it by verifying that cert against the owner key it already
+holds — **no second PIN**. Removing a device owner-signs a revocation that gossips across the pool.
+Friends' devices never join the pool; casual sharing (Tools: File Transfer / Audio Relay) is
+isolated and never writes the trust store. Core: `core/pool.ts` + `LinkPool.java` (byte-identical
+signed-message format), wired into the handshake by `device-manager.ts` / `LinkDeviceManager.java`.
+Verified end-to-end on real hardware (desktop <-> Android): pair, enroll-via-any-member auto-mesh,
+and removal all working. Deferred hardening: owner-key encryption-at-rest, full "reset pool" re-key.
+
+## Topology Capabilities & Compatibility Matrix
+
+| Feature                       | P-P | M-P | M-M | P-M | P-T | M-T | T-P | T-M | T-T | Rating |
+| :---------------------------- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :----: |
+| Connectivity Report           |  -  |  x  |  x  |  -  |  -  |  o  |  -  |  -  |  -  |  8/10  |
+| Battery Status                |  x  |  x  |  x  |  x  |  o  |  o  |  -  |  -  |  -  |  9/10  |
+| Clipboard Sync                |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| Find My Device                |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  9/10  |
+| Lock Device                   |  x  |  x  |  o  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| Run Command                   |  x  |  x  |  -  |  -  |  -  |  -  |  o  |  -  |  -  |  8/10  |
+| Presenter Pointer             |  -  |  x  |  -  |  -  |  -  |  o  |  -  |  -  |  -  |  9/10  |
+| Digitizer Tablet              |  -  |  x  |  -  |  -  |  -  |  o  |  -  |  -  |  -  |  8/10  |
+| MPRIS Media Control           |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| System Volume Control         |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| Telephony Alerts              |  -  |  x  |  x  |  -  |  -  |  o  |  -  |  -  |  -  |  8/10  |
+| Notification Mirroring        |  -  |  x  |  -  |  -  |  -  |  o  |  o  |  o  |  o  |  8/10  |
+| WSS + WebDAV File System      |  o  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  9/10  |
+| Device Rename                 |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| Screensaver Inhibit           |  -  |  x  |  -  |  -  |  -  |  o  |  -  |  -  |  -  |  8/10  |
+| Flashlight Toggle             |  -  |  -  |  x  |  x  |  -  |  -  |  -  |  o  |  -  |  9/10  |
+| Do Not Disturb (DND)          |  -  |  -  |  x  |  x  |  o  |  o  |  -  |  o  |  o  |  8/10  |
+| Connected Speed Test          |  x  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  | 10/10  |
+| Audio Relay                   |  o  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  8/10  |
+| Remote Mic                    |  -  |  x  |  -  |  -  |  -  |  o  |  -  |  -  |  -  |  7/10  |
+| Walkie Talkie                 |  o  |  x  |  x  |  x  |  -  |  -  |  -  |  -  |  -  |  8/10  |
+| Blocklist / Banlist           |  o  |  x  |  x  |  x  |  o  |  o  |  o  |  o  |  o  |  9/10  |
+| Portal (File Transfer)        |  o  |  x  |  x  |  x  |  o  |  o  |  -  |  -  |  -  |  9/10  |
+| Remote Input                  |  o  |  x  |  x  |  x  |  o  |  o  |  -  |  -  |  -  |  9/10  |
+| Joystick / Gamepad            |  -  |  x  |  -  |  -  |  -  |  o  |  -  |  -  |  -  |  8/10  |
+| Pause Music on Call           |  -  |  x  |  x  |  -  |  -  |  x  |  -  |  -  |  -  |  9/10  |
+
+### Legend
+* `M` Mobile | `P` PC | `T` TV
+* `x` Verified & operational
+* `o` Supported / Pending test
+* `-` Not Applicable (structural asymmetry)
+
+---
+
+## Allowed Local Types & Allowed Target Types Matrix
+
+This matrix lists the structural directionality and device category scopes for every feature in the Link mesh:
+
++----------------------------+-----------------------+-----------------------------+-----------------------------------------------+
+| Feature                    | Allowed Local (Host)  | Allowed Target (Client)     | Description / Notes                           |
++----------------------------+-----------------------+-----------------------------+-----------------------------------------------+
+| LAN Discovery              | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Broadcasts to identify nearby peers.          |
+| Connectivity Report        | Mobile                | Mobile, Desktop, TV         | Cellular signal and carrier updates.          |
+| Battery Status             | Mobile, Desktop       | Mobile, Desktop, TV         | Real-time level and charging state updates.   |
+| Clipboard Sync             | Mobile, Desktop       | Mobile, Desktop, TV         | Bidirectional text & file sync.               |
+| Find My Device (Ring)      | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Trigger a sound alert on a lost device.       |
+| Lock Device                | Mobile, Desktop       | Mobile, Desktop, TV         | Initiates a remote system lock.               |
+| Run Command                | Mobile, Desktop, TV   | Desktop                     | Executes whitelist scripts on the target host.|
+| Remote Input               | Mobile, Desktop       | Mobile, Desktop, TV         | Mobile->PC (touchpad/key), PC/Mobile->TV (D-pad), PC->Mobile (key) |
+| Presenter Pointer          | Mobile                | Mobile, Desktop, TV         | Touch-based laser pointer overlay.            |
+| Digitizer Tablet           | Mobile                | Desktop, TV                 | Absolute drawing tablet input.                |
+| MPRIS Media Control        | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Displays track metadata and controls playback.|
+| System Volume Control      | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Adjusts stream volume levels remotely.        |
+| Telephony Alerts           | Mobile                | Mobile, Desktop, TV         | Mirror incoming/missed calls.                 |
+| Pause Music on Call        | Mobile                | Mobile, Desktop, TV         | Automatically pauses media during calls.      |
+| Notification Mirroring     | Mobile                | Desktop, TV                 | Replicate alerts on the PC screen.            |
+| WSS + WebDAV FS            | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Pipelined file system mounting.               |
+| Device Rename              | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Mesh-wide name propagation.                   |
+| Screensaver Inhibit        | Desktop               | Desktop                     | Prevent sleep during active media / slides.   |
+| Flashlight Toggle          | Mobile, Desktop, TV   | Mobile                      | Turn phone camera flash on or off.            |
+| Do Not Disturb (DND)       | Mobile, Desktop, TV   | Mobile, TV                  | Sets priority interrupts remotely.            |
+| Connected Speed Test       | Mobile, Desktop       | Mobile, Desktop, TV         | Dynamic bandwidth & latency benchmarks.       |
+| Audio Relay                | Mobile, Desktop, TV   | Mobile, Desktop, TV         | Stream host system audio to other devices.    |
+| Remote Mic                 | Mobile                | Desktop, TV                 | Use phone as wireless microphone.             |
+| Walkie Talkie              | Mobile, Desktop       | Mobile, Desktop             | Multi-master clustered WebRTC voice calls.    |
+| Blocklist / Banlist        | Mobile, Desktop       | Mobile, Desktop, TV         | Deny untrusted guests or spam requests.       |
+| File Transfer              | Mobile, Desktop       | Mobile, Desktop, TV         | One-time PIN-gated transfer to guest.         |
+| Joystick / Gamepad         | Mobile                | Desktop, TV                 | Phone as virtual gamepad controller. Desktop uses ViGEmBus; TV input injection is V2 backlog. |
++----------------------------+-----------------------+-----------------------------+-----------------------------------------------+
+
+================================================================================
+PROJECT RATINGS
+================================================================================
+* Security:      9.8 / 10
+* Leanness:      9.0 / 10
+* Simplicity:    9.2 / 10
+* Features:      9.6 / 10
+* Usability:     9.3 / 10
+--------------------------------------------------------------------------------
+Overall Score:   9.4 / 10
+================================================================================
+
+## Recent Changes (this session)
+* Joystick tab: TV now correctly renders as Host/Target (shows QR + controller list). Phone-only controller role enforced via `isController = isMobile && deviceType !== 'tv'`.
+* AudioSink: Compact stacked layout, QR moved to top, mute/end-session anchored to bottom.
+* Settings page layout shift fix: `.switch input` made `position: absolute` to prevent Chromium scrollIntoView on 0×0 hidden checkboxes; `#root` and `html` locked with `overflow: hidden`; `.top-bar` given `position: relative; flex-shrink: 0` for stable stacking context.
+* Page scrolling: Removed legacy `height: calc(100vh - 80px)` and duplicate `overflow-y: auto` from `.tab-content`; unified scrolling through `.tab-scroll` flex child.
+

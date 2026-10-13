@@ -1,0 +1,87 @@
+[package]
+name = "app"
+version = "0.1.0"
+description = "Link"
+authors = ["Rodix"]
+license = ""
+repository = ""
+edition = "2024"
+rust-version = "1.90"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.1", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.12.1", features = ["devtools"] }
+tauri-plugin-log = "2"
+
+# The Rust protocol core (core/) is desktop-only; Android runs the Java implementation.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+tauri = { version = "2.12.1", features = ["tray-icon"] }
+tokio = { version = "1", features = ["full"] }
+sha2 = "0.10"
+hex = "0.4"
+uuid = { version = "1", features = ["v4", "fast-rng"] }
+rcgen = "0.13"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6.0"
+socket2 = "0.5"
+local-ip-address = "0.6"
+if-addrs = "0.15"
+base64 = "0.22"
+whoami = "1.5"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls-pki-types = "1.10"
+x509-parser = "0.17"
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+urlencoding = "2"
+arboard = "3"
+ring = "0.17"
+opus-decoder = "0.1"
+audiopus = "0.3.0-rc.0"
+xcap = "0.7"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+
+# Lock state, battery and audio endpoints for the plugins the desktop hosts for paired devices.
+[target.'cfg(windows)'.dependencies]
+vigem-client = { version = "0.1", features = ["unstable_xtarget_notification"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation", "Win32_System_Power", "Win32_System_Shutdown", "Win32_System_StationsAndDesktops",
+    "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_Media",
+] }
+windows = { version = "0.61", features = [
+    "Win32_Devices_FunctionDiscovery", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage", "Win32_UI_Shell_PropertiesSystem", "Win32_System_Variant", "Win32_Foundation",
+    "Media_Control", "Foundation", "Foundation_Collections",
+] }
+
+# Compilation speed optimizations
+[profile.dev]
+opt-level = 0
+debug = 1
+incremental = true
+codegen-units = 256
+
+# Release builds favour size (the installer is downloaded by users); "s" rather than "z" keeps
+# screen capture and JPEG encoding quick enough.
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 16
+strip = true
+

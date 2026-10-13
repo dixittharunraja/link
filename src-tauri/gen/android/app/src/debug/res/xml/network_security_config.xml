@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only: `tauri android dev` loads the renderer from the Vite dev server over plain http
+     on the LAN, which the release config (loopback-only cleartext) would block. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

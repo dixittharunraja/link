@@ -1,0 +1,58 @@
+# Link for Android TV (TV Extension Specification)
+
+## 1. Vision & Lean Design Philosophy
+Android TV and Smart TV platforms operate in a 10-foot lean-back environment with limited internal storage, remote-control-only inputs (D-pad), and no touchscreen or digitizer capabilities.
+
+To deliver an ultra-fast, premium TV experience, **Link TV Edition** strips away heavy storage and mobile-specific peripherals, leaving a focused, high-utility set of TV capabilities.
+
+---
+
+## 2. Stripped-Down Features (Excluded on TV)
+The following features are disabled/removed from the TV app build to preserve memory, storage, and CPU:
+
+- ❌ **Touchpad / Mouse Control (Outgoing)**: TV does not control other devices' mice.
+- ❌ **Presenter Pointer**: No laser pointer or slide advances originating from TV.
+- ❌ **Digitizer (Drawing Tablet)**: No stylus or drawing canvas.
+- ⚠️ **Joystick / Motion Controller (Outgoing from TV)**: TV does not act as a handheld gamepad. However, TV **IS the Host/Target** for Joystick — it shows a QR code and accepts phone controllers. Native gamepad input injection into Android TV apps is V2 backlog (requires OS-level virtual input APIs).
+- ❌ **Walkie-Talkie Intercom**: Excluded on TV (TVs lack open room microphones and voice chat hardware).
+
+---
+
+## 3. Core TV Feature Matrix (What TV Loads With)
+
+| Feature | Direction | Description |
+| :--- | :--- | :--- |
+| **Audio Relay** | Bidirectional (PC/Phone ↔ TV) | Stream PC/Phone audio to TV speakers, OR stream TV system audio via AudioPlaybackCapture to mobile headphones/PC. |
+| **Portal Mode File Receiver** | Incoming (PC/Phone → TV) | Accept single media files (photos, video clips, APKs) for instant TV preview. |
+| **TV Notification Overlay** | Incoming (Phone → TV) | Display phone calls, SMS, or chat alerts in the top-right corner while watching TV. |
+| **Media Playback Sync** | Bidirectional | Display now-playing info; allow Phone/PC to pause, play, or adjust TV volume. |
+| **Run Command Trigger** | Outgoing (TV → PC) | Trigger PC's predefined script whitelists via remote-control D-pad buttons. |
+| **Remote Input Receiver** | Incoming (Phone/PC → TV) | Receive D-pad clicks, mouse cursor movement, and laptop keyboard typing into TV. |
+
+---
+
+## 4. UI & UX Adaptations (10-Foot Experience)
+
+1. **D-Pad Navigation**:
+   - All focusable elements (cards, buttons, inputs) feature high-visibility glowing focus states (`:focus-visible`).
+   - Arrow keys (`ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`) move focus smoothly across sidebar tabs and device cards.
+   - `Select` / `Enter` activates the focused card or button.
+   - `Back` / `Escape` exits sub-menus or dismisses modals.
+
+2. **TV Grid Layout**:
+   - High-contrast dark theme with large typography (minimum 18px font size).
+   - Simplified 2-column or 3-column card grid designed for quick remote scanning.
+
+---
+
+## 5. Laptop-to-Mobile & Laptop-to-TV Keyboard Input
+
+### Can a Laptop Keyboard type into Mobile or TV?
+**Yes, absolutely.**
+
+- **How it works**:
+  - **On Laptop**: A global key listener or focused text area captures keyboard events (`keydown`).
+  - **On Network**: Link sends raw characters or keycodes over the active TLS connection (`link.remote.input`).
+  - **On Mobile / TV**:
+    - **Method A (App Text Inputs)**: Automatically populates active text fields, search bars, and modals within Link.
+    - **Method B (System-Wide Accessibility / IME)**: Using an Android `AccessibilityService` or custom Link IME Keyboard, laptop typing feeds directly into system text boxes across any app (YouTube, Netflix, Chrome, WhatsApp).

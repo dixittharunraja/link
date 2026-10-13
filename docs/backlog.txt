@@ -1,0 +1,4 @@
+LINK PROJECT BACKLOG
+
+- [ ] TV casting / media streaming integration: Embed support for casting media files or streaming content to local DLNA/Chromecast targets.
+- [ ] Joystick TV target support: Implement native input emulation on Android TV. Currently, TV correctly renders in target (host) mode to display the connection QR code and controller list, but the Android Java backend (LinkPlugin.java) lacks the UDP gamepad event parser and OS-level virtual input injection layer (e.g. via accessibility service or key injection) needed to map phone inputs to TV gameplay.

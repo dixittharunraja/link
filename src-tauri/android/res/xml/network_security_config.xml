@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Permits cleartext (plain http://) traffic to loopback only. Needed because targetSdkVersion 35
+  blocks ALL cleartext traffic by default — including WebView fetch()/XHR, which follows the same
+  Network Security Config as the rest of the app process, not just native networking.
+
+  This is required for the in-app media stream server (LinkFsStreamServer.java), which serves
+  video/audio/image bytes to this device's own WebView at http://127.0.0.1:<port>/... — both for
+  handing a URL to an external player (Play) and for fetching bytes directly in-process (file
+  thumbnails in FileExplorerTab.tsx). The server never binds anywhere but loopback and requires a
+  random per-session token on every request (see LinkFsStreamServer's own header comment), so this
+  scoped exception carries no more exposure than the server already has.
+
+  Deliberately NOT a blanket cleartextTrafficPermitted="true" on the base config — that would
+  accept plain http:// from any remote host the WebView is ever pointed at, which this app never
+  needs and would be a real regression. Only 127.0.0.1 is listed.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>
