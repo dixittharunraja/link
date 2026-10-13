@@ -511,16 +511,34 @@ impl DeviceManager {
         if truthy(body.get("isCancel")) {
             return;
         }
-        let app = body.get("appName").and_then(|v| v.as_str()).unwrap_or("");
-        let title = body.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(if app.is_empty() { "Notification" } else { app });
-        let text = body.get("text").and_then(|v| v.as_str()).or_else(|| body.get("ticker").and_then(|v| v.as_str())).unwrap_or("");
+        let app = body.get("appName").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let raw_title = body.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let text = body.get("text").and_then(|v| v.as_str()).or_else(|| body.get("ticker").and_then(|v| v.as_str())).unwrap_or("").trim();
         let peer = match body.get("sourceDeviceName").and_then(|v| v.as_str()) {
-            Some(name) => name.to_string(),
+            Some(name) => name.trim().to_string(),
             None => self.peer_name(device_id).await,
         };
-        let source = if app.is_empty() { peer } else { format!("{} • {}", peer, app) };
+
+        let toast_title = if !peer.is_empty() && !app.is_empty() {
+            format!("{} • {}", peer, app)
+        } else if !peer.is_empty() {
+            peer
+        } else if !app.is_empty() {
+            app.to_string()
+        } else {
+            "Notification".to_string()
+        };
+
+        let toast_body = if !raw_title.is_empty() && !text.is_empty() {
+            format!("{}\n{}", raw_title, text)
+        } else if !raw_title.is_empty() {
+            raw_title.to_string()
+        } else {
+            text.to_string()
+        };
+
         if !truthy(body.get("silent")) {
-            self.toast(title, &format!("{}\n{}", source, text)).await;
+            self.toast(&toast_title, &toast_body).await;
         }
     }
 

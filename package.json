@@ -16,6 +16,7 @@
     "build:linux": "tauri build --target x86_64-unknown-linux-gnu",
     "build:android": "tauri android build --apk --target aarch64",
     "release": "node scripts/upload-release.mjs",
+    "install:windows": "node scripts/install-windows.mjs",
     "install:android": "powershell -Command \"& ${env:LOCALAPPDATA}\\Android\\Sdk\\platform-tools\\adb.exe -d install -r src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk\"",
     "prepare": "husky",
     "lint": "eslint src",

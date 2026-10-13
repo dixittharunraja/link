@@ -723,6 +723,12 @@ public class LinkAudioSinkServer extends WebSocketServer {
                 return;
             }
             String deviceName = msg.optString("deviceName", "Guest Listener");
+            // A paired device has already been vouched for; only strangers get the PIN prompt.
+            LinkTrustStore.TrustedDevice trusted = new LinkTrustStore(context).findByPublicKey(peerPublicKeyDer);
+            if (trusted != null) {
+                admit(connId, conn, deviceName, trusted.deviceId, remoteAddress);
+                return;
+            }
             String pin = LinkVerification.computeCode(myPublicKeyDer, peerPublicKeyDer, "");
             ScheduledFuture<?> timeoutFuture = scheduler.schedule(() -> {
                 pendingGuests.remove(connId);

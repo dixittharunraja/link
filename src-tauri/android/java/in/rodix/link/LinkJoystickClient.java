@@ -37,6 +37,15 @@ public class LinkJoystickClient {
         this.listener = listener;
     }
 
+    // The one address that actually answered. A scanned QR lists every address of the host
+    // ("a,b"), which is only meaningful for connecting; the controller's UDP stream needs the real
+    // one, or InetAddress cannot resolve it and every input packet is silently dropped.
+    private volatile String resolvedHost;
+
+    public String getResolvedHost() {
+        return resolvedHost;
+    }
+
     private String sanitizeHost(String raw) {
         if (raw == null) return "";
         String clean = raw.trim();
@@ -100,6 +109,7 @@ public class LinkJoystickClient {
                                     pendingClients.clear();
                                 }
 
+                                resolvedHost = singleHost;
                                 Log.i(TAG, "onOpen (" + singleHost + ") — joystick guest connected");
                                 computeAndReportPin(myCert);
                                 try {
@@ -161,6 +171,7 @@ public class LinkJoystickClient {
             client = new WebSocketClient(uri) {
                 @Override
                 public void onOpen(ServerHandshake handshakedata) {
+                    resolvedHost = host;
                     computeAndReportPin(myCert);
                     try {
                         JSONObject msg = new JSONObject();

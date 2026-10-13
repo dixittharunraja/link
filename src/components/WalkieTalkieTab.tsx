@@ -66,6 +66,10 @@ interface PendingGuest {
 }
 
 const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity, isMobile, onSessionActiveChange }) => {
+  // Signal handlers are registered once and outlive renders, so they read the identity from here;
+  // a copy captured at mount can still be empty and made the host's own entry look like "me".
+  const localIdentityRef = useRef(localIdentity);
+  localIdentityRef.current = localIdentity;
   const [inSession, setInSession] = useState(false);
   const [isCoordinator, setIsCoordinator] = useState(false);
   const [members, setMembers] = useState<Member[]>([]);
@@ -298,14 +302,14 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
     const ctx = ensureAudioContext();
     coordinatorMicSourceRef.current = ctx.createMediaStreamSource(localStreamRef.current!);
 
-    const sessionId = `${localIdentity.deviceId}-${Date.now()}`;
+    const sessionId = `${localIdentityRef.current.deviceId}-${Date.now()}`;
     sessionIdRef.current = sessionId;
     isCoordinatorRef.current = true;
     membersRef.current = [];
     setIsCoordinator(true);
     setMembers([]);
     setInSession(true);
-    broadcast('session-info', { sessionId, name: localIdentity.deviceName });
+    broadcast('session-info', { sessionId, name: localIdentityRef.current.deviceName });
     // Guest listener runs for the whole session, not started lazily — a friend should be able to
     // join by IP at any point during the call, same as Audio Relay/Remote Mic/Portal. Wrapped in
     // Promise.resolve() rather than chaining .catch() straight onto the optional call — `?.()`
@@ -322,7 +326,7 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
     coordinatorIdRef.current = coordinatorId;
     setIsCoordinator(false);
     setInSession(true);
-    send(coordinatorId, 'join-request', { sessionId });
+    send(coordinatorId, 'join-request', { sessionId, name: localIdentityRef.current.deviceName });
   };
 
   /** Manual-IP join for an unpaired guest — mirrors Audio Relay/Remote Mic/Portal's guest flow
@@ -513,7 +517,7 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
     const existing = membersRef.current;
     send(deviceId, 'join-accepted', {
       sessionId: sessionIdRef.current,
-      members: [{ deviceId: localIdentity.deviceId, name: localIdentity.deviceName }, ...existing],
+      members: [{ deviceId: localIdentityRef.current.deviceId, name: localIdentityRef.current.deviceName }, ...existing],
       sdp: pc.localDescription ? pc.localDescription.toJSON() : { type: offer.type, sdp: offer.sdp },
     });
     for (const m of existing) send(m.deviceId, 'member-joined', { sessionId: sessionIdRef.current, deviceId, name });
@@ -596,7 +600,7 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
     const signalHandlers: Record<string, () => void> = {
       'session-query': () => {
         if (isCoordinatorRef.current && sessionIdRef.current) {
-          send(deviceId, 'session-info', { sessionId: sessionIdRef.current, name: localIdentity.deviceName });
+          send(deviceId, 'session-info', { sessionId: sessionIdRef.current, name: localIdentityRef.current.deviceName });
         }
       },
       'session-info': () => {
@@ -632,7 +636,9 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
           }
         }
 
-        acceptJoiner(deviceId, peerName(deviceId)).catch((e) => setHostError(e?.message || 'Failed to accept ' + peerName(deviceId)));
+        // The sender's own name first: the peer list can lack an entry for a device that just connected.
+        const joinerName = body.name || peerName(deviceId);
+        acceptJoiner(deviceId, joinerName).catch((e) => setHostError(e?.message || 'Failed to accept ' + joinerName));
       },
       'promote-submaster': () => {
         isCoordinatorRef.current = true;
@@ -646,7 +652,7 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
         if (sessionIdRef.current && body.sessionId !== sessionIdRef.current) return;
         sessionIdRef.current = body.sessionId;
         setGuestJoinPhase('idle');
-        const incoming: Member[] = (body.members || []).filter((m: Member) => m.deviceId !== localIdentity.deviceId);
+        const incoming: Member[] = (body.members || []).filter((m: Member) => m.deviceId !== localIdentityRef.current.deviceId);
         membersRef.current = incoming;
         setMembers(incoming);
         setInSession(true);
@@ -723,6 +729,10 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
     if (!linkApi?.onWalkieTalkieGuestPinPending) return;
     linkApi.onWalkieTalkieGuestPinPending((connId: string, pin: string, remoteAddress: string, deviceName?: string) => {
       setPendingGuests((prev) => [...prev.filter((g) => g.connId !== connId), { connId, pin, remoteAddress, deviceName }]);
+    });
+    // A trusted device skips the PIN prompt, so there is no Accept to wait for.
+    linkApi.onWalkieTalkieGuestJoined?.((connId: string, remoteAddress: string, deviceName: string) => {
+      acceptGuestJoin(connId, remoteAddress, deviceName);
     });
     linkApi.onWalkieTalkieGuestSignal?.((connId: string, type: string, body: any) => {
       handleSignal(GUEST_PREFIX + connId, type, body);
@@ -801,6 +811,9 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
 
   const hosting = inSession && isCoordinator;
   const joined = inSession && !isCoordinator;
+  // Everyone in the room: us, plus the others. A joiner's list should always hold the host, so an
+  // empty one still counts the host rather than showing a room of one.
+  const participantCount = 1 + Math.max(members.length, joined ? 1 : 0);
 
   const renderMembersList = () => {
     return (
@@ -937,7 +950,7 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', width: '100%', padding: '4px' }}>
       {!hosting && (
         <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div style={{ fontWeight: 600, color: 'var(--text-color)', fontSize: '14px' }}>Join a Session</div>
+          {!joined && <div style={{ fontWeight: 600, color: 'var(--text-color)', fontSize: '14px' }}>Join a Session</div>}
 
           {!joined && discovered.size > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -985,8 +998,8 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
           {joined && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
-                <div style={{ fontWeight: 600, fontSize: '15px', overflowWrap: 'anywhere' }}>
-                  In Session — {members.length + 1} / {MAX_PARTICIPANTS} participants
+                <div style={{ fontWeight: 600, color: 'var(--text-color)', fontSize: '13px', overflowWrap: 'anywhere' }}>
+                  Participants ({participantCount} / {MAX_PARTICIPANTS})
                 </div>
                 <HostActionButtons
                   muted={muted}
@@ -1042,7 +1055,7 @@ const WalkieTalkieTab: React.FC<WalkieTalkieTabProps> = ({ peers, localIdentity,
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', width: '100%' }}>
                 <div style={{ fontWeight: 600, color: 'var(--text-color)', fontSize: '13px' }}>
-                  Participants ({members.length + 1} / {MAX_PARTICIPANTS})
+                  Participants ({participantCount} / {MAX_PARTICIPANTS})
                 </div>
 
                 {renderMembersList()}

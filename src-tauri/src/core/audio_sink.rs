@@ -5,6 +5,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
+use audiopus::coder::Encoder as OpusEncoder;
+use audiopus::{Application, Bitrate, Channels, SampleRate};
 use opus_decoder::OpusDecoder;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -30,6 +32,14 @@ pub const AUDIO_SINK_PORT: u16 = LINK_PORT + 3;
 pub const AUDIO_SINK_UDP_PORT: u16 = LINK_PORT + 4;
 const REMOTE_MIC_PORT: u16 = AUDIO_SINK_PORT + 2;
 
+// Opus carries music at near-transparent quality in about a tenth of the bandwidth of raw audio,
+// which is what keeps a weak Wi-Fi link from dropping packets. 10 ms frames are the shortest the
+// phone's decoder is known to keep up with.
+const OPUS_FRAME_MS: usize = 10;
+const OPUS_BITRATE: i32 = 128_000;
+const OPUS_RATES: [u32; 5] = [8_000, 12_000, 16_000, 24_000, 48_000];
+const MAX_OPUS_PACKET_BYTES: usize = 1275;
+
 const CODEC_PCM: u8 = 0x00;
 const CODEC_OPUS: u8 = 0x01;
 const SEQ_BYTES: usize = 4;
@@ -39,8 +49,9 @@ const TAG_BYTES: usize = 16;
 // Under the Wi-Fi MTU, so a lost packet costs a few milliseconds of audio rather than a whole
 // IP-fragmented capture chunk. Divides evenly by every sample frame size the protocol produces.
 const MAX_UDP_PCM_BYTES: usize = 1280;
-// Pacing only catches unbounded drift; a low value reorders frames on every reset.
-const MAX_SEND_AHEAD: Duration = Duration::from_millis(100);
+// Pacing only catches drift. Frames are sent one after another here, so resetting the schedule
+// cannot reorder them (it could with the old per-frame timers), which is why this can be small.
+const MAX_SEND_AHEAD: Duration = Duration::from_millis(40);
 // A connection can die without a close frame (a phone's WebView reloaded mid-session).
 const HEARTBEAT: Duration = Duration::from_secs(15);
 const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -87,7 +98,36 @@ struct Listener {
     udp: Option<SocketAddr>,
 }
 
+/// Windows wakes sleeping threads only every ~15.6 ms by default, which turns the 6.7 ms pacing of
+/// audio packets into bursts and gaps. Asking for 1 ms keeps the stream even; undone on drop.
+struct TimerResolution;
+
+impl TimerResolution {
+    fn request() -> Self {
+        #[cfg(windows)]
+        // SAFETY: plain Win32 call, balanced by timeEndPeriod in Drop.
+        unsafe {
+            windows_sys::Win32::Media::timeBeginPeriod(1);
+        }
+        Self
+    }
+}
+
+impl Drop for TimerResolution {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        // SAFETY: matches the request above.
+        unsafe {
+            windows_sys::Win32::Media::timeEndPeriod(1);
+        }
+    }
+}
+
+// Headroom for a burst of packets; the OS default is sized for request/response traffic.
+const UDP_SEND_BUFFER_BYTES: usize = 1 << 18;
+
 struct Hosting {
+    _timer: TimerResolution,
     server: tokio::task::AbortHandle,
     hello: tokio::task::AbortHandle,
     relay: tokio::task::AbortHandle,
@@ -142,10 +182,32 @@ fn session_key(bytes: &[u8]) -> Option<LessSafeKey> {
 
 /// Opus-less capture is sent as 16-bit PCM: the engine mixes in 32-bit float, which would double
 /// the bandwidth for no audible gain.
-fn wire_format(format: Format) -> (Value, bool) {
+/// An Opus encoder for this capture format, or None when the format can't be Opus-coded (or the
+/// encoder can't start), in which case raw audio is sent instead.
+fn new_encoder(format: Format) -> Option<OpusEncoder> {
+    let channels = match format.channels {
+        1 => Channels::Mono,
+        2 => Channels::Stereo,
+        _ => return None,
+    };
+    let int16_source = (!format.is_float && format.bits_per_sample == 16) || (format.is_float && format.bits_per_sample == 32);
+    if !int16_source || !OPUS_RATES.contains(&format.sample_rate) {
+        return None;
+    }
+    let mut encoder = OpusEncoder::new(SampleRate::try_from(format.sample_rate as i32).ok()?, channels, Application::Audio)
+        .map_err(|e| log::warn!("Opus encoder could not start, sending raw audio: {}", e))
+        .ok()?;
+    encoder.set_bitrate(Bitrate::BitsPerSecond(OPUS_BITRATE)).ok()?;
+    Some(encoder)
+}
+
+/// The `format` message for listeners, and whether capture floats must be converted to 16-bit.
+fn wire_format(format: Format, opus: bool) -> (Value, bool) {
     let to_int16 = format.is_float && format.bits_per_sample == 32;
-    let (bits, float) = if to_int16 { (16, false) } else { (format.bits_per_sample, format.is_float) };
-    let message = json!({ "type": "format", "sampleRate": format.sample_rate, "channels": format.channels, "bitsPerSample": bits, "isFloat": float, "codec": "pcm" });
+    // Opus always decodes to 16-bit integers, whatever it was fed.
+    let (bits, float) = if to_int16 || opus { (16, false) } else { (format.bits_per_sample, format.is_float) };
+    let codec = if opus { "opus" } else { "pcm" };
+    let message = json!({ "type": "format", "sampleRate": format.sample_rate, "channels": format.channels, "bitsPerSample": bits, "isFloat": float, "codec": codec });
     (message, to_int16)
 }
 
@@ -162,20 +224,73 @@ fn float_to_int16(raw: &[u8]) -> Vec<u8> {
 
 async fn begin_capture(manager: &Arc<DeviceManager>, device_id: Option<String>, udp: Arc<UdpSocket>) -> Result<(Capture, tokio::task::AbortHandle, Value), String> {
     let (capture, format, chunks) = loopback::start(device_id).await?;
-    let (format_message, to_int16) = wire_format(format);
+    let encoder = new_encoder(format);
+    let (format_message, to_int16) = wire_format(format, encoder.is_some());
     let frame_bytes = format.channels as usize * if to_int16 { 2 } else { format.bits_per_sample as usize / 8 };
-    let relay = tokio::spawn(relay_audio(manager.clone(), chunks, udp, to_int16, frame_bytes.max(1), format.sample_rate.max(1)));
+    let relay = tokio::spawn(relay_audio(manager.clone(), chunks, udp, to_int16, frame_bytes.max(1), format, encoder));
     Ok((capture, relay.abort_handle(), format_message))
 }
 
 /// Forwards capture chunks to every listener, paced to real time so a burst from the capture
 /// thread doesn't turn into a burst on the wire.
-async fn relay_audio(manager: Arc<DeviceManager>, mut chunks: Chunks, udp: Arc<UdpSocket>, to_int16: bool, frame_bytes: usize, sample_rate: u32) {
+/// Counters logged every few seconds: how many frames went out, the longest silence between
+/// capture chunks, and how many frames left later than scheduled. A long gap or many late frames
+/// means this PC stalled; none of them with choppy audio points at the network.
+struct RelayReport {
+    since: Instant,
+    last_chunk: Option<Instant>,
+    chunks: u32,
+    frames: u32,
+    late_frames: u32,
+    max_gap: Duration,
+    max_lateness: Duration,
+}
+
+impl RelayReport {
+    fn new() -> Self {
+        Self { since: Instant::now(), last_chunk: None, chunks: 0, frames: 0, late_frames: 0, max_gap: Duration::ZERO, max_lateness: Duration::ZERO }
+    }
+
+    fn chunk_arrived(&mut self) {
+        let now = Instant::now();
+        if let Some(previous) = self.last_chunk {
+            self.max_gap = self.max_gap.max(now - previous);
+        }
+        self.last_chunk = Some(now);
+        self.chunks += 1;
+        if self.since.elapsed() >= Duration::from_secs(5) {
+            log::info!(
+                "Audio sink relay: {} chunks, {} frames, longest gap between chunks {} ms, {} frames late (worst {} ms)",
+                self.chunks, self.frames, self.max_gap.as_millis(), self.late_frames, self.max_lateness.as_millis()
+            );
+            *self = Self { last_chunk: self.last_chunk, ..Self::new() };
+        }
+    }
+
+    fn frame_due(&mut self, scheduled: Instant) {
+        self.frames += 1;
+        let lateness = Instant::now().saturating_duration_since(scheduled);
+        if lateness > Duration::from_millis(5) {
+            self.late_frames += 1;
+            self.max_lateness = self.max_lateness.max(lateness);
+        }
+    }
+}
+
+async fn relay_audio(manager: Arc<DeviceManager>, mut chunks: Chunks, udp: Arc<UdpSocket>, to_int16: bool, frame_bytes: usize, format: Format, mut encoder: Option<OpusEncoder>) {
+    let sample_rate = format.sample_rate.max(1);
+    let opus_frame_samples = sample_rate as usize * OPUS_FRAME_MS / 1000 * format.channels.max(1) as usize;
+    let mut pending: Vec<i16> = Vec::new();
+    let mut packet = [0u8; MAX_OPUS_PACKET_BYTES];
     let mut cursor: Option<Instant> = None;
+    // What the PC side did over the last few seconds, to tell a PC-side stall from network loss.
+    let mut report = RelayReport::new();
     while let Some(chunk) = chunks.recv().await {
+        report.chunk_arrived();
         let captured_at = unix_millis();
         let audible = manager.audio.with_host(|h| !h.muted && !h.listeners.is_empty()).unwrap_or(false);
         if !audible {
+            pending.clear();
             continue;
         }
         let pcm = if to_int16 { float_to_int16(&chunk) } else { chunk };
@@ -184,12 +299,26 @@ async fn relay_audio(manager: Arc<DeviceManager>, mut chunks: Chunks, udp: Arc<U
             Some(c) if c >= now && c - now <= MAX_SEND_AHEAD => c,
             _ => now,
         };
-        for slice in pcm.chunks(MAX_UDP_PCM_BYTES) {
-            if at > Instant::now() {
-                tokio::time::sleep_until(at.into()).await;
+        if let Some(encoder) = encoder.as_mut() {
+            pending.extend(pcm.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
+            while pending.len() >= opus_frame_samples {
+                let frame: Vec<i16> = pending.drain(..opus_frame_samples).collect();
+                let Ok(length) = encoder.encode(&frame, &mut packet) else { continue };
+                if at > Instant::now() {
+                    tokio::time::sleep_until(at.into()).await;
+                }
+                report.frame_due(at);
+                manager.send_audio_frame(&udp, CODEC_OPUS, &packet[..length], captured_at).await;
+                at += Duration::from_millis(OPUS_FRAME_MS as u64);
             }
-            manager.send_audio_frame(&udp, CODEC_PCM, slice, captured_at);
-            at += Duration::from_secs_f64(slice.len() as f64 / frame_bytes as f64 / sample_rate as f64);
+        } else {
+            for slice in pcm.chunks(MAX_UDP_PCM_BYTES) {
+                if at > Instant::now() {
+                    tokio::time::sleep_until(at.into()).await;
+                }
+                manager.send_audio_frame(&udp, CODEC_PCM, slice, captured_at).await;
+                at += Duration::from_secs_f64(slice.len() as f64 / frame_bytes as f64 / sample_rate as f64);
+            }
         }
         cursor = Some(at);
     }
@@ -313,7 +442,7 @@ async fn listener_connection(manager: Arc<DeviceManager>, mut guest: GuestSocket
 }
 
 impl DeviceManager {
-    fn send_audio_frame(&self, udp: &UdpSocket, codec: u8, payload: &[u8], captured_at_ms: u64) {
+    async fn send_audio_frame(&self, udp: &UdpSocket, codec: u8, payload: &[u8], captured_at_ms: u64) {
         let mut plaintext = Vec::with_capacity(1 + payload.len() + TAG_BYTES);
         plaintext.push(codec);
         plaintext.extend_from_slice(payload);
@@ -344,8 +473,9 @@ impl DeviceManager {
                     .collect()
             })
             .unwrap_or_default();
+        // Awaited rather than try-sent: a full send buffer must delay the next packet, not drop this one.
         for (address, frame) in frames {
-            let _ = udp.try_send_to(&frame, address);
+            let _ = udp.send_to(&frame, address).await;
         }
     }
 
@@ -364,12 +494,17 @@ impl DeviceManager {
         if self.audio.with_host(|_| ()).is_some() {
             return Ok(json!({ "started": true, "port": AUDIO_SINK_PORT }));
         }
-        let udp = Arc::new(UdpSocket::bind(("0.0.0.0", AUDIO_SINK_UDP_PORT)).await.map_err(|e| format!("Audio sink could not use UDP port {}: {}", AUDIO_SINK_UDP_PORT, e))?);
+        let udp_error = |e: std::io::Error| format!("Audio sink could not use UDP port {}: {}", AUDIO_SINK_UDP_PORT, e);
+        let raw = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).map_err(udp_error)?;
+        let _ = raw.set_send_buffer_size(UDP_SEND_BUFFER_BYTES);
+        raw.set_nonblocking(true).map_err(udp_error)?;
+        raw.bind(&SocketAddr::from(([0, 0, 0, 0], AUDIO_SINK_UDP_PORT)).into()).map_err(udp_error)?;
+        let udp = Arc::new(UdpSocket::from_std(raw.into()).map_err(udp_error)?);
         let (capture, relay, format) = begin_capture(self, device_id, udp.clone()).await?;
         let server = self.serve_guests(AUDIO_SINK_PORT, "Audio sink", listener_connection).await?;
         let hello = tokio::spawn(receive_hello(self.clone(), udp.clone())).abort_handle();
         if let Ok(mut host) = self.audio.hosting.lock() {
-            *host = Some(Hosting { server, hello, relay, _capture: capture, udp, format, muted: false, listeners: HashMap::new(), tokens: HashMap::new() });
+            *host = Some(Hosting { _timer: TimerResolution::request(), server, hello, relay, _capture: capture, udp, format, muted: false, listeners: HashMap::new(), tokens: HashMap::new() });
         }
 
         // Every paired device that is connected right now gets its own one-time token. A device
@@ -571,6 +706,11 @@ async fn run_listener(manager: &DeviceManager, service: Service, mut ws: ClientW
     let mut channels = 2usize;
     let mut datagram = vec![0u8; 4096];
     let mut pcm = vec![0i16; 5760 * 2];
+    // Each ~1 KB frame as its own UI event is hundreds of events a second, which makes playback
+    // stutter; frames are gathered and handed over every 20 ms instead.
+    let mut playback: Vec<u8> = Vec::new();
+    let mut flush = tokio::time::interval(Duration::from_millis(20));
+    flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -582,7 +722,13 @@ async fn run_listener(manager: &DeviceManager, service: Service, mut ws: ClientW
                             let (Some(conn_id), Some(encoded)) = (msg["connId"].as_str(), msg["udpKey"].as_str()) else { continue };
                             key = base64::engine::general_purpose::STANDARD.decode(encoded).ok().and_then(|bytes| session_key(&bytes));
                             reorder = Reorder { next: None, held: BTreeMap::new() };
-                            if let Ok(socket) = UdpSocket::bind("0.0.0.0:0").await {
+                            let bound = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).ok().and_then(|raw| {
+                                let _ = raw.set_recv_buffer_size(UDP_SEND_BUFFER_BYTES);
+                                raw.set_nonblocking(true).ok()?;
+                                raw.bind(&SocketAddr::from(([0, 0, 0, 0], 0)).into()).ok()?;
+                                UdpSocket::from_std(raw.into()).ok()
+                            });
+                            if let Some(socket) = bound {
                                 let _ = socket.send_to(conn_id.as_bytes(), (peer.ip(), service.port() + 1)).await;
                                 udp = Some(socket);
                             }
@@ -635,8 +781,14 @@ async fn run_listener(manager: &DeviceManager, service: Service, mut ws: ClientW
                     };
                     // A frame that fails to decode is dropped like a lost packet; a rare, transient event.
                     if let Some(samples) = samples {
-                        manager.emit_event(&service.event("audio-chunk"), base64_pcm(&samples)).await;
+                        playback.extend_from_slice(&samples);
                     }
+                }
+            },
+            _ = flush.tick() => {
+                if !playback.is_empty() {
+                    manager.emit_event(&service.event("audio-chunk"), base64_pcm(&playback)).await;
+                    playback.clear();
                 }
             },
             _ = leave.recv() => {
@@ -644,5 +796,22 @@ async fn run_listener(manager: &DeviceManager, service: Service, mut ws: ClientW
                 return (true, None);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opus_frames_fit_in_a_packet_at_the_chosen_bitrate() {
+        let format = Format { sample_rate: 48_000, channels: 2, bits_per_sample: 32, is_float: true };
+        let mut encoder = new_encoder(format).expect("encoder starts for 48 kHz stereo");
+        let frame_samples = 48_000 / 1000 * OPUS_FRAME_MS * 2;
+        // A tone, so the encoder has something to spend bits on.
+        let frame: Vec<i16> = (0..frame_samples).map(|i| (((i / 2) as f32 * 0.05).sin() * 12_000.0) as i16).collect();
+        let mut packet = [0u8; MAX_OPUS_PACKET_BYTES];
+        let length = encoder.encode(&frame, &mut packet).expect("a frame encodes");
+        assert!(length > 0 && length < 400, "10 ms at 128 kbps is about 160 bytes, got {length}");
     }
 }

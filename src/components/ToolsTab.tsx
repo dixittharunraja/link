@@ -22,7 +22,9 @@ interface ToolsTabProps {
   onOpenWalkieTalkie: () => void;
   onShowPresenter?: (deviceId: string, hostDeviceType?: string) => void;
   onShowTouchpad?: (deviceId: string) => void;
-  onShowRemoteControl?: () => void;
+  onShowRemoteControl?: (hostDeviceType?: string) => void;
+  // A remote control viewer is open on this device (it is controlling another device).
+  remoteControlViewing?: boolean;
 }
 
 const TOOLS: { id: ToolId; title: string; description: string; icon: React.ElementType }[] = [
@@ -98,6 +100,7 @@ const ToolsTab: React.FC<ToolsTabProps> = ({
   onShowPresenter,
   onShowTouchpad,
   onShowRemoteControl,
+  remoteControlViewing,
 }) => {
   const [selected, setSelected] = useState<ToolId | null>(null);
   const [activeTools, setActiveTools] = useState<Record<Exclude<ToolId, 'walkie-talkie'>, boolean>>({
@@ -165,7 +168,7 @@ const ToolsTab: React.FC<ToolsTabProps> = ({
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '18px' }}>
         {TOOLS.map((tool) => {
           const Icon = tool.icon;
-          const isActive = tool.id === 'walkie-talkie' ? walkieTalkieActive : activeTools[tool.id];
+          const isActive = tool.id === 'walkie-talkie' ? walkieTalkieActive : activeTools[tool.id] || (tool.id === 'remote-control' && !!remoteControlViewing);
           return (
             <div
               key={tool.id}
@@ -311,9 +314,9 @@ const ToolsTab: React.FC<ToolsTabProps> = ({
               <RemoteControlGuestTab
                 localIdentity={localIdentity}
                 isMobile={isMobile}
-                onLaunchViewer={() => {
+                onLaunchViewer={(hostDeviceType) => {
                   setSelected(null);
-                  onShowRemoteControl?.();
+                  onShowRemoteControl?.(hostDeviceType);
                 }}
               />
             )}

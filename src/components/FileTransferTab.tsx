@@ -37,6 +37,7 @@ const FileTransferTab: React.FC<FileTransferTabProps> = ({ isMobile, localIdenti
   // Staged files & Peer files
   const [pickedFiles, setPickedFiles] = useState<{ localPath: string; relPath: string }[]>([]);
   const [peerFiles, setPeerFiles] = useState<PeerFile[]>([]);
+  const connectedConnIdRef = useRef<string | null>(null);
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
 
   // Sender state
@@ -140,37 +141,60 @@ const FileTransferTab: React.FC<FileTransferTabProps> = ({ isMobile, localIdenti
   useEffect(() => {
     if (!linkApi) return;
 
+    // Every subscription is undone when the tab goes away; otherwise each reopening of the tool
+    // adds another handler and every event (a finished download, say) is handled several times.
+    const unsubscribers: (() => void)[] = [];
+    const api: any = new Proxy(linkApi, {
+      get(target, prop) {
+        const member = (target as any)[prop];
+        if (typeof prop === 'string' && prop.startsWith('onPortal') && typeof member === 'function') {
+          return (cb: unknown) => {
+            const unsubscribe = member(cb);
+            if (typeof unsubscribe === 'function') unsubscribers.push(unsubscribe);
+            return unsubscribe;
+          };
+        }
+        return member;
+      },
+    });
+
     startReceiving();
 
-    linkApi.onPortalGuestPinPending?.((connId: string, guestPin: string, remoteAddress: string, deviceName?: string) => {
+    api.onPortalGuestPinPending?.((connId: string, guestPin: string, remoteAddress: string, deviceName?: string) => {
       setPendingGuests((prev) => [...prev, { connId, pin: guestPin, remoteAddress, deviceName }]);
     });
-    linkApi.onPortalConnectionAdmitted?.((connId: string, deviceName: string) => {
+    api.onPortalConnectionAdmitted?.((connId: string, deviceName: string) => {
+      connectedConnIdRef.current = connId;
       setConnectedDevice({ connId, deviceName });
       setPendingGuests((prev) => prev.filter((g) => g.connId !== connId));
     });
-    linkApi.onPortalConnectionClosed?.((connId: string) => {
+    api.onPortalConnectionClosed?.((connId: string) => {
       setConnectedDevice((prev) => (prev && prev.connId === connId ? null : prev));
       setPendingGuests((prev) => prev.filter((g) => g.connId !== connId));
-      setPeerFiles([]);
+      // A device that dials several addresses at once opens extra connections and drops the
+      // losers; only the connection actually in use may clear its files.
+      if (connectedConnIdRef.current === connId) {
+        connectedConnIdRef.current = null;
+        setPeerFiles([]);
+      }
     });
-    linkApi.onPortalPeerFilesChanged?.((files: PeerFile[]) => {
+    api.onPortalPeerFilesChanged?.((files: PeerFile[]) => {
       setPeerFiles(files);
     });
-    linkApi.onPortalTransferStarted?.((connId: string, name: string, size: number) => {
+    api.onPortalTransferStarted?.((connId: string, name: string, size: number) => {
       setPendingGuests((prev) => prev.filter((g) => g.connId !== connId));
       setIncoming({ connId, name, size, received: 0 });
       incomingStartRef.current = { time: Date.now(), bytes: 0 };
     });
-    linkApi.onPortalTransferProgress?.((connId: string, received: number, _size: number) => {
+    api.onPortalTransferProgress?.((connId: string, received: number, _size: number) => {
       setIncoming((prev) => (prev && prev.connId === connId ? { ...prev, received } : prev));
     });
-    linkApi.onPortalTransferComplete?.((connId: string, destPath: string) => {
+    api.onPortalTransferComplete?.((connId: string, destPath: string) => {
       setIncoming((prev) => (prev && prev.connId === connId ? null : prev));
       setDownloadingFileId(null);
-      setReceivedPaths((prev) => [...prev, destPath]);
+      setReceivedPaths((prev) => (prev.includes(destPath) ? prev : [...prev, destPath]));
     });
-    linkApi.onPortalError?.((message: string) => {
+    api.onPortalError?.((message: string) => {
       const isSendContext = ['connecting', 'waiting-pin', 'sending'].includes(senderPhaseRef.current);
       if (isSendContext) {
         setSendError(message);
@@ -179,34 +203,34 @@ const FileTransferTab: React.FC<FileTransferTabProps> = ({ isMobile, localIdenti
         setReceiveError(message);
       }
     });
-    linkApi.onPortalPinComputed?.((computedPin: string) => {
+    api.onPortalPinComputed?.((computedPin: string) => {
       setPin(computedPin);
       setSenderPhase('waiting-pin');
     });
-    linkApi.onPortalAdmitted?.((receiverDeviceName?: string) => {
+    api.onPortalAdmitted?.((receiverDeviceName?: string) => {
       setSenderPhase('connected');
       setSenderPeerName(receiverDeviceName || null);
     });
-    linkApi.onPortalFileStarted?.((fileIndex: number, fileCount: number, name: string) => {
+    api.onPortalFileStarted?.((fileIndex: number, fileCount: number, name: string) => {
       setSenderPhase('sending');
       setCurrentFile({ index: fileIndex, count: fileCount, name });
       setSendProgress(null);
       transferStartRef.current = { time: Date.now(), bytes: 0 };
     });
-    linkApi.onPortalSendProgress?.((sent: number, total: number) => {
+    api.onPortalSendProgress?.((sent: number, total: number) => {
       setSendProgress({ sent, total });
     });
-    linkApi.onPortalSendComplete?.(() => {
+    api.onPortalSendComplete?.(() => {
       setSenderPhase('connected');
       setSendProgress(null);
       setCurrentFile(null);
     });
-    linkApi.onPortalEnded?.(() => {
+    api.onPortalEnded?.(() => {
       setSenderPhase('idle');
       setSenderPeerName(null);
       setPeerFiles([]);
     });
-    linkApi.onPortalClosed?.((reason: string) => {
+    api.onPortalClosed?.((reason: string) => {
       const isClean = !reason || reason === '1000' || reason.includes('1000') || reason.includes('1001') || reason.includes('normal') || reason.includes('clean') || reason === 'closed';
       if (isClean) {
         setSenderPhase('idle');
@@ -235,6 +259,8 @@ const FileTransferTab: React.FC<FileTransferTabProps> = ({ isMobile, localIdenti
         }
       }
     }).catch(() => {});
+
+    return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
   }, []);
 
   const mergePickedFiles = (

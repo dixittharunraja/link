@@ -41,6 +41,14 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hasReceivedFrame = useRef(false);
+  // When the stream last showed movement, and a counter that restarts the whole connection.
+  const lastProgressRef = useRef(Date.now());
+  // Repeated requests stop once the host has said no (denied, removed us) or we gave up waiting.
+  const retryAllowedRef = useRef(true);
+  // Latest close handler for effects that must not restart when the parent re-renders.
+  const endSessionRef = useRef(onEndSession ?? onClose);
+  endSessionRef.current = onEndSession ?? onClose;
+  const [attempt, setAttempt] = useState(0);
 
   const isLocalMobile = IS_ANDROID;
 
@@ -84,6 +92,22 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
   // that can be moved anywhere out of the way and only expands its controls when tapped.
   const [bubblePos, setBubblePos] = useState<{ x: number; y: number } | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  // Browser fullscreen on the viewer itself: it covers the app's own title bar too, which a window
+  // maximise would not. Desktop only; the phone already runs this view immersive.
+  const viewerRootRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const sync = () => setIsFullscreen(document.fullscreenElement === viewerRootRef.current);
+    document.addEventListener('fullscreenchange', sync);
+    return () => {
+      document.removeEventListener('fullscreenchange', sync);
+      if (document.fullscreenElement === viewerRootRef.current) document.exitFullscreen().catch(() => {});
+    };
+  }, []);
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else viewerRootRef.current?.requestFullscreen().catch(() => {});
+  }, []);
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef<{ clientX: number; clientY: number; startX: number; startY: number } | null>(null);
 
@@ -150,6 +174,17 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
 
+  // The host stopped sharing (or the stream froze): drop the dead connection and ask again,
+  // instead of leaving the last frame on screen as if it were live.
+  const restartStream = useCallback(() => {
+    hasReceivedFrame.current = false;
+    lastProgressRef.current = Date.now();
+    retryAllowedRef.current = true;
+    setErrorMessage(null);
+    setConnectionState('reconnecting');
+    setAttempt((n) => n + 1);
+  }, []);
+
   // WebRTC & TLS stream receiver: attempts direct 60 FPS WebRTC peer connection,
   // falling back seamlessly to direct TLS frame stream if WebRTC is unavailable.
   useEffect(() => {
@@ -188,7 +223,20 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
     const unsubscribeSignal = linkApi?.onRemoteControlSignal?.((srcId, signal) => {
       if (srcId !== deviceId || !signal) return;
 
+      if (signal.type === 'stopped') {
+        restartStream();
+        return;
+      }
+
+      // The host removed this viewer on purpose: do not ask again.
+      if (signal.type === 'ended') {
+        retryAllowedRef.current = false;
+        endSessionRef.current();
+        return;
+      }
+
       if (signal.type === 'denied') {
+        retryAllowedRef.current = false;
         setConnectionState('disconnected');
         setErrorMessage('Screen capture permission was denied on the host.');
         return;
@@ -228,6 +276,7 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
     const unsubscribeStream = linkApi?.onRemoteControlStream?.((srcId, frame) => {
       if (srcId !== deviceId || !frame || !frame.data) return;
       hasReceivedFrame.current = true;
+      lastProgressRef.current = Date.now();
       setConnectionState('connected');
 
       const canvas = canvasRef.current;
@@ -256,16 +305,44 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
         pcRef.current = null;
       }
     };
-  }, [deviceId, sendSignal]);
+  }, [deviceId, sendSignal, attempt, restartStream]);
 
   // Send 'request' signal to peer on mount — triggers MediaProjection / Screen Capture consent
-  const hasRequested = useRef(false);
+  // The device can miss the first request (app in the background, handler not ready yet), which
+  // left this screen on "connecting" forever, so it is repeated until the stream arrives.
   useEffect(() => {
-    if (!hasRequested.current) {
-      hasRequested.current = true;
-      sendSignal({ type: 'request' });
-    }
-  }, [deviceId, sendSignal]);
+    sendSignal({ type: 'request' });
+    const retry = setInterval(() => {
+      if (retryAllowedRef.current && !hasReceivedFrame.current) sendSignal({ type: 'request' });
+    }, 4000);
+    const giveUp = setTimeout(() => {
+      if (!hasReceivedFrame.current) {
+        retryAllowedRef.current = false;
+        setConnectionState('disconnected');
+        setErrorMessage('The device did not respond. Open Link on it and try again.');
+      }
+    }, 45000);
+    return () => {
+      clearInterval(retry);
+      clearTimeout(giveUp);
+    };
+  }, [deviceId, sendSignal, attempt]);
+
+  // A stream that stops moving without saying so (the phone's sharing indicator, a dropped link)
+  // is detected here: video time not advancing, or no JPEG frame, for a few seconds.
+  useEffect(() => {
+    let lastVideoTime = -1;
+    const watch = setInterval(() => {
+      if (!hasReceivedFrame.current) return;
+      const video = videoRef.current;
+      if (video && video.srcObject && video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        lastProgressRef.current = Date.now();
+      }
+      if (Date.now() - lastProgressRef.current > 6000) restartStream();
+    }, 2000);
+    return () => clearInterval(watch);
+  }, [restartStream]);
 
   // Resume on reconnection instead of requiring the user to close and reopen the viewer.
   // hostConnected comes straight from App.tsx's own peers map (the single onDeviceConnected/
@@ -469,8 +546,16 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
 
   return (
     <div
+      ref={viewerRootRef}
       tabIndex={0}
-      onKeyDown={handleKeyDown}
+      onKeyDown={(e) => {
+        if (e.key === 'F11' && !isLocalMobile) {
+          e.preventDefault();
+          toggleFullscreen();
+          return;
+        }
+        handleKeyDown(e);
+      }}
       className={forceLandscape ? landscapeClassName : undefined}
       style={{
         ...(forceLandscape
@@ -850,6 +935,39 @@ const RemoteControlViewer: React.FC<RemoteControlViewerProps> = ({
               </svg>
               <span>Minimize Viewer</span>
             </button>
+
+            {!isLocalMobile && (
+              <button
+                onClick={() => {
+                  toggleFullscreen();
+                  setIsMenuOpen(false);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  background: 'var(--input-bg, rgba(255, 255, 255, 0.06))',
+                  border: '1px solid var(--border-color, rgba(255, 255, 255, 0.1))',
+                  color: 'var(--text-color, #f1f5f9)',
+                  fontSize: '12.5px',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                }}
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  {isFullscreen ? (
+                    <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+                  ) : (
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+                  )}
+                </svg>
+                <span>{isFullscreen ? 'Exit Full Screen' : 'Full Screen'}</span>
+              </button>
+            )}
 
             <button
               onClick={() => {

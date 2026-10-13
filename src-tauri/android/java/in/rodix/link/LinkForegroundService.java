@@ -85,6 +85,25 @@ public class LinkForegroundService extends android.app.Service {
         }
     }
 
+    // Keeps Wi-Fi out of its power-saving mode while the screen is off, which otherwise delays or
+    // drops the discovery broadcasts and incoming connections the link depends on.
+    private android.net.wifi.WifiManager.WifiLock wifiLock;
+
+    private void holdWifi() {
+        try {
+            android.net.wifi.WifiManager wifi = (android.net.wifi.WifiManager) getApplicationContext().getSystemService(android.content.Context.WIFI_SERVICE);
+            if (wifi == null) return;
+            int mode = android.os.Build.VERSION.SDK_INT >= 29
+                    ? android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                    : android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+            wifiLock = wifi.createWifiLock(mode, "link-connection");
+            wifiLock.setReferenceCounted(false);
+            wifiLock.acquire();
+        } catch (Exception e) {
+            android.util.Log.w("LinkForegroundService", "Could not hold the Wi-Fi lock", e);
+        }
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -104,6 +123,7 @@ public class LinkForegroundService extends android.app.Service {
             return;
         }
 
+        holdWifi();
         repinHandler.postDelayed(repinRunnable, REPIN_INTERVAL_MS);
     }
 
@@ -131,6 +151,7 @@ public class LinkForegroundService extends android.app.Service {
     @Override
     public void onDestroy() {
         repinHandler.removeCallbacks(repinRunnable);
+        if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
         super.onDestroy();
     }
 }

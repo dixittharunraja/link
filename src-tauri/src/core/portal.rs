@@ -234,6 +234,7 @@ where
                             }
                         }
                         Some("downloads-available") => {
+                            log::info!("Portal {}: peer announced {} file(s)", conn_id, msg["files"].as_array().map_or(0, Vec::len));
                             manager.emit_event("portal-peer-files-changed", json!({ "files": msg["files"] })).await;
                         }
                         Some("request-download") => {
@@ -354,14 +355,15 @@ async fn read_join<S: AsyncRead + AsyncWrite + Unpin>(ws: &mut WebSocketStream<S
     }
 }
 
-async fn host_connection<S>(manager: Arc<DeviceManager>, mut ws: WebSocketStream<S>, remote_ip: String, pin: String)
+async fn host_connection<S>(manager: Arc<DeviceManager>, mut ws: WebSocketStream<S>, remote_ip: String, pin: String, paired_name: Option<String>)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let Some(join) = read_join(&mut ws).await else { return };
-    let name = join["deviceName"].as_str().map(str::to_string);
+    let name = paired_name.clone().or_else(|| join["deviceName"].as_str().map(str::to_string));
     let conn_id = uuid::Uuid::new_v4().to_string();
-    if manager.confirm_pin(&mut ws, &remote_ip, pin, &conn_id, name.clone(), "portal-guest-pin-pending", vec![]).await != Decision::Accept {
+    // A paired device has already been vouched for; only strangers get the PIN prompt.
+    if paired_name.is_none() && manager.confirm_pin(&mut ws, &remote_ip, pin, &conn_id, name.clone(), "portal-guest-pin-pending", vec![]).await != Decision::Accept {
         manager.portal.with(|i| i.save_dirs.remove(&conn_id));
         manager.emit_event("portal-connection-closed", json!({ "connId": conn_id })).await;
         return;
@@ -374,19 +376,22 @@ where
     if manager.portal.has_downloads() {
         send_json(&mut ws, manager.portal.listing()).await;
     }
+    log::info!("Portal {}: {} joined from {} (trusted: {})", conn_id, guest_name, remote_ip, paired_name.is_some());
     let (tx, commands) = mpsc::channel(8);
     manager.portal.with(|i| i.hosted.push((conn_id.clone(), Conn { tx, name: guest_name.clone() })));
     manager.emit_event("portal-connection-admitted", json!({ "connId": conn_id, "deviceName": guest_name })).await;
 
     run_session(manager.clone(), ws, conn_id.clone(), commands, save_dir).await;
 
+    log::info!("Portal {}: closed", conn_id);
     manager.portal.with(|i| i.hosted.retain(|(id, _)| *id != conn_id));
     manager.emit_event("portal-connection-closed", json!({ "connId": conn_id })).await;
 }
 
 async fn tls_guest(manager: Arc<DeviceManager>, guest: GuestSocket) {
     let pin = manager.guest_pin(&guest.peer_cert);
-    host_connection(manager, guest.ws, guest.remote_ip, pin).await;
+    let paired_name = manager.paired_name_for_cert(&guest.peer_cert).await;
+    host_connection(manager, guest.ws, guest.remote_ip, pin, paired_name).await;
 }
 
 // ---- web mode: the same port speaks plain HTTP (the page and direct downloads) and WebSocket ----
@@ -450,7 +455,7 @@ async fn web_connection(manager: Arc<DeviceManager>, stream: TcpStream, remote_i
     let head = String::from_utf8_lossy(&head).into_owned();
     if head.to_ascii_lowercase().contains("upgrade: websocket") {
         let Ok(ws) = tokio_tungstenite::accept_async(stream).await else { return };
-        host_connection(manager, ws, remote_ip, random_pin()).await;
+        host_connection(manager, ws, remote_ip, random_pin(), None).await;
     } else {
         serve_http(&manager, stream, &head).await;
     }

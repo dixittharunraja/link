@@ -30,6 +30,7 @@ public class LinkDeviceManager {
         LinkTransport.PeerConnection conn;
         LinkPairingHandler pairing;
         volatile boolean trusted;
+        boolean notifiedNotPaired;
         LinkIdentity.Identity identity;
         long createdAt = System.currentTimeMillis();
     }
@@ -344,7 +345,19 @@ public class LinkDeviceManager {
                     return;
                 }
 
-                if (!peer.trusted) return; // ignore feature packets from unpaired devices
+                if (!peer.trusted) {
+                    // The sender treats us as paired but we have no record of it (app data cleared,
+                    // unpaired while it was offline). Say so once; it then drops the stale pairing
+                    // instead of sending features that are ignored forever.
+                    if (!peer.notifiedNotPaired && deviceId != null && trustStore.get(deviceId) == null
+                            && peer.pairing.getState() == LinkPairingHandler.PairState.NOT_PAIRED) {
+                        peer.notifiedNotPaired = true;
+                        try {
+                            conn.send(new LinkPacket(LinkPairingHandler.PACKET_TYPE_PAIR, new org.json.JSONObject().put("pair", false)));
+                        } catch (Exception ignored) {}
+                    }
+                    return; // ignore feature packets from unpaired devices
+                }
 
 
 
@@ -434,7 +447,24 @@ public class LinkDeviceManager {
 
 
 
+    // Peers that are not paired connections: a guest admitted to a tool is addressed through the
+    // socket it joined on, so tool code can keep sending to "a device id" as it does for paired ones.
+    private final Map<String, java.util.function.Consumer<LinkPacket>> virtualPeers = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public void registerVirtualPeer(String id, java.util.function.Consumer<LinkPacket> sink) {
+        virtualPeers.put(id, sink);
+    }
+
+    public void unregisterVirtualPeer(String id) {
+        virtualPeers.remove(id);
+    }
+
     public void sendTo(String deviceId, LinkPacket packet) {
+        java.util.function.Consumer<LinkPacket> virtualPeer = virtualPeers.get(deviceId);
+        if (virtualPeer != null) {
+            virtualPeer.accept(packet);
+            return;
+        }
         ManagedPeer peer = peers.get(deviceId);
         if (peer != null && peer.trusted) peer.conn.send(packet);
     }
@@ -501,6 +531,12 @@ public class LinkDeviceManager {
 
     public boolean hasPeer(String deviceId) {
         return peers.containsKey(deviceId);
+    }
+
+    /** True when the connection to this device has gone quiet (heartbeats arrive every 5 s). */
+    public boolean isPeerStale(String deviceId, long timeoutMs) {
+        ManagedPeer peer = peers.get(deviceId);
+        return peer != null && peer.conn.isStale(timeoutMs);
     }
 
     public boolean hasTrustedPeer(String deviceId) {

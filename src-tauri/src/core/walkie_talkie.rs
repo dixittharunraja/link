@@ -62,6 +62,13 @@ async fn guest_connection(manager: Arc<DeviceManager>, mut guest: GuestSocket) {
     // and that has to queue behind the admission rather than find nobody there.
     let (tx, mut rx) = mpsc::channel::<Outgoing>(64);
     manager.walkie.guests.lock().map(|mut g| g.insert(conn_id.clone(), Guest { ip: guest.remote_ip.clone(), tx })).ok();
+    // The UI admits a member only on an explicit accept, so a trusted device (which skips the PIN)
+    // is announced as joined, under its paired name, instead.
+    // The name the device sends is its current one; the paired record can still hold the model
+    // name it had when it was paired.
+    if manager.paired_name_for_cert(&guest.peer_cert).await.is_some() {
+        manager.emit_event("walkie-talkie-guest-joined", json!([conn_id, guest.remote_ip, name])).await;
+    }
     if manager.confirm_guest(&mut guest, &conn_id, Some(name), "walkie-talkie-guest-pin-pending", vec![]).await != Decision::Accept {
         manager.walkie.guests.lock().map(|mut g| g.remove(&conn_id)).ok();
         return;

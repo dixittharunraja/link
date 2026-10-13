@@ -3,8 +3,9 @@
 ; timeout). The installer opens the app explicitly instead of relying on that prompt.
 ; Rules are created per executable, so every Link port is covered without listing them.
 ;
-; WinFsp provides the kernel side of mounted phone drives; the bundled installer is run silently
-; when it is not already present.
+; WinFsp provides the kernel side of mounted phone drives, and ViGEmBus the virtual game
+; controllers for the joystick tool. Each bundled installer is run silently when its driver is not
+; already present.
 
 !macro NSIS_HOOK_POSTINSTALL
   IfFileExists "$PROGRAMFILES32\WinFsp\bin\winfsp-x64.dll" winfsp_present 0
@@ -14,6 +15,11 @@
     winfsp_done:
     FindClose $0
   winfsp_present:
+
+  IfFileExists "$SYSDIR\drivers\ViGEmBus.sys" vigembus_present 0
+    IfFileExists "$INSTDIR\vendor\vigembus\ViGEmBus_Setup.exe" 0 vigembus_present
+      nsExec::ExecToLog '"$INSTDIR\vendor\vigembus\ViGEmBus_Setup.exe" /quiet /norestart'
+  vigembus_present:
 
   ; Clear rules Windows created from earlier prompts (including Block rules, which win over Allow).
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name=all program="$INSTDIR\${MAINBINARYNAME}.exe"'

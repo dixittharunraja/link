@@ -89,7 +89,7 @@ const PresenterTab: React.FC<PresenterTabProps> = ({
       setPin(null);
       setConnectingPhase('connecting');
       if (reason && reason !== 'disconnected') {
-        setConnectError(reason === 'rejected by host' || reason === 'blocked' ? 'Rejected by host' : reason);
+        setConnectError(reason === 'rejected by host' || reason === 'blocked' ? 'Rejected by host' : reason === 'unsupported target' ? 'Presenter works with a computer or TV, not a phone.' : reason);
       }
     });
 
@@ -167,6 +167,7 @@ const PresenterTab: React.FC<PresenterTabProps> = ({
                 if (admittedGuest.ip) {
                   await linkApi.kickInputGuest?.(admittedGuest.ip);
                 } else if (admittedGuest.deviceId) {
+                  await linkApi.kickInputGuest?.(admittedGuest.deviceId); // mutes it; the phone keeps sending
                   await linkApi.sendPresenterStop?.(admittedGuest.deviceId);
                   await linkApi.sendSpecialKey?.(admittedGuest.deviceId, 14); // Escape
                 }

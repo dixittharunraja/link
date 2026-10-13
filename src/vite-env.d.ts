@@ -74,7 +74,6 @@ export interface LinkApi {
   setCloseToTray: (enabled: boolean) => Promise<any>;
   getOpenAtLogin: () => Promise<boolean>;
   setOpenAtLogin: (enabled: boolean) => Promise<any>;
-  repairFirewall?: () => Promise<void>;
 
   // Mobile Permissions & Actions
   checkPermissions: () => Promise<any>;
@@ -224,6 +223,7 @@ export interface LinkApi {
   blockWalkieTalkieMember?: (deviceId: string, label: string) => Promise<any>;
   sendWalkieTalkieGuestSignal?: (connId: string, type: string, body: any) => Promise<any>;
   onWalkieTalkieGuestPinPending?: (cb: (connId: string, pin: string, remoteAddress: string, deviceName?: string) => void) => () => void;
+  onWalkieTalkieGuestJoined?: (cb: (connId: string, remoteAddress: string, deviceName: string) => void) => () => void;
   onWalkieTalkieGuestSignal?: (cb: (connId: string, type: string, body: any) => void) => () => void;
   onWalkieTalkieGuestLeft?: (cb: (connId: string) => void) => () => void;
   joinWalkieTalkieGuest?: (host: string) => Promise<any>;
@@ -318,6 +318,7 @@ export interface LinkApi {
   onBatteryReceived: (cb: (deviceId: string, isCharging: boolean, currentCharge: number) => void) => () => void;
   onFindMyDeviceTriggered: (cb: (deviceId: string) => void) => () => void;
   onFindMyDeviceStopped: (cb: (deviceId: string) => void) => () => void;
+  onInputKicked?: (cb: (deviceId: string) => void) => () => void;
   onLockStateReceived: (cb: (deviceId: string, isLocked: boolean) => void) => () => void;
   onLockResultReceived: (cb: (deviceId: string, success: boolean) => void) => () => void;
   onShareReceived: (cb: (deviceId: string, filename: string, size: number) => void) => () => void;

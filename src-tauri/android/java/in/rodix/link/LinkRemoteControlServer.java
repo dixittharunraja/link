@@ -28,6 +28,9 @@ import java.util.List;
  * Streams Android screen at 60 FPS using hardware H.264 / VP8 encoders with sub-30ms latency.
  */
 public class LinkRemoteControlServer {
+    /** Prefix of the stand-in device id for an unpaired guest viewing this screen by address. */
+    public static final String GUEST_PREFIX = "guest-rc:";
+
     private static final String TAG = "LinkRemoteControlServer";
 
     private final Context context;
@@ -66,7 +69,23 @@ public class LinkRemoteControlServer {
         if (this.height % 2 != 0) this.height--;
     }
 
+    /** Tells the viewer why sharing ended: "stopped" lets it reconnect instead of freezing on the
+     *  last frame, "ended" (the host removed it) tells it to give up. */
+    private void notifyStopped(String reason) {
+        if (deviceManager == null || targetDeviceId == null) return;
+        try {
+            deviceManager.sendTo(targetDeviceId, new LinkPacket("link.remotecontrol.signal", new org.json.JSONObject().put("type", reason)));
+        } catch (Exception ignored) {}
+    }
+
     public void start() {
+        // The user can end sharing from the system's own indicator, which only reaches us here.
+        projection.registerCallback(new MediaProjection.Callback() {
+            @Override
+            public void onStop() {
+                stop();
+            }
+        }, new android.os.Handler(android.os.Looper.getMainLooper()));
         if (isRunning) return;
         isRunning = true;
 
@@ -245,12 +264,22 @@ public class LinkRemoteControlServer {
         }
     }
 
+    public String getTargetDeviceId() {
+        return targetDeviceId;
+    }
+
     public boolean isRunning() {
         return isRunning;
     }
 
     public void stop() {
+        stop("stopped");
+    }
+
+    public void stop(String reason) {
+        boolean wasRunning = isRunning;
         isRunning = false;
+        if (wasRunning) notifyStopped(reason);
         try {
             if (screenCapturer != null) {
                 try { screenCapturer.stopCapture(); } catch (Exception ignored) {}

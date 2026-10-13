@@ -610,6 +610,11 @@ public class LinkPlugin extends Plugin {
                         handleFlashlightPacket(deviceId, packet);
                     } else if (packet.type.equals(LinkDND.PACKET_TYPE_DND)) {
                         handleDndPacket(deviceId, packet);
+                    } else if ("link.input.kicked".equals(packet.type)) {
+                        // The device we were controlling removed us: the presenter / touchpad screen must close.
+                        JSObject kicked = new JSObject();
+                        kicked.put("deviceId", deviceId);
+                        notifyListeners("inputKicked", kicked);
                     } else if (packet.type.equals(LinkPresenter.PACKET_TYPE_PRESENTER)) {
                         handlePresenterPacket(deviceId, packet);
                     } else if (packet.getType().equals("link.digitizer.session")) {
@@ -938,7 +943,10 @@ public class LinkPlugin extends Plugin {
                 }
 
                 String currentIp = deviceManager != null ? deviceManager.remoteAddressOf(peer.deviceId) : null;
-                if (currentIp != null && !currentIp.equals(ip)) {
+                // A multi-homed PC broadcasts from whichever adapter it likes, so a different source
+                // address alone is no sign the connection is stale; closing a live one here made
+                // it drop and redial on every broadcast. Only a connection gone quiet is replaced.
+                if (currentIp != null && !currentIp.equals(ip) && deviceManager.isPeerStale(peer.deviceId, 9000)) {
                     android.util.Log.i(TAG, "[Link] Closing stale connection to peer " + peer.deviceId.substring(0, Math.min(8, peer.deviceId.length())) + " at old IP " + currentIp);
                     if (deviceManager != null) {
                         deviceManager.closeConnection(peer.deviceId);
@@ -1002,6 +1010,7 @@ public class LinkPlugin extends Plugin {
             };
             trustedReconnectHandler.removeCallbacksAndMessages(null);
             trustedReconnectHandler.post(this.trustedReconnectRunnable);
+            watchNetwork();
 
 
             // Volume broadcast receiver to sync local volume changes to peers
@@ -1413,7 +1422,9 @@ public class LinkPlugin extends Plugin {
     }
 
     private void handleRemoteControlInputPacket(String deviceId, LinkPacket packet) {
-        if (!LinkDevicePermissions.check(getContext(), deviceId, "remotecontrol")) {
+        // A guest was let in by the user's own accept; there is no permission entry to look up.
+        boolean admittedGuest = deviceId.startsWith(LinkRemoteControlServer.GUEST_PREFIX);
+        if (!admittedGuest && !LinkDevicePermissions.check(getContext(), deviceId, "remotecontrol")) {
             android.util.Log.i(TAG, "Blocked Remote Control input from " + deviceId + " (Permission disabled)");
             return;
         }
@@ -1472,11 +1483,7 @@ public class LinkPlugin extends Plugin {
     }
 
     private void handleLockRequestPacket(String deviceId, LinkPacket packet) {
-        if (!LinkDevicePermissions.check(getContext(), deviceId, "lock")) {
-            android.util.Log.w(TAG, "Blocked lock request from " + deviceId + " — permission denied");
-            return;
-        }
-
+        // Locking is open to every paired device, like the desktop side: it needs no permission.
         Boolean lockResult = null;
         if (packet.body != null && packet.body.optBoolean("setLocked", false)) {
             lockResult = LinkLock.lockDevice();
@@ -1761,6 +1768,14 @@ public class LinkPlugin extends Plugin {
                         data.put("remoteAddress", remoteAddress);
                         data.put("deviceName", deviceName);
                         notifyListeners("walkieTalkieGuestPinPending", data);
+                    }
+                    @Override
+                    public void onTrustedGuestJoined(String connId, String remoteAddress, String deviceName) {
+                        JSObject data = new JSObject();
+                        data.put("connId", connId);
+                        data.put("remoteAddress", remoteAddress);
+                        data.put("deviceName", deviceName);
+                        notifyListeners("walkieTalkieGuestJoined", data);
                     }
                     @Override
                     public void onSignal(String connId, String type, String bodyJson) {
@@ -2959,22 +2974,11 @@ public class LinkPlugin extends Plugin {
     @LinkMethod
     public void joinPortalGuest(LinkCall call) {
         String host = call.getString("host");
-        JSArray uriStrings = call.getArray("uris");
         if (deviceManager == null) {
             call.resolve();
             return;
         }
-        java.util.List<android.net.Uri> fileUris = new java.util.ArrayList<>();
-        if (uriStrings != null) {
-            try {
-                for (int i = 0; i < uriStrings.length(); i++) {
-                    fileUris.add(android.net.Uri.parse(uriStrings.getString(i)));
-                }
-            } catch (Exception e) {
-                call.resolve();
-                return;
-            }
-        }
+        java.util.List<android.net.Uri> fileUris = portalUris(call.getData().optJSONArray("uris"));
 
         // If we are hosting the connection with an admitted client, update available downloads!
         if (sPortalTransferServer != null && sPortalTransferServer.getAdmittedConnectionIds().size() > 0) {
@@ -3094,21 +3098,24 @@ public class LinkPlugin extends Plugin {
         call.resolve();
     }
 
+    /** Files the user staged, as the screen sends them: plain URI strings or {name, localPath}
+     *  objects. Anything unreadable is skipped, and the count is logged so an empty announcement
+     *  can be told apart from a list that never arrived. */
+    private java.util.List<android.net.Uri> portalUris(org.json.JSONArray items) {
+        java.util.List<android.net.Uri> uris = new java.util.ArrayList<>();
+        int received = items != null ? items.length() : 0;
+        for (int i = 0; i < received; i++) {
+            Object item = items.opt(i);
+            String raw = item instanceof org.json.JSONObject ? ((org.json.JSONObject) item).optString("localPath", "") : String.valueOf(item);
+            if (raw != null && !raw.isEmpty() && !"null".equals(raw)) uris.add(android.net.Uri.parse(raw));
+        }
+        android.util.Log.i(TAG, "Portal downloads: " + uris.size() + " usable of " + received + " staged");
+        return uris;
+    }
+
     @LinkMethod
     public void setPortalDownloads(LinkCall call) {
-        JSArray files = call.getArray("files");
-        java.util.List<android.net.Uri> uris = new java.util.ArrayList<>();
-        if (files != null) {
-            for (int i = 0; i < files.length(); i++) {
-                try {
-                    org.json.JSONObject obj = files.getJSONObject(i);
-                    String localPath = obj.optString("localPath", "");
-                    if (!localPath.isEmpty()) {
-                        uris.add(android.net.Uri.parse(localPath));
-                    }
-                } catch (Exception ignored) {}
-            }
-        }
+        java.util.List<android.net.Uri> uris = portalUris(call.getData().optJSONArray("files"));
         if (sPortalTransferServer != null) {
             sPortalTransferServer.setAvailableDownloads(getContext(), uris);
         }
@@ -3309,15 +3316,10 @@ public class LinkPlugin extends Plugin {
 
     @Override
     public void onDestroy(AppCompatActivity destroyedActivity) {
-        if (discoveryWatcher != null) {
-            discoveryWatcher.stop();
-            discoveryWatcher = null;
-        }
-        if (sDiscoveryWatcher != null) {
-            sDiscoveryWatcher.stop();
-            sDiscoveryWatcher = null;
-        }
-        sDiscoveredPeers.clear();
+        // Discovery and the network watcher deliberately keep running: LinkForegroundService keeps
+        // the process (and the TCP server) alive after the activity goes, and without them nothing
+        // would redial a dropped connection until the app is opened again. A reattach in the same
+        // process (see load()) replaces them.
         super.onDestroy(destroyedActivity);
     }
 
@@ -4206,6 +4208,10 @@ public class LinkPlugin extends Plugin {
 
                 @Override
                 public void onAdmitted(int padIndex) {
+                    LinkJoystickClient admittedClient = sJoystickClient;
+                    if (admittedClient != null && admittedClient.getResolvedHost() != null) {
+                        sUdpHostOverrides.put(host, admittedClient.getResolvedHost());
+                    }
                     JSObject data = new JSObject();
                     data.put("ok", true);
                     data.put("padIndex", padIndex);
@@ -4477,12 +4483,42 @@ public class LinkPlugin extends Plugin {
 
                 @Override
                 public void onGuestJoined(String remoteAddress, String deviceName, String mode) {
+                    if ("remotecontrol".equals(mode) && deviceManager != null) {
+                        // The screen-share code addresses its viewer by device id; a guest gets a
+                        // stand-in id whose packets travel over the socket it joined on.
+                        deviceManager.registerVirtualPeer(LinkRemoteControlServer.GUEST_PREFIX + remoteAddress, packet -> {
+                            LinkInputGuestServer server = sInputGuestServer;
+                            if (server != null) server.sendPacket(remoteAddress, packet);
+                        });
+                    }
                     notifyListeners("inputGuestRosterChanged", new JSObject());
                 }
 
                 @Override
                 public void onGuestLeft(String remoteAddress) {
+                    String guestId = LinkRemoteControlServer.GUEST_PREFIX + remoteAddress;
+                    if (deviceManager != null) deviceManager.unregisterVirtualPeer(guestId);
+                    // The guest was the viewer: stop sharing the screen with nobody.
+                    if (sRemoteControlServer != null && guestId.equals(sRemoteControlServer.getTargetDeviceId())) {
+                        sRemoteControlServer.stop();
+                        sRemoteControlServer = null;
+                    }
                     notifyListeners("inputGuestRosterChanged", new JSObject());
+                }
+
+                @Override
+                public void onGuestPacket(String remoteAddress, String packetType, String bodyJson) {
+                    String guestId = LinkRemoteControlServer.GUEST_PREFIX + remoteAddress;
+                    try {
+                        LinkPacket packet = new LinkPacket(packetType, new org.json.JSONObject(bodyJson));
+                        if ("link.remotecontrol.signal".equals(packetType)) {
+                            handleRemoteControlSignalPacket(guestId, packet);
+                        } else if ("link.remotecontrol.input".equals(packetType)) {
+                            handleRemoteControlInputPacket(guestId, packet);
+                        }
+                    } catch (Exception e) {
+                        android.util.Log.w(TAG, "Bad packet from remote control guest " + remoteAddress, e);
+                    }
                 }
 
                 @Override
@@ -4540,6 +4576,21 @@ public class LinkPlugin extends Plugin {
             }
         }
         ret.put("admittedGuests", guests);
+
+        // A paired device controlling this screen through its device panel has no guest socket;
+        // the screen share itself is the session.
+        JSArray pairedSessions = new JSArray();
+        LinkRemoteControlServer sharing = sRemoteControlServer;
+        String viewerId = sharing != null && sharing.isRunning() ? sharing.getTargetDeviceId() : null;
+        if (viewerId != null && !viewerId.startsWith(LinkRemoteControlServer.GUEST_PREFIX)) {
+            LinkTrustStore.TrustedDevice viewer = deviceManager != null ? deviceManager.getTrustStore().get(viewerId) : null;
+            JSObject session = new JSObject();
+            session.put("deviceId", viewerId);
+            session.put("name", viewer != null ? viewer.deviceName : viewerId);
+            session.put("mode", "remotecontrol");
+            pairedSessions.put(session);
+        }
+        ret.put("pairedSessions", pairedSessions);
         call.resolve(ret);
     }
 
@@ -4575,6 +4626,11 @@ public class LinkPlugin extends Plugin {
         String ip = call.getString("ip");
         if (sInputGuestServer != null && ip != null) {
             sInputGuestServer.kickGuest(ip);
+        }
+        // The argument is a device id when the session belongs to a paired device.
+        if (ip != null && sRemoteControlServer != null && ip.equals(sRemoteControlServer.getTargetDeviceId())) {
+            sRemoteControlServer.stop("ended");
+            sRemoteControlServer = null;
         }
         call.resolve();
     }
@@ -5196,8 +5252,15 @@ public class LinkPlugin extends Plugin {
     /** Same wire behavior as sendUdpMessage above, but addressed to a raw IP directly instead of
      *  resolving one from a paired deviceId — Joystick's only send path, since it has no pairing
      *  step at all (see sendJoystickHello's doc comment). */
+    // Raw host strings (possibly several comma-separated addresses) mapped to the address that
+    // actually answered, for the UDP streams that follow a guest connection.
+    private static final java.util.Map<String, String> sUdpHostOverrides = new java.util.concurrent.ConcurrentHashMap<>();
+
     private void sendUdpMessageToHost(String host, String message) {
         if (host == null) return;
+        String known = sUdpHostOverrides.get(host);
+        if (known != null) host = known;
+        else if (host.contains(",")) host = host.split(",")[0];
         String cleanHost = host.trim();
         if (cleanHost.startsWith("link:")) {
             String[] parts = cleanHost.split(":");
@@ -6249,6 +6312,57 @@ public class LinkPlugin extends Plugin {
             });
         }
         executor.shutdown();
+    }
+
+    // Static like sDiscoveryWatcher: it outlives the activity, and a reattach replaces it.
+    private static android.net.ConnectivityManager.NetworkCallback sNetworkCallback;
+
+    /** Reacts to the device changing networks. Connections made over the old network are dead but
+     *  would otherwise only be noticed by the heartbeat timeout, and the backoff built up while
+     *  offline should not delay the first attempt on the new network. */
+    private void watchNetwork() {
+        android.net.ConnectivityManager cm = (android.net.ConnectivityManager) getContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return;
+        if (sNetworkCallback != null) {
+            try { cm.unregisterNetworkCallback(sNetworkCallback); } catch (Exception ignored) {}
+            sNetworkCallback = null;
+        }
+        final android.net.ConnectivityManager.NetworkCallback callback = new android.net.ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(android.net.Network network) {
+                refreshConnections(false);
+            }
+
+            @Override
+            public void onLinkPropertiesChanged(android.net.Network network, android.net.LinkProperties properties) {
+                refreshConnections(false);
+            }
+
+            @Override
+            public void onLost(android.net.Network network) {
+                refreshConnections(true);
+            }
+        };
+        try {
+            cm.registerDefaultNetworkCallback(callback);
+            sNetworkCallback = callback;
+        } catch (Exception e) {
+            android.util.Log.w(TAG, "Could not watch network changes", e);
+        }
+    }
+
+    private void refreshConnections(boolean dropConnections) {
+        trustedReconnectHandler.post(() -> {
+            if (deviceManager == null) return;
+            for (LinkTrustStore.TrustedDevice d : deviceManager.getTrustStore().list()) {
+                clearConnectBackoff(d.deviceId);
+                if (dropConnections && deviceManager.hasPeer(d.deviceId)) {
+                    deviceManager.closeConnection(d.deviceId);
+                }
+            }
+            if (discoveryWatcher != null) discoveryWatcher.broadcastNow();
+            attemptTrustedReconnects();
+        });
     }
 
     private void attemptTrustedReconnects() {

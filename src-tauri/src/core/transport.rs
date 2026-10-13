@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Notify, RwLock};
 use tauri::{AppHandle, Emitter};
 use sha2::Digest;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
@@ -40,6 +41,12 @@ pub const LINK_PORT: u16 = 1739;
 // so the desktop must answer pings and send its own, or every paired connection dies after 15s.
 const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+// A connection silent this long loses a duplicate-connection tie-break to a fresh one (matches the
+// Android core's isStale(9000)).
+const STALE_AFTER_MS: i64 = 9000;
+const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+// How long a pair request may go unanswered before the requester is told it failed.
+const PAIR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 // Trust-on-first-use server certificate verifier: any certificate is accepted at the TLS layer
 // (trust is pinned per device after pairing), but the handshake signature is still verified so the
@@ -147,6 +154,21 @@ pub struct PeerSession {
     pub outgoing_capabilities: Vec<String>,
     pub tx: mpsc::Sender<LinkPacket>,
     pub pairing_timestamp: Option<i64>,
+    // Timestamp of the pair request this side sent and has no answer to yet.
+    outgoing_pairing: Option<i64>,
+    // Whether this connection was already told we have no pairing with it.
+    notified_not_paired: bool,
+    // When this connection last received anything, and a way to end it.
+    pub(crate) last_rx: Arc<AtomicI64>,
+    pub(crate) shutdown: Arc<Notify>,
+}
+
+/// What the connection's own read loop shares with the packet handler.
+#[derive(Clone)]
+struct Link {
+    outbound: bool,
+    last_rx: Arc<AtomicI64>,
+    shutdown: Arc<Notify>,
 }
 
 fn string_list(value: Option<&serde_json::Value>) -> Vec<String> {
@@ -175,7 +197,7 @@ pub struct DeviceManager {
     pub(crate) trust_store: Arc<RwLock<TrustStore>>,
     pub(crate) discovery: Arc<DiscoveryManager>,
     app_handle: Arc<RwLock<Option<AppHandle>>>,
-    active_peers: Arc<RwLock<HashMap<String, PeerSession>>>,
+    pub(crate) active_peers: Arc<RwLock<HashMap<String, PeerSession>>>,
     server_config: Arc<ServerConfig>,
     client_config: Arc<ClientConfig>,
     my_cert_der: Vec<u8>,
@@ -273,7 +295,7 @@ impl DeviceManager {
                             Ok(tls_stream) => {
                                 let peer_cert = tls_stream.get_ref().1.peer_certificates().and_then(|c| c.first()).map(|c| c.to_vec());
                                 let (read_half, write_half) = tokio::io::split(tls_stream);
-                                mgr.handle_connection(read_half, write_half, remote_addr.ip().to_string(), peer_cert).await;
+                                mgr.handle_connection(read_half, write_half, remote_addr.ip().to_string(), peer_cert, false).await;
                             }
                             Err(e) => log::warn!("TLS accept from {} failed: {}", remote_addr, e),
                         }
@@ -287,7 +309,10 @@ impl DeviceManager {
 
     pub async fn connect_to(&self, host: &str, port: u16) -> Result<String, String> {
         let addr = format!("{}:{}", host, port);
-        let stream = TcpStream::connect(&addr).await.map_err(|e| format!("Connect error: {}", e))?;
+        let stream = tokio::time::timeout(DIAL_TIMEOUT, TcpStream::connect(&addr))
+            .await
+            .map_err(|_| format!("Connect error: {} did not answer", addr))?
+            .map_err(|e| format!("Connect error: {}", e))?;
         let connector = TlsConnector::from(self.client_config.clone());
         let server_name = ServerName::try_from("link.local".to_string()).map_err(|e| e.to_string())?;
 
@@ -300,7 +325,7 @@ impl DeviceManager {
         let mgr_self = self.clone_arc();
         let ip = host.to_string();
         tokio::spawn(async move {
-            mgr_self.handle_connection(read_half, write_half, ip, peer_cert).await;
+            mgr_self.handle_connection(read_half, write_half, ip, peer_cert, true).await;
         });
 
         Ok("Connected".to_string())
@@ -342,6 +367,7 @@ impl DeviceManager {
         mut writer: W,
         remote_ip: String,
         peer_cert: Option<Vec<u8>>,
+        outbound: bool,
     ) where
         R: AsyncReadExt + Unpin + Send + 'static,
         W: AsyncWriteExt + Unpin + Send + 'static,
@@ -376,6 +402,8 @@ impl DeviceManager {
         let mut stream_reader = PacketStreamReader::new();
         let mut buf = [0u8; 4096];
         let mut peer_dev_id: Option<String> = None;
+        let mut end_reason = "superseded by a better connection";
+        let link = Link { outbound, last_rx: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis())), shutdown: Arc::new(Notify::new()) };
 
         let heartbeat_tx = tx.clone();
         let heartbeat = tokio::spawn(async move {
@@ -390,16 +418,31 @@ impl DeviceManager {
         });
 
         loop {
-            match tokio::time::timeout(HEARTBEAT_TIMEOUT, reader.read(&mut buf)).await {
-                Err(_) => break, // silent past the heartbeat timeout: treat the peer as dead
-                Ok(Ok(0)) => break, // EOF
+            let read = tokio::select! {
+                _ = link.shutdown.notified() => break, // superseded by a better connection to the same device
+                read = tokio::time::timeout(HEARTBEAT_TIMEOUT, reader.read(&mut buf)) => read,
+            };
+            match read {
+                Err(_) => {
+                    end_reason = "silent past the heartbeat timeout";
+                    break;
+                }
+                Ok(Ok(0)) => {
+                    end_reason = "closed by the peer";
+                    break;
+                }
                 Ok(Ok(n)) => {
+                    link.last_rx.store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
                     let packets = stream_reader.push(&buf[..n]);
                     for pkt in packets {
-                        self.process_incoming_packet(&pkt, &remote_ip, peer_cert.as_deref(), &tx, &mut peer_dev_id).await;
+                        self.process_incoming_packet(&pkt, &remote_ip, peer_cert.as_deref(), &tx, &mut peer_dev_id, &link).await;
                     }
                 }
-                Ok(Err(_)) => break,
+                Ok(Err(e)) => {
+                    log::debug!("Read from {} failed: {}", remote_ip, e);
+                    end_reason = "read error";
+                    break;
+                }
             }
         }
         heartbeat.abort();
@@ -409,6 +452,7 @@ impl DeviceManager {
             let mut peers = self.active_peers.write().await;
             // A newer connection may have replaced this one; only remove our own entry.
             if peers.get(&dev_id).is_some_and(|p| p.tx.same_channel(&tx)) {
+                log::info!("Disconnected from {} ({}): {}", dev_id, remote_ip, end_reason);
                 peers.remove(&dev_id);
             } else {
                 return;
@@ -428,6 +472,7 @@ impl DeviceManager {
         peer_cert: Option<&[u8]>,
         tx: &mpsc::Sender<LinkPacket>,
         peer_dev_id: &mut Option<String>,
+        link: &Link,
     ) {
         match pkt.packet_type.as_str() {
             PACKET_TYPE_IDENTITY => {
@@ -444,14 +489,26 @@ impl DeviceManager {
                     if self.is_blocked(dev_id) || self.is_blocked(remote_ip) {
                         return;
                     }
-                    let is_trusted = {
+                    // A paired device is recognised by its pinned certificate, not by the id it
+                    // claims: anyone can send an id.
+                    let (is_trusted, pinned_matches) = {
                         let store = self.trust_store.read().await;
-                        store.is_paired(dev_id)
+                        let paired = store.is_paired(dev_id);
+                        let matches = store.get(dev_id).is_none_or(|d| compute_cert_fingerprint(&d.cert_pem) == hex::encode(sha2::Sha256::digest(&cert_der)));
+                        (paired, matches)
                     };
+                    if !pinned_matches {
+                        log::warn!("{} at {} presented a certificate that differs from the one it was paired with; refusing it", dev_id, remote_ip);
+                        if let Some(app) = self.app_handle.read().await.as_ref() {
+                            let _ = app.emit("trust-mismatch", serde_json::json!({ "deviceId": dev_id }));
+                        }
+                        link.shutdown.notify_one();
+                        return;
+                    }
 
                     *peer_dev_id = Some(dev_id.to_string());
 
-                    let session = PeerSession {
+                    let mut session = PeerSession {
                         device_id: dev_id.to_string(),
                         device_name: name.to_string(),
                         device_type: dev_type.clone(),
@@ -463,11 +520,38 @@ impl DeviceManager {
                         outgoing_capabilities: string_list(pkt.body.get("outgoingCapabilities")),
                         tx: tx.clone(),
                         pairing_timestamp: None,
+                        outgoing_pairing: None,
+                        notified_not_paired: false,
+                        last_rx: link.last_rx.clone(),
+                        shutdown: link.shutdown.clone(),
                     };
 
                     let connected = session.to_json();
                     let mut peers = self.active_peers.write().await;
+                    if let Some(existing) = peers.get(dev_id).filter(|e| !e.tx.same_channel(tx)) {
+                        // Both devices dialled each other at once. Each side applies the same rule, so
+                        // both keep the same connection: the one the smaller device id dialled. Without
+                        // it a side can end up holding a connection the other has already dropped.
+                        let stale = chrono::Utc::now().timestamp_millis() - existing.last_rx.load(Ordering::Relaxed) > STALE_AFTER_MS;
+                        let keep_new = self.identity.device_id.as_str() < dev_id;
+                        if stale || link.outbound == keep_new {
+                            log::info!("Replacing the connection to {} (stale: {}, new one dialled by us: {})", dev_id, stale, link.outbound);
+                            // A pair request in flight must survive the swap.
+                            session.pairing_timestamp = existing.pairing_timestamp;
+                            session.outgoing_pairing = existing.outgoing_pairing;
+                            existing.shutdown.notify_one();
+                        } else {
+                            log::info!("Dropping a duplicate connection to {} (new one dialled by us: {})", dev_id, link.outbound);
+                            link.shutdown.notify_one();
+                            return;
+                        }
+                    }
+                    log::info!("Connected to {} ({}) at {}, dialled by us: {}, paired: {}", name, dev_id, remote_ip, link.outbound, is_trusted);
+                    let resend_pairing = session.outgoing_pairing;
                     peers.insert(dev_id.to_string(), session);
+                    if let Some(timestamp) = resend_pairing {
+                        let _ = tx.send(LinkPacket::new(PACKET_TYPE_PAIR, serde_json::json!({ "pair": true, "timestamp": timestamp }))).await;
+                    }
 
                     if let Some(app) = self.app_handle.read().await.as_ref() {
                         let _ = app.emit("device-connected", connected);
@@ -508,6 +592,7 @@ impl DeviceManager {
                             } else {
                                 // Peer accepted our pair request!
                                 peer.trusted = true;
+                                peer.outgoing_pairing = None;
                                 {
                                     let mut store = self.trust_store.write().await;
                                     store.pair(TrustedDevice {
@@ -532,6 +617,7 @@ impl DeviceManager {
                         } else {
                             // Pairing rejected / unpair
                             peer.trusted = false;
+                            peer.outgoing_pairing = None;
                             {
                                 let mut store = self.trust_store.write().await;
                                 store.unpair(&peer.device_id);
@@ -566,6 +652,15 @@ impl DeviceManager {
             other => {
                 let Some(dev_id) = peer_dev_id.as_deref() else { return };
                 let trusted = self.active_peers.read().await.get(dev_id).is_some_and(|p| p.trusted);
+                if !trusted {
+                    // The sender treats us as paired but we have no record of it. Say so once, so it
+                    // drops the stale pairing; not while a pairing is in flight, which would read as a refusal.
+                    let unknown = !self.trust_store.read().await.is_paired(dev_id);
+                    if let Some(peer) = self.active_peers.write().await.get_mut(dev_id).filter(|p| unknown && !p.notified_not_paired && p.pairing_timestamp.is_none()) {
+                        peer.notified_not_paired = true;
+                        let _ = peer.tx.send(LinkPacket::new(PACKET_TYPE_PAIR, serde_json::json!({ "pair": false }))).await;
+                    }
+                }
                 if trusted {
                     if self.handle_host_packet(dev_id, pkt).await {
                         return;
@@ -696,15 +791,23 @@ impl DeviceManager {
         self.send_pair_request(target_device_id).await
     }
 
-    /// Manual pairing by address: the device ID isn't known until the peer identifies itself.
-    pub async fn request_pairing_by_ip(&self, ip: &str) -> Result<(String, String), String> {
-        self.connect_to(ip, LINK_PORT).await?;
-        let device_id = self
-            .find_peer(|p| p.ip == ip)
-            .await
-            .ok_or_else(|| format!("{} connected but never identified itself", ip))?;
-        let pin = self.send_pair_request(&device_id).await?;
-        Ok((pin, device_id))
+    /// Manual pairing by address: the device ID isn't known until the peer identifies itself. A
+    /// scanned QR lists every address the device has ("a,b"); the first that answers is used.
+    pub async fn request_pairing_by_ip(&self, addresses: &str) -> Result<(String, String), String> {
+        let mut last_error = "No address to connect to".to_string();
+        for ip in addresses.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+            if let Err(e) = self.connect_to(ip, LINK_PORT).await {
+                last_error = e;
+                continue;
+            }
+            let Some(device_id) = self.find_peer(|p| p.ip == ip).await else {
+                last_error = format!("{} connected but never identified itself", ip);
+                continue;
+            };
+            let pin = self.send_pair_request(&device_id).await?;
+            return Ok((pin, device_id));
+        }
+        Err(last_error)
     }
 
     async fn send_pair_request(&self, target_device_id: &str) -> Result<String, String> {
@@ -714,12 +817,29 @@ impl DeviceManager {
             .get_mut(target_device_id)
             .ok_or_else(|| format!("Device {} not found or offline", target_device_id))?;
         peer.pairing_timestamp = Some(now_secs);
+        peer.outgoing_pairing = Some(now_secs);
         let pin = compute_verification_code(&public_key_der(&self.my_cert_der), &public_key_der(&peer.cert_der), &now_secs.to_string());
         let pair_pkt = LinkPacket::new(PACKET_TYPE_PAIR, serde_json::json!({
             "pair": true,
             "timestamp": now_secs,
         }));
         let _ = peer.tx.send(pair_pkt).await;
+        drop(peers);
+
+        let (peers, app, device_id) = (self.active_peers.clone(), self.app_handle.clone(), target_device_id.to_string());
+        tokio::spawn(async move {
+            tokio::time::sleep(PAIR_TIMEOUT).await;
+            let timed_out = peers.write().await.get_mut(&device_id).is_some_and(|p| {
+                let pending = p.outgoing_pairing == Some(now_secs);
+                if pending {
+                    p.outgoing_pairing = None;
+                }
+                pending
+            });
+            if let (true, Some(app)) = (timed_out, app.read().await.as_ref()) {
+                let _ = app.emit("pairing-failed", serde_json::json!({ "deviceId": device_id, "reason": "The other device did not answer" }));
+            }
+        });
         Ok(pin)
     }
 
@@ -762,6 +882,7 @@ impl DeviceManager {
         let mut peers = self.active_peers.write().await;
         if let Some(peer) = peers.get_mut(target_device_id) {
             peer.trusted = false;
+            peer.outgoing_pairing = None;
             let pair_pkt = LinkPacket::new(PACKET_TYPE_PAIR, serde_json::json!({
                 "pair": false,
             }));

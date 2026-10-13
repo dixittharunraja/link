@@ -144,6 +144,8 @@ const App: React.FC = () => {
   const [activeRemoteControlHostDeviceType, setActiveRemoteControlHostDeviceType] = useState<string | undefined>(undefined);
   // Remote Control Viewer State
   const [activeRemoteControlViewerDeviceId, setActiveRemoteControlViewerDeviceId] = useState<string | null>(null);
+  // What kind of device an unpaired remote control viewer is looking at; a paired one has a peer entry.
+  const [guestRemoteControlHostType, setGuestRemoteControlHostType] = useState<string | undefined>();
 
   // A host that kicks or loses the unpaired viewer ends the session; there is no peer state to show it.
   useEffect(() => {
@@ -447,6 +449,20 @@ const App: React.FC = () => {
     });
   }, [activePairRequest]);
 
+  // The device being controlled removed us: close the presenter / touchpad screen instead of
+  // leaving it up with nothing behind it. Read through a ref, since this subscribes once.
+  const remoteControlModeRef = useRef(activeRemoteControlMode);
+  remoteControlModeRef.current = activeRemoteControlMode;
+  useEffect(() => {
+    const unsubscribe = linkApi?.onInputKicked?.(() => {
+      if (remoteControlModeRef.current === 'presenter' || remoteControlModeRef.current === 'touchpad') {
+        setActiveRemoteControlMode(null);
+        setActiveRemoteControlDeviceId(null);
+      }
+    });
+    return () => unsubscribe?.();
+  }, []);
+
   // Back handler for active Remote Control mode (Presenter / Touchpad / Digitizer)
   useEffect(() => {
     if (!activeRemoteControlMode) return;
@@ -611,6 +627,26 @@ const App: React.FC = () => {
     };
     reconcileConnectedDevices();
 
+    // Brings the device list in line with the trust store and the live connections. Used after
+    // anything that changes who is paired, so the list never waits for a reload to catch up.
+    const refreshDevices = () => {
+      linkApi.getTrustedDevices()
+        .then((list: any[]) => {
+          setPeers((prev) => {
+            const copy = new Map(prev);
+            list.forEach((d: any) => {
+              const existing = copy.get(d.deviceId);
+              copy.set(d.deviceId, existing
+                ? { ...existing, name: existing.name || d.deviceName, ipAddress: existing.ipAddress || d.ipAddress, trusted: true }
+                : { deviceId: d.deviceId, name: d.deviceName, ipAddress: d.ipAddress, deviceType: d.deviceType || 'phone', trusted: true, connected: false });
+            });
+            return copy;
+          });
+        })
+        .catch((err: any) => addLog(`Failed to refresh trusted devices: ${err.message}`));
+      reconcileConnectedDevices();
+    };
+
     // 3.8.5 Fetch initial UDP discovered devices
     linkApi.getDiscoveredDevices?.()
       .then((list: any[]) => {
@@ -710,40 +746,12 @@ const App: React.FC = () => {
 
     linkApi.onTrustListUpdated?.(() => {
       addLog('Trust list updated from pool');
-      linkApi.getTrustedDevices()
-        .then((list: any[]) => {
-          setPeers((prev) => {
-            const copy = new Map(prev);
-            list.forEach((d: any) => {
-              const existing = copy.get(d.deviceId);
-              if (!existing) {
-                copy.set(d.deviceId, {
-                  deviceId: d.deviceId,
-                  name: d.deviceName,
-                  ipAddress: d.ipAddress,
-                  deviceType: d.deviceType || 'phone',
-                  trusted: true,
-                  connected: false,
-                });
-              } else {
-                copy.set(d.deviceId, {
-                  ...existing,
-                  name: existing.name || d.deviceName,
-                  ipAddress: existing.ipAddress || d.ipAddress,
-                  trusted: true,
-                });
-              }
-            });
-            return copy;
-          });
-        })
-        .catch((err: any) => addLog(`Failed to refresh trusted devices on trust update: ${err.message}`));
+      refreshDevices();
       linkApi.getPermissions?.()
         .then((perms: any) => {
           if (perms) setDevicePermissions(perms);
         })
         .catch(() => {});
-      reconcileConnectedDevices();
     });
 
     linkApi.onIncomingPairRequest((deviceId: string, deviceName: string, deviceType: string | undefined, verificationKey: string | null) => {
@@ -765,6 +773,7 @@ const App: React.FC = () => {
         }
         return copy;
       });
+      refreshDevices();
       linkApi.getPermissions()
         .then((perms: any) => setDevicePermissions(perms || {}))
         .catch((err: any) => addLog(`Failed to refresh permissions after pairing: ${err.message}`));
@@ -1041,7 +1050,9 @@ const App: React.FC = () => {
             // silently swallowing every future request (from any device) until the app was
             // force-restarted — this is why it sometimes "did nothing" even with the UI open: a
             // PRIOR hung attempt, not the current one, was the actual cause.
-            const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), 30000));
+            // 15 s, not longer: on a first launch the dialog sometimes never appears, and the viewer's
+            // repeated requests are only honoured once this attempt has been given up.
+            const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), 15000));
             const granted = await Promise.race([
               linkApi.requestRemoteControlHost?.(deviceId) ?? Promise.resolve(false),
               timeout,
@@ -1301,8 +1312,19 @@ const App: React.FC = () => {
       } else {
         addLog(`Manual connect to ${targetHost} timed out or was rejected.`);
       }
-    }).catch((err: any) => {
-      addLog(`Manual connect failed: ${err.message}`);
+    }).catch((err: any) => showPairingError(err));
+  };
+
+  // A pair request that can't reach the device must say so; otherwise clicking Pair just does nothing.
+  const showPairingError = (err: unknown) => {
+    const reason = typeof err === 'string' ? err : (err as Error)?.message || 'Could not reach the device';
+    addLog(`Pairing failed: ${reason}`);
+    setActiveModal({
+      type: 'info',
+      title: 'Could not start pairing',
+      message: reason,
+      confirmLabel: 'OK',
+      onConfirm: () => setActiveModal(null),
     });
   };
 
@@ -1323,7 +1345,7 @@ const App: React.FC = () => {
           setActiveModal(null);
         },
       });
-    });
+    }).catch((err: any) => showPairingError(err));
   };
 
   const handleToggleRing = (id: string) => {
@@ -1903,10 +1925,14 @@ const App: React.FC = () => {
                     localIdentity={localIdentity}
                     isMobile={IS_ANDROID}
                     walkieTalkieActive={walkieTalkieActive}
+                    remoteControlViewing={activeRemoteControlViewerDeviceId !== null}
                     onOpenWalkieTalkie={() => setWalkieTalkieOpen(true)}
                     onShowPresenter={(id, hostDeviceType) => handleToolConnect('presenter', id, hostDeviceType)}
                     onShowTouchpad={(id) => handleToolConnect('touchpad', id)}
-                    onShowRemoteControl={() => setActiveRemoteControlViewerDeviceId(GUEST_REMOTE_CONTROL_ID)}
+                    onShowRemoteControl={(hostDeviceType) => {
+                      setGuestRemoteControlHostType(hostDeviceType);
+                      setActiveRemoteControlViewerDeviceId(GUEST_REMOTE_CONTROL_ID);
+                    }}
                   />
                 )}
 
@@ -2044,7 +2070,7 @@ const App: React.FC = () => {
         <RemoteControlViewer
           deviceId={activeRemoteControlViewerDeviceId}
           deviceName={peers.get(activeRemoteControlViewerDeviceId)?.name || 'Remote Device'}
-          hostDeviceType={activeRemoteControlViewerDeviceId === GUEST_REMOTE_CONTROL_ID ? 'desktop' : peers.get(activeRemoteControlViewerDeviceId)?.deviceType}
+          hostDeviceType={activeRemoteControlViewerDeviceId === GUEST_REMOTE_CONTROL_ID ? guestRemoteControlHostType : peers.get(activeRemoteControlViewerDeviceId)?.deviceType}
           hostConnected={peers.get(activeRemoteControlViewerDeviceId)?.connected}
           onClose={() => setActiveRemoteControlViewerDeviceId(null)}
           onEndSession={() => setActiveRemoteControlViewerDeviceId(null)}

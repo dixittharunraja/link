@@ -57,7 +57,8 @@ mod imp {
     // stream to match its native 48 kHz, so the engine is asked to resample whenever the mixer
     // runs at something else.
     const TARGET_RATE: u32 = 48_000;
-    const BUFFER_100NS: i64 = 400_000;
+    // 20 ms: enough for the engine to hand over a period at a time, half the delay of the old 40 ms.
+const BUFFER_100NS: i64 = 200_000;
 
     pub fn default_render_id() -> Option<String> {
         // SAFETY: plain COM calls on a live device; the returned id string is freed exactly once.
@@ -199,7 +200,7 @@ mod imp {
             // SAFETY: GetBuffer/ReleaseBuffer are paired, and the slice is copied before release.
             unsafe {
                 if session.capture.GetNextPacketSize().unwrap_or(0) == 0 {
-                    std::thread::sleep(Duration::from_millis(3));
+                    std::thread::sleep(Duration::from_millis(1));
                     continue;
                 }
                 let mut data = ptr::null_mut();

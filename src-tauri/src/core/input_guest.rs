@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::core::guest::{close_with, send_json, Decision, GuestSocket, CLOSE_MALFORMED, CLOSE_UNKNOWN_JOIN};
+use crate::core::guest::{close_with, connect_guest_client, send_json, Decision, GuestSocket, CLOSE_MALFORMED, CLOSE_UNKNOWN_JOIN};
 use crate::core::host::{remote_control_lines, CAPTURE_INTERVAL};
 use crate::core::plugins::{input, screen};
 use crate::core::transport::DeviceManager;
@@ -29,6 +29,7 @@ struct InputGuest {
 #[derive(Default)]
 pub struct InputGuests {
     admitted: Mutex<HashMap<String, InputGuest>>,
+    client: Mutex<Option<mpsc::Sender<ClientCmd>>>,
 }
 
 impl InputGuests {
@@ -130,7 +131,14 @@ async fn connection(manager: Arc<DeviceManager>, mut guest: GuestSocket) {
                 _ => {}
             },
             Some(frame) = frames_rx.recv() => {
-                send_json(&mut guest.ws, frame).await;
+                // A slow viewer can stall this write for a long time; a kick must not wait for it.
+                let sent = tokio::select! {
+                    sent = send_json(&mut guest.ws, frame) => sent,
+                    _ = kick_rx.recv() => false,
+                };
+                if !sent {
+                    break;
+                }
             }
             reason = kick_rx.recv() => {
                 close_with(&mut guest.ws, 1000, reason.unwrap_or("removed by host")).await;
@@ -174,11 +182,110 @@ impl DeviceManager {
         json!({ "admittedGuests": guests, "pairedSessions": self.paired_input_sessions().await })
     }
 
-    pub fn kick_input_guest(&self, ip: &str) {
+    /// Removes whoever is driving the presenter or remote input: a guest (by address) has its
+    /// socket closed; a paired device (by address or device id) loses its live session and is told
+    /// to close its screen, since it has no socket of its own to close.
+    pub async fn kick_input(&self, target: &str) {
+        let paired_ip = self.connected_peers().await.into_iter().find(|p| p["deviceId"].as_str() == Some(target)).and_then(|p| p["ipAddress"].as_str().map(str::to_string));
+        let ip = paired_ip.clone().unwrap_or_else(|| target.to_string());
+        // Dropped from the roster at once: the socket may take a while to wind down.
         self.input_guests.with(|guests| {
-            if let Some(guest) = guests.get(ip) {
+            if let Some(guest) = guests.remove(&ip) {
                 let _ = guest.kick.try_send("removed by host");
             }
         });
+        let paired_id = match paired_ip {
+            Some(_) => Some(target.to_string()),
+            None => self.paired_device_at(&ip).await,
+        };
+        if let Some(device_id) = paired_id {
+            self.clear_input_activity(&device_id).await;
+            let _ = self.send_packet(&device_id, "link.input.kicked", json!({})).await;
+        }
+        self.emit_event("input-guest-roster-changed", Value::Null).await;
+    }
+}
+
+// ---- joining another device's input-guest server (this PC as the remote-control viewer) ----
+
+enum ClientCmd {
+    Packet(String, Value),
+    Leave,
+}
+
+impl DeviceManager {
+    /// Joins a phone's guest server by address (several, comma separated, are raced). The phone
+    /// shows the PIN and asks its user; a paired device is let straight in.
+    pub async fn join_input_guest(self: &Arc<Self>, host: &str, name: Option<String>, mode: &str) -> Result<(), String> {
+        self.leave_input_guest().await;
+        let hosts: Vec<&str> = host.split(',').map(str::trim).filter(|h| !h.is_empty()).collect();
+        if hosts.is_empty() {
+            return Err("No address to connect to".into());
+        }
+        let attempts = hosts.iter().map(|h| Box::pin(connect_guest_client(self, h, INPUT_GUEST_PORT)));
+        let (mut ws, server_cert) = match futures_util::future::select_ok(attempts).await {
+            Ok((connected, _)) => connected,
+            Err(message) => {
+                self.emit_event("input-guest-error", json!({ "error": message })).await;
+                return Ok(());
+            }
+        };
+        let Ok(peer) = ws.get_ref().get_ref().0.peer_addr() else { return Err("The connection closed immediately".into()) };
+
+        self.emit_event("input-guest-pin-required", json!({ "pin": self.guest_pin(&server_cert) })).await;
+        let name = match name {
+            Some(name) => name,
+            None => self.device_name.read().await.clone(),
+        };
+        send_json(&mut ws, json!({ "type": "join-guest", "deviceName": name, "mode": mode })).await;
+
+        let (tx, mut commands) = mpsc::channel(32);
+        self.input_guests.client.lock().map(|mut c| *c = Some(tx)).ok();
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let reason = loop {
+                tokio::select! {
+                    incoming = ws.next() => match incoming {
+                        Some(Ok(Message::Text(text))) => {
+                            let Ok(msg) = serde_json::from_str::<Value>(text.as_str()) else { continue };
+                            match msg["type"].as_str() {
+                                Some("admitted") => manager.emit_event("input-guest-admitted", json!({
+                                    "mode": msg["mode"], "host": peer.ip().to_string(), "hostDeviceType": msg["hostDeviceType"],
+                                })).await,
+                                Some("packet") => manager.emit_event("input-guest-packet", json!({ "packetType": msg["packetType"], "body": msg["body"] })).await,
+                                _ => {}
+                            }
+                        }
+                        Some(Ok(Message::Close(frame))) => break frame.map(|f| f.reason.to_string()).filter(|r| !r.is_empty()).unwrap_or_else(|| "disconnected".into()),
+                        None | Some(Err(_)) => break "connection lost".to_string(),
+                        _ => {}
+                    },
+                    command = commands.recv() => match command {
+                        Some(ClientCmd::Packet(packet_type, body)) => { send_json(&mut ws, json!({ "type": "packet", "packetType": packet_type, "body": body })).await; }
+                        Some(ClientCmd::Leave) | None => {
+                            let _ = ws.close(None).await;
+                            return;
+                        }
+                    }
+                }
+            };
+            manager.input_guests.client.lock().map(|mut c| *c = None).ok();
+            manager.emit_event("input-guest-closed", json!({ "reason": reason })).await;
+        });
+        Ok(())
+    }
+
+    pub async fn leave_input_guest(&self) {
+        let session = self.input_guests.client.lock().ok().and_then(|mut c| c.take());
+        if let Some(tx) = session {
+            let _ = tx.send(ClientCmd::Leave).await;
+        }
+    }
+
+    pub async fn send_input_guest_packet(&self, packet_type: String, body: Value) {
+        let session = self.input_guests.client.lock().ok().and_then(|c| c.clone());
+        if let Some(tx) = session {
+            let _ = tx.send(ClientCmd::Packet(packet_type, body)).await;
+        }
     }
 }

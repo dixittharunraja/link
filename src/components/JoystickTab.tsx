@@ -274,7 +274,6 @@ const JoystickTab: React.FC<JoystickTabProps> = ({ localIdentity, isMobile }) =>
             ) : (
               <>
                 Joystick emulates an Xbox controller using ViGEmBus, a free virtual gamepad driver for Windows.
-                {driverError === 'helper_not_bundled' && ' (The Joystick driver helper isn’t bundled in this build yet.)'}
               </>
             )}
           </div>

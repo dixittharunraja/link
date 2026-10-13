@@ -112,38 +112,6 @@ pub async fn get_pool_hash(state: State<'_, AppState>) -> Result<String, String>
     Ok(store.compute_pool_hash())
 }
 
-// Re-creates the inbound firewall rule for this executable. Windows silently blocks a listening
-// app whose first-run prompt was dismissed, which shows up as devices that are discovered but
-// never connect. The installer normally creates the rule; this repairs it from inside the app.
-#[tauri::command]
-pub async fn repair_firewall() -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?.display().to_string();
-        let script = format!(
-            "netsh advfirewall firewall delete rule name=all program=\"{exe}\";              netsh advfirewall firewall add rule name=Link dir=in action=allow program=\"{exe}\" profile=any enable=yes"
-        );
-        // Start-Process -Verb RunAs raises the UAC prompt; netsh needs admin rights.
-        let launcher = format!(
-            "Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','{}'",
-            script.replace('\'', "''")
-        );
-        let status = tokio::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &launcher])
-            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-            .status()
-            .await
-            .map_err(|e| e.to_string())?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err("The firewall change was cancelled or failed.".to_string())
-        }
-    }
-    #[cfg(not(windows))]
-    Err("Firewall repair is only available on Windows.".to_string())
-}
-
 #[tauri::command]
 pub async fn get_connected_devices(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
     Ok(state.device_manager.connected_peers().await)
@@ -387,7 +355,7 @@ pub async fn get_input_guest_status(state: State<'_, AppState>) -> Result<serde_
 
 #[tauri::command]
 pub async fn kick_input_guest(ip: String, state: State<'_, AppState>) -> Result<(), String> {
-    state.device_manager.kick_input_guest(&ip);
+    state.device_manager.kick_input(&ip).await;
     Ok(())
 }
 
@@ -693,5 +661,24 @@ pub async fn query_audio_sink_sessions(state: State<'_, AppState>) -> Result<(),
 #[tauri::command]
 pub async fn query_remote_mic_sessions(state: State<'_, AppState>) -> Result<(), String> {
     query_paired_peers(&state.device_manager, "link.remotemic.query").await;
+    Ok(())
+}
+
+// ---- joining another device's input-guest server (remote control viewer) ----
+
+#[tauri::command]
+pub async fn join_input_guest(host: String, name: Option<String>, mode: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+    state.device_manager.join_input_guest(&host, name, mode.as_deref().unwrap_or("remotecontrol")).await
+}
+
+#[tauri::command]
+pub async fn leave_input_guest(state: State<'_, AppState>) -> Result<(), String> {
+    state.device_manager.leave_input_guest().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn send_input_guest_packet(packet_type: String, body: serde_json::Value, state: State<'_, AppState>) -> Result<(), String> {
+    state.device_manager.send_input_guest_packet(packet_type, body).await;
     Ok(())
 }

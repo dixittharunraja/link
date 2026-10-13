@@ -289,6 +289,9 @@ if (IS_ANDROID) {
     onFindMyDeviceStopped: (cb: (deviceId: string) => void) => {
       subscribe('findMyDeviceStopped', (data: any) => cb(data.deviceId));
     },
+    onInputKicked: (cb: (deviceId: string) => void) => {
+      subscribe('inputKicked', (data: any) => cb(data.deviceId));
+    },
     onLockStateReceived: (cb: (deviceId: string, isLocked: boolean) => void) => {
       subscribe('lockStateReceived', (data: any) => cb(data.deviceId, data.isLocked));
     },
@@ -488,6 +491,9 @@ if (IS_ANDROID) {
       native.sendWalkieTalkieGuestSignal({ connId, type, body: JSON.stringify(body || {}) }),
     onWalkieTalkieGuestPinPending: (cb: (connId: string, pin: string, remoteAddress: string, deviceName?: string) => void) => {
       subscribe('walkieTalkieGuestPinPending', (data: any) => cb(data.connId, data.pin, data.remoteAddress, data.deviceName));
+    },
+    onWalkieTalkieGuestJoined: (cb: (connId: string, remoteAddress: string, deviceName: string) => void) => {
+      subscribe('walkieTalkieGuestJoined', (data: any) => cb(data.connId, data.remoteAddress, data.deviceName));
     },
     onWalkieTalkieGuestSignal: (cb: (connId: string, type: string, body: any) => void) => {
       subscribe('walkieTalkieGuestSignal', (data: any) => {
@@ -749,8 +755,6 @@ if (!IS_ANDROID && !(window as any).link) {
     onDeviceExpired: (cb: (deviceId: string) => void) => tauriSubscribe('device-expired', (data) => cb(data.deviceId)),
     connectTo: (host: string) => invoke('connect_to', { host }),
 
-    repairFirewall: () => invoke('repair_firewall'),
-
     // Pairing
     requestPairing: (deviceId: string) => invoke('request_pairing', { deviceId }),
     requestPairingByIp: (ip: string) => invoke('request_pairing_by_ip', { ip }),
@@ -829,12 +833,32 @@ if (!IS_ANDROID && !(window as any).link) {
       if (specialKey) body.specialKey = specialKey;
       return sendPacket(deviceId, 'link.remoteinput.send', body);
     },
-    sendRemoteControlSignal: (deviceId: string, signal: Record<string, unknown>) => sendPacket(deviceId, 'link.remotecontrol.signal', signal),
-    sendRemoteControlInput: (deviceId: string, input: Record<string, unknown>) => sendPacket(deviceId, 'link.remotecontrol.input', input),
-    onRemoteControlSignal: (cb: (deviceId: string, signal: any) => void) =>
-      onPeerPacket('link.remotecontrol.signal', (id, body) => cb(id, body)),
-    onRemoteControlStream: (cb: (deviceId: string, frame: any) => void) =>
-      onPeerPacket('link.remotecontrol.stream', (id, body) => cb(id, body)),
+    // An unpaired phone viewed by address has no device id; the viewer uses a stand-in and these
+    // route it through the guest socket instead of a paired connection.
+    sendRemoteControlSignal: (deviceId: string, signal: Record<string, unknown>) => {
+      if (deviceId !== GUEST_REMOTE_CONTROL_ID) return sendPacket(deviceId, 'link.remotecontrol.signal', signal);
+      return signal.type === 'stop'
+        ? invoke('leave_input_guest')
+        : invoke('send_input_guest_packet', { packetType: 'link.remotecontrol.signal', body: signal });
+    },
+    sendRemoteControlInput: (deviceId: string, input: Record<string, unknown>) =>
+      deviceId === GUEST_REMOTE_CONTROL_ID
+        ? invoke('send_input_guest_packet', { packetType: 'link.remotecontrol.input', body: input })
+        : sendPacket(deviceId, 'link.remotecontrol.input', input),
+    onRemoteControlSignal: (cb: (deviceId: string, signal: any) => void) => {
+      const unsubGuest = tauriSubscribe('input-guest-packet', (data) => {
+        if (data.packetType === 'link.remotecontrol.signal') cb(GUEST_REMOTE_CONTROL_ID, data.body);
+      });
+      const unsubPaired = onPeerPacket('link.remotecontrol.signal', (id, body) => cb(id, body));
+      return () => { unsubGuest(); unsubPaired(); };
+    },
+    onRemoteControlStream: (cb: (deviceId: string, frame: any) => void) => {
+      const unsubGuest = tauriSubscribe('input-guest-packet', (data) => {
+        if (data.packetType === 'link.remotecontrol.stream') cb(GUEST_REMOTE_CONTROL_ID, data.body);
+      });
+      const unsubPaired = onPeerPacket('link.remotecontrol.stream', (id, body) => cb(id, body));
+      return () => { unsubGuest(); unsubPaired(); };
+    },
     requestRemoteControlHost: () => Promise.resolve(false),
     stopRemoteControlHost: () => Promise.resolve(),
     sendPresenterMove: (deviceId: string, dx: number, dy: number) => sendInputLine(deviceId, `pmove ${dx} ${dy}`),
@@ -877,8 +901,8 @@ if (!IS_ANDROID && !(window as any).link) {
       tauriSubscribe('joystick-guest-pin-pending', (data) => cb(data[0], data[1], data[2], data[3])),
     startInputGuestHost: () => Promise.resolve(),
     stopInputGuestHost: () => Promise.resolve(),
-    joinInputGuest: () => Promise.resolve(),
-    leaveInputGuest: () => Promise.resolve(),
+    joinInputGuest: (host: string, name?: string, mode?: string) => invoke('join_input_guest', { host, name, mode }),
+    leaveInputGuest: () => invoke('leave_input_guest'),
     getInputGuestStatus: () => invoke('get_input_guest_status'),
     acceptInputGuest: (connId: string) => invoke('accept_input_guest', { connId }),
     rejectInputGuest: (connId: string) => invoke('reject_input_guest', { connId }),
@@ -886,10 +910,11 @@ if (!IS_ANDROID && !(window as any).link) {
     kickInputGuest: (ip: string) => invoke('kick_input_guest', { ip }),
     onInputGuestPinPending: (cb: (connId: string, pin: string, remoteAddress: string, name: string, mode: string) => void) =>
       tauriSubscribe('input-guest-pin-pending', (data) => cb(data[0], data[1], data[2], data[3], data[4])),
-    onInputGuestPinRequired: noopUnsub,
-    onInputGuestAdmitted: noopUnsub,
-    onInputGuestClosed: noopUnsub,
-    onInputGuestError: noopUnsub,
+    onInputGuestPinRequired: (cb: (pin: string) => void) => tauriSubscribe('input-guest-pin-required', (data) => cb(data.pin)),
+    onInputGuestAdmitted: (cb: (mode: 'presenter' | 'touchpad' | 'remotecontrol', resolvedHost?: string, hostDeviceType?: string) => void) =>
+      tauriSubscribe('input-guest-admitted', (data) => cb(data.mode || 'touchpad', data.host, data.hostDeviceType)),
+    onInputGuestClosed: (cb: (reason: string) => void) => tauriSubscribe('input-guest-closed', (data) => cb(data.reason || 'disconnected')),
+    onInputGuestError: (cb: (error: string) => void) => tauriSubscribe('input-guest-error', (data) => cb(data.error || 'Failed to connect')),
     onInputGuestRosterChanged: (cb: () => void) => tauriSubscribe('input-guest-roster-changed', () => cb()),
 
     // Audio Sink
@@ -992,6 +1017,8 @@ if (!IS_ANDROID && !(window as any).link) {
       invoke('send_walkie_talkie_guest_signal', { connId, kind: type, body: body || {} }),
     onWalkieTalkieGuestPinPending: (cb: (connId: string, pin: string, remoteAddress: string, deviceName?: string) => void) =>
       tauriSubscribe('walkie-talkie-guest-pin-pending', (data) => cb(data[0], data[1], data[2], data[3])),
+    onWalkieTalkieGuestJoined: (cb: (connId: string, remoteAddress: string, deviceName: string) => void) =>
+      tauriSubscribe('walkie-talkie-guest-joined', (data) => cb(data[0], data[1], data[2])),
     onWalkieTalkieGuestSignal: (cb: (connId: string, type: string, body: any) => void) =>
       tauriSubscribe('walkie-talkie-guest-signal', (data) => cb(data[0], data[1], data[2] ?? {})),
     onWalkieTalkieGuestLeft: (cb: (connId: string) => void) => tauriSubscribe('walkie-talkie-guest-left', (data) => cb(data)),
@@ -1127,6 +1154,7 @@ if (!IS_ANDROID && !(window as any).link) {
       tauriSubscribe('find-my-device-triggered', (data) => cb(data.deviceId)),
     onFindMyDeviceStopped: (cb: (deviceId: string) => void) =>
       tauriSubscribe('find-my-device-stopped', (data) => cb(data.deviceId)),
+    onInputKicked: (cb: (deviceId: string) => void) => onPeerPacket('link.input.kicked', (id) => cb(id)),
     onLockStateReceived: (cb: (deviceId: string, isLocked: boolean) => void) =>
       onPeerPacket('link.lock', (id, body) => cb(id, !!body.isLocked)),
     onLockResultReceived: (cb: (deviceId: string, success: boolean) => void) =>

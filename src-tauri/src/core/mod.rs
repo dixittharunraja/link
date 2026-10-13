@@ -23,3 +23,4 @@ pub mod joystick;
 pub mod walkie_talkie;
 pub mod portal;
 pub mod audio_sink;
+pub mod reconnect;

@@ -70,7 +70,7 @@ const NotificationsTab: React.FC<NotificationsTabProps> = ({
                 <div key={item.key} className="notif-card" style={{ marginBottom: '12px' }}>
                   {body.title && (
                     <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '2px' }}>
-                      {body.appName} (from {deviceName})
+                      {deviceName ? `${deviceName} • ${body.appName}` : body.appName}
                     </div>
                   )}
                   <div style={{ fontWeight: 600 }}>{titleText}</div>

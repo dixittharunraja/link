@@ -77,8 +77,10 @@ pub fn attach(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry>
             // Start background TCP TLS transport server
             let dm = device_manager.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = dm.start_server().await {
-                    log::error!("[Link Transport Error]: {}", e);
+                let reconnecting = dm.clone();
+                match dm.start_server().await {
+                    Ok(()) => reconnecting.start_reconnect_loop(),
+                    Err(e) => log::error!("[Link Transport Error]: {}", e),
                 }
             });
 
@@ -157,7 +159,6 @@ pub fn attach(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry>
             commands::rename_device,
             commands::rename_trusted_device,
             commands::get_pool_hash,
-            commands::repair_firewall,
             commands::get_connected_devices,
             commands::send_packet,
             commands::run_speed_test,
@@ -192,6 +193,9 @@ pub fn attach(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry>
             commands::fs_mount_device,
             commands::get_input_guest_status,
             commands::kick_input_guest,
+            commands::join_input_guest,
+            commands::leave_input_guest,
+            commands::send_input_guest_packet,
             commands::accept_input_guest,
             commands::reject_input_guest,
             commands::block_input_guest,

@@ -10,13 +10,14 @@ const linkApi = (window as any).link as LinkApi;
 interface RemoteControlGuestTabProps {
   localIdentity: { deviceId: string; deviceName: string; ipAddress?: string; ipAddresses?: string[]; deviceType?: string };
   isMobile: boolean;
-  onLaunchViewer?: () => void;
+  onLaunchViewer?: (hostDeviceType?: string) => void;
 }
 
 type Guest = { ip?: string; deviceId?: string; name: string; mode: string };
 
-// The PC hosts (shows its screen to a phone that joins by address and PIN); the phone is the
-// viewer. Unlike the Remote Control of a paired device, nothing is trusted or remembered.
+// Either device can host (show its screen to whoever joins by address and PIN) and either can be the
+// viewer. Unlike the Remote Control of a paired device, nothing is trusted or remembered; a paired
+// device simply isn't asked for a PIN.
 const RemoteControlGuestTab: React.FC<RemoteControlGuestTabProps> = ({ localIdentity, isMobile: _isMobile, onLaunchViewer }) => {
   const [admittedGuest, setAdmittedGuest] = useState<Guest | null>(null);
   const [pendingGuests, setPendingGuests] = useState<{ connId: string; ip: string; name: string; pin: string }[]>([]);
@@ -49,6 +50,8 @@ const RemoteControlGuestTab: React.FC<RemoteControlGuestTabProps> = ({ localIden
 
   useEffect(() => {
     if (!linkApi) return;
+    // The phone hosts too, so the server that admits guests has to be running.
+    Promise.resolve(linkApi.startInputGuestHost?.()).catch(() => {});
     refreshGuestStatus();
 
     const unsubRoster = linkApi.onInputGuestRosterChanged?.(() => refreshGuestStatus());
@@ -61,10 +64,10 @@ const RemoteControlGuestTab: React.FC<RemoteControlGuestTabProps> = ({ localIden
       setPin(computedPin);
       setConnectingPhase('waiting-pin');
     });
-    const unsubAdmitted = linkApi.onInputGuestAdmitted?.((admittedMode) => {
+    const unsubAdmitted = linkApi.onInputGuestAdmitted?.((admittedMode, _resolvedHost, hostDeviceType) => {
       if (admittedMode === 'remotecontrol') {
         resetConnecting();
-        onLaunchViewer?.();
+        onLaunchViewer?.(hostDeviceType);
       }
     });
     const unsubClosed = linkApi.onInputGuestClosed?.((reason) => {
@@ -127,6 +130,8 @@ const RemoteControlGuestTab: React.FC<RemoteControlGuestTabProps> = ({ localIden
               if (admittedGuest.ip) {
                 await linkApi.kickInputGuest?.(admittedGuest.ip);
               } else if (admittedGuest.deviceId) {
+                // Stops this PC's own stream too; telling the phone to stop alone left it running here.
+                await linkApi.kickInputGuest?.(admittedGuest.deviceId);
                 await linkApi.sendRemoteControlSignal?.(admittedGuest.deviceId, { type: 'stop' });
               }
               refreshGuestStatus();
@@ -137,6 +142,7 @@ const RemoteControlGuestTab: React.FC<RemoteControlGuestTabProps> = ({ localIden
                 await linkApi.kickInputGuest?.(admittedGuest.ip);
               } else if (admittedGuest.deviceId) {
                 await linkApi.blockDevice?.(admittedGuest.deviceId, admittedGuest.name || 'Remote Device', 'device');
+                await linkApi.kickInputGuest?.(admittedGuest.deviceId);
                 await linkApi.sendRemoteControlSignal?.(admittedGuest.deviceId, { type: 'stop' });
               }
               refreshGuestStatus();

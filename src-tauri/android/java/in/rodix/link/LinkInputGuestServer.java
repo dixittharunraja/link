@@ -42,6 +42,8 @@ public class LinkInputGuestServer extends WebSocketServer {
         void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName, String mode);
         void onGuestJoined(String remoteAddress, String deviceName, String mode);
         void onGuestLeft(String remoteAddress);
+        /** A packet an admitted remote-control guest sent over its socket. */
+        void onGuestPacket(String remoteAddress, String packetType, String bodyJson);
         void onError(String message);
         // Fires once the underlying WebSocketServer has actually bound and is accepting
         // connections — WebSocketServer.start() itself is fire-and-forget (spins up its accept
@@ -186,6 +188,14 @@ public class LinkInputGuestServer extends WebSocketServer {
 
             if ("join-guest".equals(type)) {
                 handleJoinGuest(conn, obj);
+            } else if ("packet".equals(type)) {
+                for (AdmittedGuest guest : admittedGuests.values()) {
+                    if (guest.conn == conn && "remotecontrol".equals(guest.mode) && listener != null) {
+                        JSONObject body = obj.optJSONObject("body");
+                        listener.onGuestPacket(guest.remoteAddress, obj.optString("packetType"), body != null ? body.toString() : "{}");
+                        break;
+                    }
+                }
             }
         } catch (Exception e) {
             Log.e(TAG, "Error handling message", e);
@@ -239,6 +249,19 @@ public class LinkInputGuestServer extends WebSocketServer {
 
         String deviceName = msg.optString("deviceName", "Remote Controller");
         String mode = msg.optString("mode", "touchpad");
+        // Presenter and remote input steer a computer or TV from a phone. A phone has nothing to
+        // point or type into, and the same QR code is accepted by every scanner in the app, so a
+        // phone can be scanned here by mistake.
+        if (!"remotecontrol".equals(mode) && "phone".equals(hostDeviceType)) {
+            conn.close(4011, "unsupported target");
+            return;
+        }
+        // A paired device has already been vouched for; only strangers get the PIN prompt.
+        LinkTrustStore.TrustedDevice trusted = new LinkTrustStore(context).findByPublicKey(peerPublicKeyDer);
+        if (trusted != null) {
+            admit(conn, remoteAddress, deviceName, mode);
+            return;
+        }
         String pin = LinkVerification.computeCode(myPublicKeyDer, peerPublicKeyDer, "");
 
         final String finalIp = remoteAddress;
@@ -265,23 +288,35 @@ public class LinkInputGuestServer extends WebSocketServer {
         PendingGuest pending = pendingGuests.remove(connId);
         if (pending == null) return false;
         if (pending.timeoutFuture != null) pending.timeoutFuture.cancel(false);
+        admit(pending.conn, pending.remoteAddress, pending.deviceName, pending.mode);
+        return true;
+    }
 
-        admittedGuests.put(pending.remoteAddress, new AdmittedGuest(pending.conn, pending.remoteAddress, pending.deviceName, pending.mode));
+    private synchronized void admit(WebSocket conn, String remoteAddress, String deviceName, String mode) {
+        admittedGuests.put(remoteAddress, new AdmittedGuest(conn, remoteAddress, deviceName, mode));
 
         try {
             JSONObject res = new JSONObject();
             res.put("type", "admitted");
-            res.put("mode", pending.mode);
+            res.put("mode", mode);
             // Lets the guest's own UI (e.g. PresenterOverlay) pick portrait vs landscape by what
             // it's actually controlling — this device's real declared type, not a guess.
             res.put("hostDeviceType", hostDeviceType);
-            pending.conn.send(res.toString());
+            conn.send(res.toString());
         } catch (Exception ignored) {}
 
         if (listener != null) {
-            listener.onGuestJoined(pending.remoteAddress, pending.deviceName, pending.mode);
+            listener.onGuestJoined(remoteAddress, deviceName, mode);
         }
-        return true;
+    }
+
+    /** Sends a packet to an admitted remote-control guest, wrapped the way the guest unwraps it. */
+    public void sendPacket(String remoteAddress, LinkPacket packet) {
+        AdmittedGuest guest = admittedGuests.get(remoteAddress);
+        if (guest == null || !guest.conn.isOpen()) return;
+        try {
+            guest.conn.send(new JSONObject().put("type", "packet").put("packetType", packet.type).put("body", packet.body).toString());
+        } catch (Exception ignored) {}
     }
 
     public void rejectGuest(String connId) {

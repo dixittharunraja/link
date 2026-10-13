@@ -1,36 +1,25 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use tauri::Manager;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::core::plugins::gamepad::{self, Command, Gamepads, Rumble, Unavailable, MAX_PADS};
 use crate::core::guest::{close_with, send_json, Decision, GuestSocket, CLOSE_MALFORMED, CLOSE_UNKNOWN_JOIN};
 use crate::core::transport::DeviceManager;
 
 // A phone as a game controller: the phone joins over a TLS WebSocket (PIN confirmed unless it is
 // paired), then streams stick/button state as UDP "js ..." lines to the input relay. Each
-// controller gets one of four virtual Xbox pads, created by the bundled joystick helper through
-// the ViGEm driver. Rumble from games travels back to the phone, and a controller that goes quiet
+// controller gets one of four virtual Xbox pads, created through the ViGEm driver. Rumble from games travels back to the phone, and a controller that goes quiet
 // is unplugged.
 
 pub const JOYSTICK_PORT: u16 = crate::core::transport::LINK_PORT + 9;
-const MAX_PADS: usize = 4;
 const SWEEP_INTERVAL: Duration = Duration::from_secs(3);
 const LIVENESS_TIMEOUT: Duration = Duration::from_secs(8);
 const PING_INTERVAL: Duration = Duration::from_secs(1);
-const HELPER_READY_TIMEOUT: Duration = Duration::from_secs(3);
-const HELPER_EXE: &str = "joystick-helper.exe";
-// The helper drives a kernel-level virtual device, so it only runs if it is exactly the binary
-// that shipped with this app.
-const HELPER_SHA256: &str = "2252c609568bd230f9d43474d14ef7c2d2117cb59c26c1415e1437894b42208b";
 
 enum ToGuest {
     Ping,
@@ -46,10 +35,8 @@ struct Controller {
 }
 
 #[derive(Default)]
-struct Helper {
-    stdin: Option<ChildStdin>,
-    child: Option<Child>,
-    ready: bool,
+struct Driver {
+    pads: Option<Gamepads>,
     status: String,
     error: Option<String>,
 }
@@ -57,137 +44,54 @@ struct Helper {
 #[derive(Default)]
 pub struct Joystick {
     controllers: Mutex<HashMap<String, Controller>>,
-    helper: tokio::sync::Mutex<Helper>,
-    ready: Notify,
-}
-
-fn find_helper(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(resources) = app.path().resource_dir() {
-        candidates.push(resources.join("vendor").join("joystick-helper").join(HELPER_EXE));
-    }
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("vendor").join("joystick-helper").join(HELPER_EXE));
-    candidates.into_iter().find(|p| p.exists())
+    driver: tokio::sync::Mutex<Driver>,
 }
 
 impl DeviceManager {
-    async fn set_joystick_status(&self, status: &str, error: Option<&str>) {
-        {
-            let mut helper = self.joystick.helper.lock().await;
-            helper.status = status.to_string();
-            helper.error = error.map(str::to_string);
+    /// Connects to the virtual-controller driver if not already; false when it is missing or unusable.
+    async fn start_joystick_driver(self: &Arc<Self>) -> bool {
+        // Held across the connect, so two joiners at once don't start two driver threads.
+        let mut driver = self.joystick.driver.lock().await;
+        if driver.pads.is_some() {
+            return true;
         }
+        let (rumble_tx, mut rumble_rx) = mpsc::unbounded_channel();
+        let outcome = gamepad::start(rumble_tx).await;
+        let (status, error) = match &outcome {
+            Ok(_) => ("ready", None),
+            Err(Unavailable::NotInstalled) => ("missing", Some("driver_not_found".to_string())),
+            Err(Unavailable::Other(reason)) => {
+                log::warn!("Virtual controller driver unavailable: {}", reason);
+                ("error", Some(reason.clone()))
+            }
+        };
+        driver.status = status.to_string();
+        driver.error = error.clone();
+        let started = outcome.map(|pads| driver.pads = Some(pads)).is_ok();
+        drop(driver);
         self.emit_event("joystick-driver-status", json!({ "status": status, "error": error })).await;
-    }
-
-    /// Starts the helper if it isn't running; false when it is missing or fails its integrity check.
-    async fn start_joystick_helper(self: &Arc<Self>) -> bool {
-        if self.joystick.helper.lock().await.child.is_some() {
-            return true;
-        }
-        let Some(app) = self.app_handle().await else { return false };
-        let Some(exe) = find_helper(&app) else {
-            self.set_joystick_status("missing", Some("helper_not_bundled")).await;
-            return false;
-        };
-        let intact = std::fs::read(&exe).map(|bytes| hex::encode(Sha256::digest(bytes)) == HELPER_SHA256).unwrap_or(false);
-        if !intact {
-            self.set_joystick_status("error", Some("helper_integrity_check_failed")).await;
-            return false;
-        }
-
-        let mut command = Command::new(&exe);
-        command.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true);
-        #[cfg(windows)]
-        command.creation_flags(0x0800_0000);
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(_) => {
-                self.set_joystick_status("error", Some("spawn_failed")).await;
-                return false;
-            }
-        };
-        let stdout = child.stdout.take();
-        {
-            let mut helper = self.joystick.helper.lock().await;
-            helper.stdin = child.stdin.take();
-            helper.child = Some(child);
-            helper.ready = false;
-        }
-
-        let manager = self.clone();
-        tokio::spawn(async move {
-            if let Some(stdout) = stdout {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    manager.joystick_helper_line(&line).await;
+        if started {
+            let manager = self.clone();
+            tokio::spawn(async move {
+                while let Some(rumble) = rumble_rx.recv().await {
+                    manager.joystick_rumble(rumble).await;
                 }
-            }
-            manager.joystick_helper_exited().await;
-        });
-        true
+            });
+        }
+        started
     }
 
-    async fn joystick_helper_line(&self, line: &str) {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        match parts.as_slice() {
-            ["ready"] => {
-                self.joystick.helper.lock().await.ready = true;
-                self.set_joystick_status("ready", None).await;
-                self.joystick.ready.notify_waiters();
-            }
-            ["error", reason, ..] => {
-                self.joystick.helper.lock().await.ready = false;
-                self.set_joystick_status(if *reason == "driver_not_found" { "missing" } else { "error" }, Some(reason)).await;
-                self.joystick.ready.notify_waiters();
-            }
-            ["rumble", slot, large, small, ..] => {
-                let (Ok(slot), Ok(large), Ok(small)) = (slot.parse::<usize>(), large.parse::<u8>(), small.parse::<u8>()) else { return };
-                let tx = self.joystick.controllers.lock().ok().and_then(|c| c.values().find(|c| c.slot == slot).map(|c| c.tx.clone()));
-                if let Some(tx) = tx {
-                    let _ = tx.send(ToGuest::Rumble { large, small }).await;
-                }
-            }
-            _ => {}
+    async fn joystick_rumble(&self, rumble: Rumble) {
+        let tx = self.joystick.controllers.lock().ok().and_then(|c| c.values().find(|c| c.slot == rumble.slot).map(|c| c.tx.clone()));
+        if let Some(tx) = tx {
+            let _ = tx.send(ToGuest::Rumble { large: rumble.large, small: rumble.small }).await;
         }
     }
 
-    // The helper died: every controller lost its virtual pad.
-    async fn joystick_helper_exited(&self) {
-        {
-            let mut helper = self.joystick.helper.lock().await;
-            helper.child = None;
-            helper.stdin = None;
-            helper.ready = false;
+    async fn joystick_command(&self, command: Command) {
+        if let Some(pads) = self.joystick.driver.lock().await.pads.as_ref() {
+            pads.send(command);
         }
-        self.set_joystick_status("unknown", None).await;
-        self.joystick.ready.notify_waiters();
-        let stranded: Vec<(String, mpsc::Sender<ToGuest>)> =
-            self.joystick.controllers.lock().map(|mut c| c.drain().map(|(ip, c)| (ip, c.tx)).collect()).unwrap_or_default();
-        for (_, tx) in stranded {
-            let _ = tx.send(ToGuest::Kick("host_error".into())).await;
-        }
-        self.emit_event("joystick-roster-changed", Value::Null).await;
-    }
-
-    async fn joystick_write(&self, line: &str) {
-        let mut helper = self.joystick.helper.lock().await;
-        if let Some(stdin) = helper.stdin.as_mut() {
-            let _ = stdin.write_all(format!("{}\n", line).as_bytes()).await;
-            let _ = stdin.flush().await;
-        }
-    }
-
-    async fn wait_joystick_ready(self: &Arc<Self>) -> bool {
-        if !self.start_joystick_helper().await {
-            return false;
-        }
-        let notified = self.joystick.ready.notified();
-        if self.joystick.helper.lock().await.ready {
-            return true;
-        }
-        let _ = tokio::time::timeout(HELPER_READY_TIMEOUT, notified).await;
-        self.joystick.helper.lock().await.ready
     }
 
     /// Plugs a controller in on the first free virtual pad.
@@ -195,7 +99,7 @@ impl DeviceManager {
         if self.is_blocked(ip) {
             return Err("blocked".into());
         }
-        if !self.wait_joystick_ready().await {
+        if !self.start_joystick_driver().await {
             return Err("helper_not_ready".into());
         }
         let slot = {
@@ -210,7 +114,8 @@ impl DeviceManager {
             controllers.insert(ip.to_string(), Controller { slot, name: name.to_string(), last_seen: Instant::now(), tx });
             slot
         };
-        self.joystick_write(&format!("plug {}", slot)).await;
+        log::info!("Joystick controller {} ({}) joined as pad {}", name, ip, slot);
+        self.joystick_command(Command::Plug(slot)).await;
         self.emit_event("joystick-roster-changed", Value::Null).await;
         Ok(slot)
     }
@@ -218,7 +123,8 @@ impl DeviceManager {
     pub async fn joystick_bye(&self, ip: &str, reason: &str) {
         let removed = self.joystick.controllers.lock().ok().and_then(|mut c| c.remove(ip));
         let Some(controller) = removed else { return };
-        self.joystick_write(&format!("unplug {}", controller.slot)).await;
+        log::info!("Joystick controller {} ({}) left pad {}: {}", controller.name, ip, controller.slot, reason);
+        self.joystick_command(Command::Unplug(controller.slot)).await;
         if reason != "left" {
             let _ = controller.tx.send(ToGuest::Kick(reason.to_string())).await;
         }
@@ -236,15 +142,17 @@ impl DeviceManager {
                 controller.slot
             })
         });
-        if let Some(slot) = slot {
-            self.joystick_write(&format!("report {} {}", slot, line)).await;
+        // "lx ly rx ry lt rt buttons"
+        let values: Vec<i32> = line.split_whitespace().filter_map(|part| part.parse().ok()).collect();
+        if let (Some(slot), [lx, ly, rx, ry, lt, rt, buttons, ..]) = (slot, values.as_slice()) {
+            self.joystick_command(Command::Report { slot, lx: *lx, ly: *ly, rx: *rx, ry: *ry, lt: *lt, rt: *rt, buttons: *buttons }).await;
         }
     }
 
     pub async fn joystick_status(&self) -> Value {
         let (status, error) = {
-            let helper = self.joystick.helper.lock().await;
-            (if helper.status.is_empty() { "unknown".to_string() } else { helper.status.clone() }, helper.error.clone())
+            let driver = self.joystick.driver.lock().await;
+            (if driver.status.is_empty() { "unknown".to_string() } else { driver.status.clone() }, driver.error.clone())
         };
         let controllers: Vec<Value> = self
             .joystick
@@ -255,9 +163,9 @@ impl DeviceManager {
         json!({ "driverStatus": status, "driverError": error, "connectedControllers": controllers })
     }
 
-    /// "Verify installation": actively probes by starting the helper rather than reading a cache.
+    /// "Verify installation": actively probes the driver rather than reading a cache.
     pub async fn check_joystick_driver(self: &Arc<Self>) -> Value {
-        self.start_joystick_helper().await;
+        self.start_joystick_driver().await;
         let status = self.joystick_status().await;
         json!({ "driverStatus": status["driverStatus"], "driverError": status["driverError"] })
     }

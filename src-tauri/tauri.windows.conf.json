@@ -3,7 +3,10 @@
     "resources": {
       "../vendor/link-fs-driver": "vendor/link-fs-driver",
       "../vendor/winfsp": "vendor/winfsp",
-      "../vendor/joystick-helper": "vendor/joystick-helper"
+      "../vendor/vigembus": "vendor/vigembus"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper" }
     }
   }
 }

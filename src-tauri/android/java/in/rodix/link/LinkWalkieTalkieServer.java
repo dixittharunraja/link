@@ -42,6 +42,8 @@ public class LinkWalkieTalkieServer extends WebSocketServer {
 
     public interface Listener {
         void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName);
+        /** A paired device joined without a PIN; the session UI admits it the way it would after Accept. */
+        void onTrustedGuestJoined(String connId, String remoteAddress, String deviceName);
         void onSignal(String connId, String type, String body);
         void onGuestLeft(String connId);
         void onError(String message);
@@ -215,19 +217,17 @@ public class LinkWalkieTalkieServer extends WebSocketServer {
         }
         String deviceName = msg.optString("deviceName", "Guest");
 
-        // If this guest certificate matches an already-paired trusted device, auto-admit without PIN prompt
-        try {
-            LinkTrustStore trustStore = new LinkTrustStore(context);
-            for (LinkTrustStore.TrustedDevice dev : trustStore.list()) {
-                if (dev.certDer != null && java.util.Arrays.equals(dev.certDer, peerPublicKeyDer)) {
-                    admittedGuests.put(connId, conn);
-                    try {
-                        conn.send(new JSONObject().put("type", "admitted").toString());
-                    } catch (Exception ignored) {}
-                    return;
-                }
-            }
-        } catch (Exception ignored) {}
+        // A paired device has already been vouched for: admit it without a PIN prompt. The key is
+        // compared as a public key, which is all this server ever sees of a guest.
+        LinkTrustStore.TrustedDevice trusted = new LinkTrustStore(context).findByPublicKey(peerPublicKeyDer);
+        if (trusted != null) {
+            admittedGuests.put(connId, conn);
+            try {
+                conn.send(new JSONObject().put("type", "admitted").toString());
+            } catch (Exception ignored) {}
+            listener.onTrustedGuestJoined(connId, remoteAddress != null ? remoteAddress : "unknown", deviceName);
+            return;
+        }
 
         String pin = LinkVerification.computeCode(myPublicKeyDer, peerPublicKeyDer, "");
         ScheduledFuture<?> timeoutFuture = scheduler.schedule(() -> {

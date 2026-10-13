@@ -515,6 +515,13 @@ public class LinkFileTransferServer extends WebSocketServer {
                 return;
             }
             String deviceName = msg.optString("deviceName", "Guest");
+            // A paired device has already been vouched for; only strangers get the PIN prompt.
+            LinkTrustStore.TrustedDevice trusted = new LinkTrustStore(context).findByPublicKey(peerPublicKeyDer);
+            if (trusted != null) {
+                pendingGuests.put(connId, new PendingGuest(conn, "", null, remoteAddress != null ? remoteAddress : "unknown", deviceName));
+                admit(conn);
+                return;
+            }
             String pin = LinkVerification.computeCode(myPublicKeyDer, peerPublicKeyDer, "");
             ScheduledFuture<?> timeoutFuture = scheduler.schedule(() -> {
                 pendingGuests.remove(connId);

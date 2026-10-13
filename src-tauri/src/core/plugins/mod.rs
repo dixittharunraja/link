@@ -1,4 +1,5 @@
 pub mod clipboard;
+pub mod gamepad;
 pub mod input;
 pub mod loopback;
 pub mod media;

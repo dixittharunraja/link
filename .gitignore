@@ -52,6 +52,8 @@ next-env.d.ts
 # installer binaries
 *.apk
 *.exe
+# vendored runtime pieces the installer bundles
+!/vendor/**/*.exe
 *.AppImage
 *.deb
 

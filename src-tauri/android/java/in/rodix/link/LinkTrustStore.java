@@ -116,6 +116,18 @@ public class LinkTrustStore {
         persist();
     }
 
+    /** The paired device whose certificate carries this public key (SubjectPublicKeyInfo), or null.
+     *  Guest servers see only the key of whoever connects; a match means it was already vouched for. */
+    public TrustedDevice findByPublicKey(byte[] publicKeyDer) {
+        if (publicKeyDer == null) return null;
+        for (TrustedDevice device : list()) {
+            try {
+                if (java.util.Arrays.equals(device.certificate().getPublicKey().getEncoded(), publicKeyDer)) return device;
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
     public java.util.Collection<TrustedDevice> list() {
         return devices.values();
     }

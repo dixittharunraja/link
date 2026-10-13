@@ -515,6 +515,12 @@ public class LinkRemoteMicServer extends WebSocketServer {
                     return;
                 }
                 String deviceName = obj.optString("deviceName", "Guest");
+                // A paired device has already been vouched for; only strangers get the PIN prompt.
+                LinkTrustStore.TrustedDevice trusted = new LinkTrustStore(context).findByPublicKey(peerPublicKeyDer);
+                if (trusted != null) {
+                    admit(connId, conn, deviceName, trusted.deviceId, remoteAddress);
+                    return;
+                }
                 String pin = LinkVerification.computeCode(myPublicKeyDer, peerPublicKeyDer, "");
                 ScheduledFuture<?> future = scheduler.schedule(() -> rejectGuest(connId), 30000, TimeUnit.MILLISECONDS);
                 pendingGuests.put(connId, new PendingGuest(conn, pin, future, remoteAddress, deviceName));

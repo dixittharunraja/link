@@ -82,7 +82,7 @@ const RemoteInputTab: React.FC<RemoteInputTabProps> = ({
       setPin(null);
       setConnectingPhase('connecting');
       if (reason && reason !== 'disconnected') {
-        setConnectError(reason === 'rejected by host' || reason === 'blocked' ? 'Rejected by host' : reason);
+        setConnectError(reason === 'rejected by host' || reason === 'blocked' ? 'Rejected by host' : reason === 'unsupported target' ? 'Remote Input works with a computer or TV, not a phone.' : reason);
       }
     });
 
@@ -179,6 +179,7 @@ const RemoteInputTab: React.FC<RemoteInputTabProps> = ({
                   if (admittedGuest.ip) {
                     await linkApi.kickInputGuest?.(admittedGuest.ip);
                   } else if (admittedGuest.deviceId) {
+                    await linkApi.kickInputGuest?.(admittedGuest.deviceId); // mutes it; the phone keeps sending
                     await linkApi.sendSpecialKey?.(admittedGuest.deviceId, 14); // Escape
                     await linkApi.sendDigitizerSession?.(admittedGuest.deviceId, 'end', 0, 0);
                   }
