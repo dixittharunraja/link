@@ -1,0 +1,290 @@
+package in.rodix.link;
+
+// Walkie Talkie guest signaling server (TLS WebSocket). Carries no media: the audio is WebRTC
+// in the WebView. It lets an unpaired guest reach the same membership/SDP/ICE signaling that
+// paired devices exchange as link.walkietalkie.* packets over the main connection. Guests are
+// never added to LinkDeviceManager; the trust store is only consulted to skip the PIN for
+// devices that are already paired.
+
+import android.content.Context;
+
+import org.java_websocket.WebSocket;
+import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.DefaultSSLWebSocketServerFactory;
+import org.java_websocket.server.WebSocketServer;
+import org.json.JSONObject;
+
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.nio.channels.ByteChannel;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.SocketChannel;
+import java.security.PrivateKey;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLPeerUnverifiedException;
+
+public class LinkWalkieTalkieServer extends WebSocketServer {
+    private static final String TAG = "LinkWalkieTalkieServer";
+    private static final long GUEST_CONFIRM_TIMEOUT_MS = 30000;
+
+    public interface Listener {
+        void onGuestPinPending(String connId, String pin, String remoteAddress, String deviceName);
+        /** A paired device joined without a PIN; the session UI admits it the way it would after Accept. */
+        void onTrustedGuestJoined(String connId, String remoteAddress, String deviceName);
+        void onSignal(String connId, String type, String body);
+        void onGuestLeft(String connId);
+        void onError(String message);
+    }
+
+    private static class PendingGuest {
+        final WebSocket conn;
+        final ScheduledFuture<?> timeoutFuture;
+        final String remoteAddress;
+        final String deviceName;
+        PendingGuest(WebSocket conn, ScheduledFuture<?> timeoutFuture, String remoteAddress, String deviceName) {
+            this.conn = conn;
+            this.timeoutFuture = timeoutFuture;
+            this.remoteAddress = remoteAddress;
+            this.deviceName = deviceName;
+        }
+    }
+
+    private final Listener listener;
+    private final byte[] myPublicKeyDer;
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+
+    private final Map<String, PendingGuest> pendingGuests = new ConcurrentHashMap<>();
+    private final Map<String, WebSocket> admittedGuests = new ConcurrentHashMap<>();
+    private final Map<WebSocket, String> connIds = new ConcurrentHashMap<>();
+    private final Map<WebSocket, byte[]> peerKeysByConn = new ConcurrentHashMap<>();
+    private final Map<WebSocket, String> remoteAddrByConn = new ConcurrentHashMap<>();
+    private final Map<String, SSLEngine> pendingEngines = new ConcurrentHashMap<>();
+
+    private class ClientAuthSSLFactory extends DefaultSSLWebSocketServerFactory {
+        ClientAuthSSLFactory(SSLContext sslContext) {
+            super(sslContext);
+        }
+
+        @Override
+        public ByteChannel wrapChannel(SocketChannel channel, SelectionKey key) throws java.io.IOException {
+            SSLEngine engine = sslcontext.createSSLEngine();
+            engine.setUseClientMode(false);
+            engine.setWantClientAuth(true);
+            String k = channel.socket().getRemoteSocketAddress().toString();
+            pendingEngines.put(k, engine);
+            return new org.java_websocket.SSLSocketChannel2(channel, engine, exec, key);
+        }
+    }
+
+    public interface BlockChecker {
+        boolean isBlocked(String idOrIp);
+    }
+    private final Context context;
+    private final BlockChecker blockChecker;
+
+    public LinkWalkieTalkieServer(Context context, X509Certificate cert, PrivateKey key, int port, Listener listener, BlockChecker blockChecker) throws Exception {
+        super(new InetSocketAddress(port));
+        this.context = context;
+        this.listener = listener;
+        this.blockChecker = blockChecker;
+        this.myPublicKeyDer = cert.getPublicKey().getEncoded();
+
+        SSLContext sslContext = LinkTransport.buildSslContext(cert, key);
+        setWebSocketFactory(new ClientAuthSSLFactory(sslContext));
+        setConnectionLostTimeout(20);
+    }
+
+    public void acceptGuest(String connId) {
+        PendingGuest pending = pendingGuests.remove(connId);
+        if (pending == null) return;
+        pending.timeoutFuture.cancel(false);
+        admittedGuests.put(connId, pending.conn);
+        try { pending.conn.send(new JSONObject().put("type", "admitted").toString()); } catch (Exception ignored) {}
+    }
+
+    public void rejectGuest(String connId) {
+        PendingGuest pending = pendingGuests.remove(connId);
+        if (pending == null) return;
+        pending.timeoutFuture.cancel(false);
+        try { pending.conn.close(4007, "rejected by host"); } catch (Exception ignored) {}
+    }
+
+    public void kickGuest(String connId) {
+        WebSocket conn = admittedGuests.get(connId);
+        if (conn == null) return;
+        try { conn.close(1000, "removed by host"); } catch (Exception ignored) {}
+    }
+
+    public String getPendingGuestRemoteAddress(String connId) {
+        PendingGuest pending = pendingGuests.get(connId);
+        if (pending != null) return pending.remoteAddress;
+        WebSocket conn = admittedGuests.get(connId);
+        return conn != null ? remoteAddrByConn.get(conn) : null;
+    }
+
+    /** Sends an opaque {type, body} signaling message to one admitted guest, in the same shape as
+     *  the paired relay so WalkieTalkieTab.tsx parses both the same way. */
+    public void sendTo(String connId, String type, String bodyJson) {
+        WebSocket conn = admittedGuests.get(connId);
+        if (conn == null) return;
+        try {
+            JSONObject wrapped = new JSONObject();
+            wrapped.put("type", type);
+            wrapped.put("body", new JSONObject(bodyJson));
+            conn.send(wrapped.toString());
+        } catch (Exception ignored) {}
+    }
+
+    private final java.util.Map<WebSocket, String> guestTokens = new java.util.concurrent.ConcurrentHashMap<>();
+
+    @Override
+    public void onOpen(WebSocket conn, ClientHandshake handshake) {
+        String presentedToken = LinkGuestAccess.tokenFromDescriptor(handshake.getResourceDescriptor());
+        if (presentedToken != null) guestTokens.put(conn, presentedToken);
+        try {
+            java.lang.reflect.Method getSocketMethod = conn.getClass().getMethod("getSocket");
+            java.net.Socket socket = (java.net.Socket) getSocketMethod.invoke(conn);
+            if (socket != null) socket.setTcpNoDelay(true);
+        } catch (Exception ignored) {}
+
+        SocketAddress addr = conn.getRemoteSocketAddress();
+        SSLEngine engine = addr != null ? pendingEngines.remove(addr.toString()) : null;
+        byte[] peerPublicKeyDer;
+        try {
+            if (engine == null) throw new SSLPeerUnverifiedException("no engine for connection");
+            Certificate[] chain = engine.getSession().getPeerCertificates();
+            if (chain.length == 0) throw new SSLPeerUnverifiedException("empty chain");
+            peerPublicKeyDer = chain[0].getPublicKey().getEncoded();
+        } catch (SSLPeerUnverifiedException e) {
+            conn.close(4001, "no client certificate presented");
+            return;
+        } catch (Exception e) {
+            conn.close(4002, "invalid certificate");
+            return;
+        }
+
+        String remoteAddress = addr != null ? addr.toString() : "unknown";
+        if (blockChecker.isBlocked(remoteAddress)) {
+            conn.close(4010, "blocked");
+            return;
+        }
+
+        String connId = UUID.randomUUID().toString();
+        connIds.put(conn, connId);
+        peerKeysByConn.put(conn, peerPublicKeyDer);
+        remoteAddrByConn.put(conn, remoteAddress);
+    }
+
+    @Override
+    public void onMessage(WebSocket conn, String message) {
+        String connId = connIds.get(conn);
+        if (connId == null) return;
+
+        JSONObject msg;
+        try {
+            msg = new JSONObject(message);
+        } catch (Exception e) {
+            conn.close(4003, "malformed message");
+            return;
+        }
+        String type = msg.optString("type", "");
+
+        if (admittedGuests.containsKey(connId)) {
+            // After admission every message is a signaling envelope.
+            listener.onSignal(connId, msg.optString("type", ""), msg.optString("body", "{}"));
+            return;
+        }
+
+        if (!"join-guest".equals(type)) {
+            conn.close(4004, "unknown join type");
+            return;
+        }
+        byte[] peerPublicKeyDer = peerKeysByConn.get(conn);
+        String remoteAddress = remoteAddrByConn.get(conn);
+        if (peerPublicKeyDer == null) {
+            conn.close(4002, "invalid certificate");
+            return;
+        }
+        String deviceName = msg.optString("deviceName", "Guest");
+
+        // A paired device is admitted without a PIN; it is recognized by its public key, the
+        // only identity this server sees.
+        LinkTrustStore.TrustedDevice trusted = LinkTrustStore.getInstance(context).findByPublicKey(peerPublicKeyDer);
+        if (trusted != null) {
+            admittedGuests.put(connId, conn);
+            try {
+                conn.send(new JSONObject().put("type", "admitted").toString());
+            } catch (Exception ignored) {}
+            listener.onTrustedGuestJoined(connId, remoteAddress != null ? remoteAddress : "unknown", deviceName);
+            return;
+        }
+
+        String pin = LinkVerification.computeCode(myPublicKeyDer, peerPublicKeyDer, "");
+        LinkPairingWindow.Admission admission = LinkGuestAccess.admit(getPort(), guestTokens.remove(conn));
+        if (LinkGuestAccess.refuses(admission)) {
+            if (admission == LinkPairingWindow.Admission.CONFLICT) LinkGuestAccess.reportConflict(deviceName);
+            try { conn.close(4007, "refused"); } catch (Exception ignored) {}
+            return;
+        }
+        String uiPin = admission == LinkPairingWindow.Admission.QR ? "" : pin;
+        ScheduledFuture<?> timeoutFuture = scheduler.schedule(() -> {
+            pendingGuests.remove(connId);
+            try { conn.close(4006, "confirmation timed out"); } catch (Exception ignored) {}
+        }, GUEST_CONFIRM_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        pendingGuests.put(connId, new PendingGuest(conn, timeoutFuture, remoteAddress != null ? remoteAddress : "unknown", deviceName));
+        try {
+            conn.send(new JSONObject().put("type", "pin").put("code", pin).toString());
+        } catch (Exception ignored) {}
+        listener.onGuestPinPending(connId, uiPin, remoteAddress != null ? remoteAddress : "unknown", deviceName);
+    }
+
+    @Override
+    public void onClose(WebSocket conn, int code, String reason, boolean remote) {
+        guestTokens.remove(conn);
+        String connId = connIds.remove(conn);
+        peerKeysByConn.remove(conn);
+        remoteAddrByConn.remove(conn);
+        if (connId != null) {
+            PendingGuest pending = pendingGuests.remove(connId);
+            if (pending != null) pending.timeoutFuture.cancel(false);
+            if (admittedGuests.remove(connId) != null) {
+                listener.onGuestLeft(connId);
+            }
+        }
+    }
+
+    @Override
+    public void onError(WebSocket conn, Exception ex) {
+        listener.onError(ex != null ? ex.getMessage() : "Unknown server error");
+    }
+
+    @Override
+    public void onStart() {
+    }
+
+    @Override
+    public void stop() throws InterruptedException {
+        for (PendingGuest p : pendingGuests.values()) {
+            p.timeoutFuture.cancel(false);
+            try { p.conn.close(1000, "session ended"); } catch (Exception ignored) {}
+        }
+        pendingGuests.clear();
+        for (WebSocket conn : admittedGuests.values()) {
+            try { conn.close(1000, "session ended"); } catch (Exception ignored) {}
+        }
+        admittedGuests.clear();
+        scheduler.shutdown();
+        super.stop();
+    }
+}

@@ -1,0 +1,47 @@
+# Dependencies and build output (src-tauri/.gitignore and src-tauri/gen/android/.gitignore cover the Rust and Gradle builds)
+/node_modules/
+/dist/
+*.tsbuildinfo
+.kotlin/
+
+# Built binaries. The only committed ones are the third-party installers the Windows installer bundles.
+*.exe
+*.apk
+!/vendor/vigembus/*.exe
+# Built from native/link-fs-driver by `npm run build:windows` (see vendor/link-fs-driver/README.txt)
+/vendor/link-fs-driver/*
+!/vendor/link-fs-driver/README.txt
+# Built from native/link-vcam by `node scripts/build.mjs vcam` (see vendor/link-vcam/README.txt)
+/vendor/link-vcam/*
+!/vendor/link-vcam/README.txt
+/native/link-vcam/build/
+
+# Signing material and secrets: never committed, wherever they live
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+keystore.properties
+key.properties
+.env*
+
+# Personal Claude Code settings; the shared ones in .claude/settings.json are committed
+.claude/settings.local.json
+
+# Internal notes and documents, kept on disk only. The public documentation is the Markdown files in the root.
+/docs/
+
+# Logs, tool output, editors and OS files
+*.log
+.jscpd-report/
+local.properties
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+
+# The release script is private to the maintainer (kept on disk only; see docs/RELEASING.md)
+/scripts/upload-release.mjs

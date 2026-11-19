@@ -1,0 +1,15 @@
+{
+  "bundle": {
+    "resources": {
+      "../vendor/link-fs-driver": "vendor/link-fs-driver",
+      "../vendor/winfsp": "vendor/winfsp",
+      "../vendor/vigembus": "vendor/vigembus",
+      "../vendor/vdd": "vendor/vdd",
+      "../vendor/softcam": "vendor/softcam",
+      "../vendor/link-vcam": "vendor/link-vcam"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper" }
+    }
+  }
+}

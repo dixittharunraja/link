@@ -1,0 +1,44 @@
+# Dependabot: automated dependency-security monitoring (GitHub-native).
+# Opens pull requests when a dependency has a known vulnerability or a newer version. Security-critical
+# updates are raised immediately regardless of the weekly schedule below. It does not stop a malicious
+# package, but it means known-bad versions surface quickly instead of lingering.
+#
+# Minor and patch updates are grouped (one pull request per ecosystem) to keep noise low; major version
+# bumps come as separate pull requests so a breaking change is reviewed on its own.
+version: 2
+updates:
+  # ---- Web UI (React, Vite, Tauri JS API) ----
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # ---- Rust core ----
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # ---- Android / Gradle ----
+  - package-ecosystem: "gradle"
+    directory: "/src-tauri/gen/android"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      android-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # ---- CI workflows ----
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

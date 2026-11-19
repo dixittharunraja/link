@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run lint)",
+      "Bash(npm test)",
+      "Bash(npx tsc --noEmit -p .)",
+      "Bash(npx vitest run*)",
+      "Bash(npm run knip)",
+      "Bash(npm run dupes)",
+      "Bash(cargo check*)",
+      "Bash(cargo test --lib*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)"
+    ],
+    "ask": [
+      "Bash(git push*)",
+      "Bash(npm publish*)",
+      "Bash(node scripts/upload-release.mjs*)"
+    ],
+    "deny": [
+      "Read(./.env*)",
+      "Read(./**/*.jks)",
+      "Read(./**/*.keystore)",
+      "Read(./**/keystore.properties)",
+      "Read(./**/key.properties)"
+    ]
+  }
+}
