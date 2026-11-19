@@ -13,7 +13,7 @@ jobs:
     name: TypeScript, lint and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -30,7 +30,7 @@ jobs:
       # The Opus audio library builds with CMake; CMake 4 needs this to accept its older project files.
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -50,7 +50,7 @@ jobs:
     name: Drive driver builds (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
@@ -63,7 +63,7 @@ jobs:
     name: Virtual camera builds (Windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: node scripts/build.mjs vcam
 
   android:
@@ -73,7 +73,7 @@ jobs:
       # The Opus audio library builds with CMake; CMake 4 needs this to accept its older project files.
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 20
