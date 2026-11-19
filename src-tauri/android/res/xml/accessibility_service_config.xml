@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- LinkAccessibilityService only injects gestures and global actions, and reads the focused input
+     field for remote text entry (getRootInActiveWindow, so canRetrieveWindowContent stays). It
+     ignores every event, so only the few that keep its view of the focused field current are
+     requested (Android 9+ also forwards those on its own), and it never lists windows, so
+     flagRetrieveInteractiveWindows is not asked for. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeViewFocused|typeViewTextChanged|typeViewTextSelectionChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="true"
+    android:description="@string/app_name" />

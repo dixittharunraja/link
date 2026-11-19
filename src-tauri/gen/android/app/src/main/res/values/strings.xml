@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">"Link"</string>
+    <string name="main_activity_title">"Link"</string>
+    <string name="device_admin_description">Enables remote locking of your device from paired PCs or mobile devices.</string>
+</resources>

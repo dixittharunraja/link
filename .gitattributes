@@ -1,0 +1,22 @@
+# Store text files with LF in the repository on every platform, so contributors on Windows and Linux
+# stop producing line-ending noise ("LF will be replaced by CRLF").
+* text=auto eol=lf
+
+# Windows batch files must keep CRLF to run reliably.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never touch binary files.
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.jar binary
+*.dll binary
+*.exe binary
+*.msi binary
+*.so binary
+*.pdf binary
+*.docx binary
+*.pptx binary
+*.jks binary

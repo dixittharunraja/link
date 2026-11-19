@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Direct Share: each paired device is published as a dynamic shortcut in this category (see
+     LinkShare.refreshShortcuts) and shows up as its own target in the system share sheet. Listing the
+     common types explicitly is more reliable across share sheets than a lone wildcard. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="in.rodix.link.ShareActivity">
+        <data android:mimeType="*/*" />
+        <data android:mimeType="image/*" />
+        <data android:mimeType="video/*" />
+        <data android:mimeType="audio/*" />
+        <data android:mimeType="application/*" />
+        <data android:mimeType="text/*" />
+        <category android:name="in.rodix.link.category.SHARE_TARGET" />
+    </share-target>
+</shortcuts>

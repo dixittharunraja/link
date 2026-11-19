@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Permits cleartext http:// to loopback only. The target SDK blocks all cleartext traffic by
+  default, and WebView fetch()/XHR follow the same config as native networking.
+
+  The media stream server (LinkFsStreamServer.java) serves file bytes at http://127.0.0.1:<port>/
+  both to external players and to the WebView itself (thumbnails in FileExplorerTab.tsx). It binds
+  only to loopback and requires a random per-session token, so this exception adds no exposure.
+
+  The base config stays strict on purpose: a blanket cleartextTrafficPermitted="true" would accept
+  plain http:// from any remote host.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>
