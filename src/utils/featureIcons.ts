@@ -1,0 +1,42 @@
+import {
+  BellRing,
+  Camera,
+  Flashlight,
+  Gamepad2,
+  Gauge,
+  Headphones,
+  Lock,
+  MapPin,
+  Mic,
+  MonitorSmartphone,
+  MonitorUp,
+  Moon,
+  MousePointer2,
+  Presentation,
+  Radio,
+  Send,
+  Terminal,
+  type LucideIcon,
+} from 'lucide-react';
+
+// One icon per feature, shared by the Tools page and a device's control panel so the same feature
+// looks the same wherever it appears.
+export const FEATURE_ICONS = {
+  audioSink: Headphones,
+  fileTransfer: Send,
+  joystick: Gamepad2,
+  presenter: Presentation,
+  remoteInput: MousePointer2,
+  remoteControl: MonitorSmartphone,
+  extendScreen: MonitorUp,
+  remoteMic: Mic,
+  walkieTalkie: Radio,
+  ring: BellRing,
+  lock: Lock,
+  locate: MapPin,
+  flashlight: Flashlight,
+  dnd: Moon,
+  speedTest: Gauge,
+  camera: Camera,
+  command: Terminal,
+} satisfies Record<string, LucideIcon>;

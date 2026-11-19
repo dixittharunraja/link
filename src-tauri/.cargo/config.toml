@@ -1,0 +1,4 @@
+# libopus (built from source for the audio sink) declares an old CMake minimum that CMake 4
+# refuses without this.
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

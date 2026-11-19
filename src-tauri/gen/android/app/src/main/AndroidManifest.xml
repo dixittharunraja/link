@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <!-- The TV app buttons list the apps that have a launcher entry (see LinkApps.java). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:banner="@drawable/tv_banner"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:enableOnBackInvokedCallback="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.app"
+        android:usesCleartextTraffic="${usesCleartextTraffic}">
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"
+            android:name=".MainActivity"
+            android:label="@string/main_activity_title"
+            android:theme="@style/Theme.app"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+
+            <!-- Direct Share: the system reads <share-target> declarations only from the launcher activity's
+                 shortcuts file. Each paired device is published as a dynamic shortcut (LinkShare.refreshShortcuts)
+                 and appears in the share sheet under its own name. -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+
+        </activity>
+
+        <activity
+            android:name=".LinkSendClipboard"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleInstance"
+            android:exported="false" />
+
+        <!-- Share-sheet target: send files from any app to a paired device. -->
+        <activity
+            android:name=".ShareActivity"
+            android:label="File Transfer (Link)"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <service android:name="in.rodix.link.LinkForegroundService"
+                 android:foregroundServiceType="connectedDevice|mediaProjection|microphone|location"
+                 android:stopWithTask="false"
+                 android:exported="false" />
+        <service android:name="in.rodix.link.LinkNotificationReceiver"
+                 android:label="Link Notification Sync"
+                 android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+                 android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <service android:name="in.rodix.link.LinkAccessibilityService"
+                 android:label="Link"
+                 android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                 android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+    </application>
+
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Held (WIFI_MODE_FULL_HIGH_PERF WifiLock + PARTIAL_WAKE_LOCK) only while a file-system
+         client is actively connected — see LinkFsServer. Keeps the Wi-Fi radio out of power-save
+         and the CPU awake during transfers, eliminating the latency spikes/stalls that made the
+         mounted drive freeze on hotspot/2.4GHz links. Both are normal (no runtime prompt). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <!-- Since Android 10 (API 29), ACTION_PHONE_STATE_CHANGED omits EXTRA_INCOMING_NUMBER
+         entirely for apps that aren't the default dialer unless they also hold READ_CALL_LOG —
+         without it the number is null and every caller shows as "Unknown Caller". -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Android 14+ requires the connectedDevice FGS type to be paired with at least one of a
+         specific set of companion permissions (Bluetooth/Wi-Fi/NFC/etc.) or startForeground()
+         throws a SecurityException. CHANGE_WIFI_STATE is a normal (no runtime prompt) permission
+         and is genuinely applicable — this app does manage LAN/Wi-Fi device connections. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- Needed to hold a WifiManager.MulticastLock while the discovery UDP receiver is running —
+         see LinkDiscovery.Watcher.start() for why broadcast reception needs it on some chipsets. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- AudioPlaybackCapture (Audio Relay, Android-as-host) rides on the same MediaProjection
+         consent+lifecycle as screen capture, even though only audio is used — the OS requires
+         it to run inside a foreground service declaring the mediaProjection type, and (API 34+)
+         requires this permission before startForeground() can include that type in its bitmask. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Required alongside the MediaProjection grant for AudioPlaybackCaptureConfiguration +
+         AudioRecord — see LinkAudioCapture.java. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Normal (install-time, no runtime prompt) permission that Chromium's own internal
+         AudioManagerAndroid checks via checkSelfPermission() before it will open any capture
+         device for a page's getUserMedia({audio:true}) call — entirely separate from, and in
+         addition to, the WebView-level PermissionRequest.grant() in wry's
+         RustWebChromeClient.onPermissionRequest and the OS's RECORD_AUDIO runtime grant. Without this declared,
+         Walkie Talkie's getUserMedia always fails with NotReadableError ("Could not start audio
+         source") even though RECORD_AUDIO is granted, confirmed via logcat:
+         "cr_media: Requires MODIFY_AUDIO_SETTINGS and RECORD_AUDIO. No audio device will be
+         available for recording" / "audio_manager_android.cc:883 Unable to select communication
+         device!" — native AudioRecord paths (Remote Mic) don't hit this check at all, which is
+         why only WebView-based mic capture (Walkie Talkie) was affected. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Remote Mic (LinkRemoteMicCapture) reads the phone's own microphone via plain AudioRecord,
+         no MediaProjection involved. Since Android 9, mic input from a backgrounded app (no
+         visible Activity — screen off counts) is silenced/blocked unless the capture runs inside
+         a foreground service declaring the microphone type; API 34+ additionally requires this
+         permission before startForeground() can include that type in its bitmask. Without this,
+         Remote Mic hosting goes silent the moment the screen turns off even though the app's
+         process itself stays alive (LinkForegroundService already handles that part). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Locate (LinkLocation): a paired device the user allowed may ask where this phone is. Asked
+         for only when the user turns "Allow Location" on for a device. The foreground service adds
+         the location type once this is granted, so a fix can be taken while Link is in the
+         background; API 34+ requires FOREGROUND_SERVICE_LOCATION for that type. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <!-- Required for Do Not Disturb control — needed for app to appear in DND access settings -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <!-- Presenter pointer-dot overlay — draws over whatever app the user is actually presenting
+         from (slides, PDF viewer, etc.), not just Link's own WebView. Special permission: the
+         manifest declaration alone grants nothing, the user must separately enable it via
+         Settings.ACTION_MANAGE_OVERLAY_PERMISSION (see LinkPresenterOverlay.requestPermission). -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+</manifest>

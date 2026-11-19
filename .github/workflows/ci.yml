@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: TypeScript, lint and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit -p .
+      - run: npm run lint
+      - run: npm test
+
+  rust:
+    name: Rust core tests (Windows)
+    runs-on: windows-latest
+    env:
+      # The Opus audio library builds with CMake; CMake 4 needs this to accept its older project files.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # The Tauri build script needs the built UI to exist.
+      - run: npm run build:vite
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # Unit tests for trust, permissions, pairing codes, wire parsing and the virtual camera.
+      # Tests that need the network are marked #[ignore] and do not run here.
+      - run: cargo test --lib --manifest-path src-tauri/Cargo.toml
+
+  driver:
+    name: Drive driver builds (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      # The driver compiles against WinFsp's managed assembly, which the WinFsp installer provides.
+      - run: start /wait msiexec /i vendor\winfsp\winfsp-2.1.25156.msi /qn /norestart INSTALLLEVEL=1000
+        shell: cmd
+      - run: node scripts/build.mjs driver
+
+  vcam:
+    name: Virtual camera builds (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: node scripts/build.mjs vcam
+
+  android:
+    name: Android release build (R8)
+    runs-on: ubuntu-latest
+    env:
+      # The Opus audio library builds with CMake; CMake 4 needs this to accept its older project files.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # A throwaway key: the release build needs one to sign, but this APK is only built to prove that the
+      # Java compiles and that R8 minification keeps everything Link reaches by reflection.
+      - name: Create a throwaway signing key
+        run: |
+          keytool -genkeypair -keystore ci.jks -storepass ci-throwaway -keypass ci-throwaway \
+            -alias ci -keyalg RSA -keysize 2048 -validity 2 -dname "CN=ci"
+          mv ci.jks src-tauri/gen/android/ci.jks
+          printf 'storeFile=ci.jks\nstorePassword=ci-throwaway\nkeyAlias=ci\nkeyPassword=ci-throwaway\n' > src-tauri/gen/android/keystore.properties
+      - name: Build the release APK
+        # The runner's preinstalled NDK; the shell variable is not visible to the `env` expression context.
+        run: NDK_HOME="$ANDROID_NDK_LATEST_HOME" npx tauri android build --apk --target aarch64 --ci
