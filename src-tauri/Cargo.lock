@@ -141,7 +141,7 @@ dependencies = [
  "vigem-client",
  "webrtc",
  "whoami",
- "windows 0.61.3",
+ "windows 0.62.2",
  "windows-core 0.61.2",
  "windows-service",
  "windows-sys 0.59.0",
