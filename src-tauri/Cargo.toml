@@ -96,7 +96,7 @@ windows = { version = "0.61", features = [
 # #[windows::core::implement] expands to `::windows_core` paths, so the crate the windows crate already
 # pulls in must be a direct dependency (the Core Audio change callbacks in plugins/volume.rs).
 windows-core = "0.61"
-libloading = "0.8"
+libloading = "0.9"
 # The service that switches the Second Screen virtual display on and off (core/display_helper.rs).
 windows-service = "0.8"
 
